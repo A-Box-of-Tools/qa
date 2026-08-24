@@ -85,6 +85,89 @@ export function buildPdf(pages: FixturePage[]): Buffer {
   return Buffer.concat(parts);
 }
 
+export interface FixtureImagePage {
+  /** JPEG bytes, embedded with /DCTDecode - that is, handed to the decoder as they are. */
+  jpeg: Buffer;
+  /** The image's pixel size, which is also the page size here (one point per pixel). */
+  width: number;
+  height: number;
+}
+
+/**
+ * A PDF whose pages are photographs - the "stack of photographs in a wrapper"
+ * the compressor's inventory is supposed to recognise, as opposed to the text
+ * documents buildPdf makes.
+ *
+ * Assembled from Buffers rather than a string, because a JPEG is binary and
+ * latin1 round-tripping it through a string is the kind of thing that works
+ * until one byte is 0x80.
+ */
+export function buildImagePdf(pages: FixtureImagePage[]): Buffer {
+  if (pages.length === 0) throw new Error('a PDF needs at least one page');
+
+  const bodies: Buffer[] = [];
+  const add = (body: Buffer | string): number => {
+    bodies.push(typeof body === 'string' ? Buffer.from(body, 'latin1') : body);
+    return bodies.length;
+  };
+
+  const catalogId = add('');
+  const pagesId = add('');
+  const kids: number[] = [];
+
+  for (const page of pages) {
+    const imageId = add(Buffer.concat([
+      Buffer.from(
+        `<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} `
+        + `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode `
+        + `/Length ${page.jpeg.length} >>\nstream\n`,
+        'latin1',
+      ),
+      page.jpeg,
+      Buffer.from('\nendstream', 'latin1'),
+    ]));
+
+    const draw = `q ${page.width} 0 0 ${page.height} 0 0 cm /Im0 Do Q\n`;
+    const contentsId = add(`<< /Length ${draw.length} >>\nstream\n${draw}endstream`);
+
+    kids.push(add(
+      `<< /Type /Page /Parent ${pagesId} 0 R `
+      + `/MediaBox [0 0 ${page.width} ${page.height}] `
+      + `/Resources << /XObject << /Im0 ${imageId} 0 R >> >> `
+      + `/Contents ${contentsId} 0 R >>`,
+    ));
+  }
+
+  bodies[catalogId - 1] = Buffer.from(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`, 'latin1');
+  bodies[pagesId - 1] = Buffer.from(
+    `<< /Type /Pages /Kids [${kids.map((id) => `${id} 0 R`).join(' ')}] /Count ${kids.length} >>`,
+    'latin1',
+  );
+
+  const parts: Buffer[] = [Buffer.from('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n', 'latin1')];
+  const offsets: number[] = [];
+  let at = parts[0].length;
+
+  bodies.forEach((body, index) => {
+    const chunk = Buffer.concat([
+      Buffer.from(`${index + 1} 0 obj\n`, 'latin1'),
+      body,
+      Buffer.from('\nendobj\n', 'latin1'),
+    ]);
+    offsets.push(at);
+    at += chunk.length;
+    parts.push(chunk);
+  });
+
+  let xref = `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) xref += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  xref += `trailer\n<< /Size ${bodies.length + 1} /Root ${catalogId} 0 R >>\n`
+    + `startxref\n${at}\n%%EOF\n`;
+
+  parts.push(Buffer.from(xref, 'latin1'));
+  return Buffer.concat(parts);
+}
+
 /* ------------------------------------------------------------------ reading */
 
 interface RawObject {
@@ -298,4 +381,40 @@ function contentText(objects: Map<number, RawObject>, page: RawObject): string[]
 /** Every string drawn anywhere in the document, in page order. */
 export function allText(bytes: Buffer): string[] {
   return readPages(bytes).flatMap((page) => page.text);
+}
+
+export interface EmbeddedImage {
+  width: number;
+  height: number;
+  /** /DCTDecode, /FlateDecode, /JPXDecode ... - how the bytes are stored. */
+  filter: string | null;
+  /**
+   * The stream exactly as it sits in the file. For a DCTDecode image these are
+   * JPEG bytes, and readObjects deliberately leaves them alone - only Flate is
+   * unpacked - so they can be compared with the JPEG that went in.
+   */
+  data: Buffer;
+}
+
+/**
+ * The image XObjects in a document.
+ *
+ * This is what makes "the JPEG was copied in, not re-encoded" checkable: if
+ * the bytes here equal the bytes of the file that was chosen, nothing decoded
+ * and recompressed it on the way in.
+ */
+export function readImages(bytes: Buffer): EmbeddedImage[] {
+  const out: EmbeddedImage[] = [];
+
+  for (const [, object] of readObjects(bytes)) {
+    if (!/\/Subtype\s*\/Image/.test(object.body) || !object.stream) continue;
+    out.push({
+      width: Number(dictValue(object.body, 'Width')),
+      height: Number(dictValue(object.body, 'Height')),
+      filter: dictValue(object.body, 'Filter'),
+      data: object.stream,
+    });
+  }
+
+  return out;
 }

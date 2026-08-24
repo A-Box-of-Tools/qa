@@ -9,6 +9,7 @@ import {
   scan,
   withExifGps,
 } from '../../lib/jpeg-fixtures';
+import { realJpeg } from '../../lib/browser-jpeg';
 
 /**
  * Tool-level functional tests for the EXIF Viewer & Remover.
@@ -31,41 +32,6 @@ import {
 
 const URL_PATH = '/exif-editor/';
 
-/**
- * A real, decodable JPEG, encoded by the browser.
- *
- * Encoding one in Node would mean writing a DCT and a Huffman coder; the page
- * under test already has both. The gradient and the blocks give the encoder
- * real content, so the scan is a normal length rather than a degenerate one.
- */
-async function realJpeg(page: Page, width = 240, height = 160): Promise<Buffer> {
-  const base64 = await page.evaluate(async ({ width, height }) => {
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext('2d')!;
-
-    const gradient = context.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, '#204080');
-    gradient.addColorStop(1, '#d0a020');
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, width, height);
-    for (let i = 0; i < 12; i += 1) {
-      context.fillStyle = i % 2 ? '#ffffff' : '#101010';
-      context.fillRect(i * 19, 40 + (i % 3) * 25, 15, 20);
-    }
-
-    const blob: Blob = await new Promise((resolve) => {
-      canvas.toBlob((b) => resolve(b!), 'image/jpeg', 0.92);
-    });
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    let binary = '';
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary);
-  }, { width, height });
-
-  return Buffer.from(base64, 'base64');
-}
 
 /** A JPEG carrying a description, a camera model and a GPS position. */
 async function fixture(page: Page): Promise<Buffer> {
