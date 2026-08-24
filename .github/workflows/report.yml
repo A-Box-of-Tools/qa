@@ -1,0 +1,104 @@
+#
+# Runs the QA suite and publishes its HTML report to the gh-pages branch,
+# which GitHub Pages serves as a static site - the same branch-based publish
+# etoolbox itself uses for `dist` (see its build.yml), rather than the
+# Actions-artifact Pages flow, so the report has ordinary git history: you
+# can diff two reports or roll one back like any other branch.
+#
+# Runs on a schedule so the published report never goes stale even with no
+# deploy to react to, on push to main so a change to the suite itself is
+# reflected, and on workflow_dispatch for an on-demand run (optionally
+# against a different site via the base_url input).
+#
+# The job still fails (red X in the Actions tab) when the suite fails, but
+# only after publishing - a failing report is more useful on the page than
+# no page at all.
+#
+
+name: Report
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Site to test'
+        default: 'https://abox.tools/'
+        required: false
+
+permissions:
+  contents: write
+
+# A second run landing mid-publish should not race it.
+concurrency:
+  group: report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run the suite
+        id: tests
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || 'https://abox.tools/' }}
+        run: npx playwright test
+
+      - name: Publish the report to gh-pages
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Check out gh-pages beside the working tree, creating it as an
+          # orphan the first time - same technique etoolbox's build.yml uses
+          # for its dist branch, and for the same reason: it reuses the
+          # credentials actions/checkout already configured, no second clone.
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages
+            git worktree add .publish FETCH_HEAD
+            git -C .publish switch -C gh-pages
+          else
+            git worktree add --detach .publish
+            git -C .publish checkout --orphan gh-pages
+          fi
+
+          # Replace the tree wholesale rather than copying over it, so a
+          # report file that no longer exists actually disappears.
+          git -C .publish rm -rq --cached . --ignore-unmatch
+          find .publish -mindepth 1 -maxdepth 1 -not -name .git -exec rm -rf {} +
+          cp -a playwright-report/. .publish/
+          touch .publish/.nojekyll
+
+          git -C .publish add -A
+          if git -C .publish diff --cached --quiet; then
+            echo 'Report is identical to what is already published; nothing to push.'
+            exit 0
+          fi
+
+          git -C .publish commit -m "Report from ${SHA:0:7}"
+          git -C .publish push origin gh-pages
+
+      - name: Fail the job if the suite failed
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo "::error::the QA suite failed - see the published report for details."
+          exit 1

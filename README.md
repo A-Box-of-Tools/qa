@@ -67,6 +67,14 @@ Building `etoolbox` needs Python 3.11+ on `PATH` (see its own README) — only
 if you let this suite build it for you; pointing `BASE_URL` at something
 already running needs nothing but Node.
 
+## Published report
+
+[`.github/workflows/report.yml`](.github/workflows/report.yml) runs this suite against `https://abox.tools/` and publishes the HTML report to the `gh-pages` branch, which GitHub Pages serves at:
+
+**https://a-box-of-tools.github.io/qa/**
+
+It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). The job still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
+
 ## Notes
 
 - `tests/tool-pages.spec.ts`'s CSP-allowlist check is a regression guard, not

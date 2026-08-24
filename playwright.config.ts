@@ -43,10 +43,11 @@ export default defineConfig({
         cwd: ETOOLBOX_DIR,
         url: BASE_URL,
         reuseExistingServer: !process.env.CI,
-        // etoolbox's own build.py has been observed taking several minutes on
-        // a cold run (eleven locales, ~30 tools); give it real headroom
-        // rather than a timeout tuned to a fast machine.
-        timeout: 300_000,
+        // etoolbox's own build.py has been observed taking anywhere from
+        // ~3 to 7+ minutes on a cold run (eleven locales, ~30 tools),
+        // apparently load-dependent on this machine; give it real headroom
+        // rather than a timeout tuned to a fast, idle one.
+        timeout: 600_000,
         env: {
           ...process.env,
           // build.py prints translated page paths (Arabic slugs included) to

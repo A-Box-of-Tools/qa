@@ -21,3 +21,14 @@ export function discoverTools(): string[] {
     .filter((slug) => fs.existsSync(path.join(toolsDir, slug, 'tool.toml')))
     .sort();
 }
+
+/**
+ * Whether this tool's page includes the shared drop-zone widget
+ * (templates/partials/file-picker.html). Most tools take a file; a couple -
+ * password-generator, qr-barcode - generate one instead and never include
+ * it, so tests that assume every tool page has a drop zone check this first.
+ */
+export function hasFilePicker(slug: string): boolean {
+  const bodyPath = path.join(ETOOLBOX_DIR, 'tools', slug, 'body.html');
+  return fs.readFileSync(bodyPath, 'utf8').includes('partials/file-picker.html');
+}

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { allowedExternalHosts } from '../lib/csp';
 import { BASE_URL } from '../lib/site';
-import { discoverTools } from '../lib/tools';
+import { discoverTools, hasFilePicker } from '../lib/tools';
 
 // One test.describe per shipped tool, discovered from the etoolbox checkout
 // itself (see lib/tools.ts) - add a tool there and it is covered here with
@@ -19,6 +19,11 @@ for (const slug of discoverTools()) {
     });
 
     test('has a working, keyboard-reachable drop zone', async ({ page }) => {
+      // password-generator and qr-barcode generate a file rather than take
+      // one, so they never include the shared drop-zone widget - see
+      // lib/tools.ts.
+      test.skip(!hasFilePicker(slug), 'this tool has no file picker - it generates output instead');
+
       const dropzone = page.locator('label#dropzone');
       const input = page.locator('input#file-input');
       await expect(dropzone).toBeVisible();
@@ -55,6 +60,16 @@ for (const slug of discoverTools()) {
       const unexpected = new Set<string>();
 
       page.on('request', (req) => {
+        // Only the top document's own requests: a CSP governs what a page
+        // may load and which origins it may embed as a frame, but it has no
+        // say over what an already-embedded cross-origin iframe's own script
+        // then does internally - that traffic answers to the iframe's own
+        // origin, not this policy. Google's ad frames make exactly this kind
+        // of request (observed: an ad frame reporting to
+        // csp.withgoogle.com on mobile), and it isn't something site.toml's
+        // [csp] table was ever able to prevent.
+        if (req.frame() !== page.mainFrame()) return;
+
         const host = new URL(req.url()).host;
         if (host === ownHost) return;
         for (const allowedHost of allowed) {
