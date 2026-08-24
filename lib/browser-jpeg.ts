@@ -54,3 +54,60 @@ export async function realJpeg(
 
   return Buffer.from(base64, 'base64');
 }
+
+/**
+ * A JPEG that is genuinely large in bytes, for testing anything with a size
+ * target.
+ *
+ * realJpeg draws flat shapes on a gradient, which JPEG compresses extremely
+ * well: 1600 x 1200 of it comes out around 40 KB, already under any target
+ * worth asking for, and a compressor handed one has nothing to do. That is
+ * correct behaviour and a useless fixture - it makes "compressed" and
+ * "untouched" the same file.
+ *
+ * Per-pixel noise is the opposite case. It defeats the DCT almost entirely, so
+ * the encoder has to spend real bytes, and a megabyte or two comes out of a
+ * picture this size. The noise is generated from `seed` rather than
+ * Math.random so two runs get the same file.
+ */
+export async function noisyJpeg(
+  page: Page,
+  width = 1600,
+  height = 1200,
+  seed = 1,
+): Promise<Buffer> {
+  const base64 = await page.evaluate(async ({ width, height, seed }) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d')!;
+
+    const image = context.createImageData(width, height);
+    // A small xorshift, so the picture is noisy but reproducible.
+    let state = (seed * 2654435761) >>> 0 || 1;
+    for (let at = 0; at < image.data.length; at += 4) {
+      state ^= state << 13; state >>>= 0;
+      state ^= state >> 17;
+      state ^= state << 5; state >>>= 0;
+      image.data[at] = state & 0xff;
+      image.data[at + 1] = (state >> 8) & 0xff;
+      image.data[at + 2] = (state >> 16) & 0xff;
+      image.data[at + 3] = 255;
+    }
+    context.putImageData(image, 0, 0);
+
+    const blob: Blob = await new Promise((resolve) => {
+      canvas.toBlob((b) => resolve(b!), 'image/jpeg', 0.95);
+    });
+
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    const CHUNK = 0x8000; // avoid blowing the argument limit on a big file
+    for (let at = 0; at < bytes.length; at += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(at, at + CHUNK));
+    }
+    return btoa(binary);
+  }, { width, height, seed });
+
+  return Buffer.from(base64, 'base64');
+}
