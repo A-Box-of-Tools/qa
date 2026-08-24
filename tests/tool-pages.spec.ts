@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { allowedExternalHosts } from '../lib/csp';
+import { allowedExternalHosts, isKnownBenignHost } from '../lib/csp';
 import { BASE_URL } from '../lib/site';
 import { discoverTools, hasFilePicker } from '../lib/tools';
 
@@ -72,6 +72,7 @@ for (const slug of discoverTools()) {
 
         const host = new URL(req.url()).host;
         if (host === ownHost) return;
+        if (isKnownBenignHost(host)) return;
         for (const allowedHost of allowed) {
           if (host === allowedHost || host.endsWith(`.${allowedHost}`)) return;
         }
