@@ -43,6 +43,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # lib/tools.ts, lib/csp.ts and hasFilePicker() all read etoolbox's own
+      # source (the tool list, its CSP allowlist, each tool's body.html) at
+      # test time rather than duplicating it here - see lib/site.ts. Locally
+      # that's a sibling checkout; on a runner nothing is there unless this
+      # checks it out too and ETOOLBOX_DIR is pointed at it explicitly.
+      - name: Check out etoolbox (source of truth for tool/CSP metadata)
+        uses: actions/checkout@v4
+        with:
+          repository: A-Box-of-Tools/website
+          path: etoolbox-src
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -57,6 +68,7 @@ jobs:
         continue-on-error: true
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://abox.tools/' }}
+          ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
         run: npx playwright test
 
       - name: Publish the report to gh-pages
