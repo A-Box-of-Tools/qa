@@ -1,0 +1,152 @@
+#
+# Opens a GitHub issue when a tool ships without a functional spec, and closes
+# it again when one is written.
+#
+# The suite already fails in this case - tests/coverage.spec.ts sees it, and
+# the post-deploy run turns the published report red. That is the fast signal
+# and it is enough if somebody is looking. An issue is the durable one: it
+# arrives by email, it stays until it is dealt with, and it carries the list of
+# what is missing rather than a link to somewhere the list can be found.
+#
+# It is deliberately cheap. tests/coverage.spec.ts reads the filesystem and
+# never opens a page, so no browser is needed and none is installed - the whole
+# job is a checkout, an npm ci and about a second of work. That is why it can
+# run daily without anyone thinking about it.
+#
+# BASE_URL is set so playwright.config.ts skips its webServer. Without it the
+# config would try to build and serve etoolbox, which needs Python and
+# PowerShell and is entirely beside the point here.
+#
+
+name: Coverage
+
+on:
+  schedule:
+    # Daily. A new tool is not an emergency - the deploy that introduced it has
+    # already turned the report red - so this only has to be reliable.
+    - cron: '0 7 * * *'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: coverage
+  cancel-in-progress: false
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tool list comes from etoolbox itself, the same way every other
+      # check here gets it - see lib/tools.ts.
+      - name: Check out etoolbox
+        uses: actions/checkout@v4
+        with:
+          repository: A-Box-of-Tools/website
+          path: etoolbox-src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Look for tools with no spec
+        id: check
+        continue-on-error: true
+        env:
+          ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
+          BASE_URL: https://abox.tools/
+        run: |
+          npx playwright test tests/coverage.spec.ts \
+            --project="Desktop Chrome" --reporter=json > result.json
+
+      - name: Write the report
+        id: report
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+
+            const report = JSON.parse(fs.readFileSync("result.json", "utf8"));
+            const messages = [];
+
+            // The failure message the spec builds is already the report: the
+            // list of tools and what to do about them. Pulling it out here
+            // means there is one description of the problem, written once.
+            const walk = (suites = []) => {
+              for (const suite of suites) {
+                for (const spec of suite.specs ?? []) {
+                  for (const item of spec.tests ?? []) {
+                    for (const run of item.results ?? []) {
+                      for (const error of run.errors ?? []) {
+                        if (error.message) messages.push(error.message);
+                      }
+                    }
+                  }
+                }
+                walk(suite.suites);
+              }
+            };
+            walk(report.suites);
+
+            const clean = messages
+              .map((m) => m.replace(/\[[0-9;]*m/g, ""))
+              .join("\n\n");
+
+            fs.writeFileSync("failed", clean ? "yes" : "no");
+            fs.writeFileSync("body.md", clean
+              ? [
+                  "The QA suite has noticed a tool it does not test.",
+                  "",
+                  "```",
+                  clean.trim(),
+                  "```",
+                  "",
+                  "---",
+                  "",
+                  "Opened automatically by [.github/workflows/coverage.yml]"
+                    + "(../blob/main/.github/workflows/coverage.yml).",
+                  "It closes itself once a spec navigates to the page.",
+                ].join("\n")
+              : "");
+          '
+          echo "failed=$(cat failed)" >> "$GITHUB_OUTPUT"
+
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Tools without functional specs
+        run: |
+          set -euo pipefail
+
+          existing=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq \
+            ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+
+          if [ "${{ steps.report.outputs.failed }}" = "yes" ]; then
+            if [ -n "$existing" ]; then
+              # Edited rather than re-opened as a second issue: the list
+              # changes as tools are added and specs are written, and a thread
+              # of near-identical issues is worse than one that stays current.
+              gh issue edit "$existing" --body-file body.md
+              echo "Updated #$existing"
+            else
+              gh issue create --title "$TITLE" --body-file body.md
+            fi
+            exit 0
+          fi
+
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --comment "Every tool has a functional spec again. Closed automatically."
+            echo "Closed #$existing"
+          else
+            echo "Every tool has a spec; nothing to report."
+          fi

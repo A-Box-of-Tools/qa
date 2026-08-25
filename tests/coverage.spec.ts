@@ -1,7 +1,5 @@
 import { test, expect } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { discoverTools } from '../lib/tools';
+import { orphanedSpecs, uncoveredTools } from '../lib/coverage';
 
 /**
  * The suite noticing that a tool has appeared and nobody has tested it.
@@ -20,45 +18,17 @@ import { discoverTools } from '../lib/tools';
  *
  * So this fails, loudly and by name, the moment a tool exists with no
  * functional spec pointing at it. It runs in the same suite as everything
- * else, which means the message arrives through the machinery already in
- * place: the post-deploy run goes red and the published report says which tool
- * it is. Nothing has to be watching, and nobody has to remember.
- */
-
-const SPEC_DIRECTORY = path.join(__dirname, 'tools');
-
-/**
- * Which tools each spec covers, worked out from the paths it navigates to.
+ * else, so the message arrives through the machinery already in place: the
+ * post-deploy run goes red and the published report says which tool it is.
  *
- * Read from the files rather than kept as a list here, because a list is one
- * more thing to forget: several specs cover more than one tool - gif.spec.ts
- * has the maker, the splitter and the analyzer; video.spec.ts has four - and a
- * hand-written mapping would go stale exactly when it mattered. A tool is
- * counted as covered when a spec names its page, which is what a spec has to
- * do to test it at all.
+ * The same answer is used by .github/workflows/coverage.yml, which turns it
+ * into a GitHub issue - a report has to be looked at, and an issue arrives.
+ * Both read lib/coverage.ts, so they cannot disagree.
  */
-function coverage(): Map<string, string[]> {
-  const found = new Map<string, string[]>();
-
-  const specs = fs.readdirSync(SPEC_DIRECTORY)
-    .filter((name) => name.endsWith('.spec.ts'));
-
-  for (const slug of discoverTools()) {
-    const covering = specs.filter((name) => {
-      const source = fs.readFileSync(path.join(SPEC_DIRECTORY, name), 'utf8');
-      return source.includes(`'/${slug}/'`) || source.includes(`"/${slug}/"`);
-    });
-    found.set(slug, covering);
-  }
-
-  return found;
-}
 
 test.describe('the suite covers what the site ships', () => {
   test('every tool has a functional spec of its own', async () => {
-    const uncovered = [...coverage()]
-      .filter(([, specs]) => specs.length === 0)
-      .map(([slug]) => slug);
+    const uncovered = uncoveredTools();
 
     expect(
       uncovered,
@@ -83,23 +53,9 @@ test.describe('the suite covers what the site ships', () => {
 
   test('no spec points at a tool that has been removed', async () => {
     // The other direction: a spec left behind after a tool is retired would
-    // sit there passing against a page that no longer exists, or failing for a
-    // reason nobody can act on.
-    const slugs = new Set(discoverTools());
-    const orphans: string[] = [];
-
-    for (const name of fs.readdirSync(SPEC_DIRECTORY).filter((f) => f.endsWith('.spec.ts'))) {
-      const source = fs.readFileSync(path.join(SPEC_DIRECTORY, name), 'utf8');
-      for (const [, slug] of source.matchAll(/['"]\/([a-z0-9-]+)\/['"]/g)) {
-        // Only paths that look like a tool page, not '/' or a guide.
-        if (!slugs.has(slug) && !['guides', 'roadmap', 'privacy', 'terms'].includes(slug)) {
-          orphans.push(`${name} -> /${slug}/`);
-        }
-      }
-    }
-
+    // sit there failing for a reason nobody can act on.
     expect(
-      [...new Set(orphans)],
+      orphanedSpecs(),
       'a spec navigates to a page that no tool provides any more',
     ).toEqual([]);
   });
