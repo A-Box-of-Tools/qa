@@ -97,7 +97,7 @@ jobs:
             walk(report.suites);
 
             const clean = messages
-              .map((m) => m.replace(/\[[0-9;]*m/g, ""))
+              .map((m) => m.replace(/\x1b\[[0-9;]*m/g, ""))
               .join("\n\n");
 
             fs.writeFileSync("failed", clean ? "yes" : "no");
