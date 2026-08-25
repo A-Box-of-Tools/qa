@@ -163,7 +163,7 @@ test.describe('reverse-video: playing it backwards', () => {
       .toBeLessThan(toStart);
   });
 
-  test('reversing keeps the size and roughly the length', async ({ page }) => {
+  test('reversing keeps the size', async ({ page }) => {
     test.setTimeout(300_000);
     await loadClip(page, REVERSE);
     const reversed = await exportVideo(page);
@@ -172,10 +172,109 @@ test.describe('reverse-video: playing it backwards', () => {
     expect(track).not.toBeNull();
     expect(track!.width).toBe(WIDTH);
     expect(track!.height).toBe(HEIGHT);
+  });
 
-    const { duration } = await frameColour(page, reversed, 0);
-    expect(duration).toBeGreaterThan(SECONDS - 1);
-    expect(duration).toBeLessThan(SECONDS + 1);
+  test('the reversed clip is the same length as the one that went in', async ({ page }) => {
+    // Written for a real report: a 35-second clip came back an hour long on
+    // iOS. On the playback path `duration` decides how many frames are written
+    // - floor(duration * fps), played back at that same fps - so the output
+    // length is whatever duration the tool read.
+    //
+    // Both lengths are read out of the files' own mvhd boxes rather than from
+    // video.duration, and that is the whole point of this test. The first
+    // version asked the browser, which is the same API that misreports on the
+    // engine where this was seen - simulating a duration a hundred times too
+    // large made the page say "4m 59s" for a three-second clip while this
+    // assertion still measured a ratio of 1.0, because source and output were
+    // both being scaled by the same lie. An instrument under suspicion cannot
+    // be the one that checks it.
+    test.setTimeout(300_000);
+    const original = await loadClip(page, REVERSE);
+    const reversed = await exportVideo(page);
+
+    const before = readMp4(original).seconds;
+    const after = readMp4(reversed).seconds;
+
+    expect(before, 'the source declares no duration to compare against')
+      .toBeGreaterThan(0);
+    expect(after, 'the reversed file declares no duration').toBeGreaterThan(0);
+
+    const ratio = after / before;
+    expect(
+      ratio,
+      `the reversed clip declares ${after.toFixed(2)}s against the source's `
+      + `${before.toFixed(2)}s - ${ratio.toFixed(1)}x`,
+    ).toBeGreaterThan(0.8);
+    expect(ratio, 'the reversed clip is far longer than the source').toBeLessThan(1.25);
+  });
+
+  test('a clip reversed through the player keeps its length', async ({ page }) => {
+    // The test that matters for the reported failure, and the one the MP4 case
+    // above cannot make.
+    //
+    // These tools read MP4 and MOV themselves; anything else falls back to
+    // stepping the browser's own player backwards, and on that path the number
+    // of frames written is floor(duration * fps) - so the output is exactly as
+    // long as whatever `duration` said. A WebM is how that path is reached on
+    // a browser whose MP4 support is fine.
+    //
+    // Everything else in this file goes down the fast path, so none of it
+    // touches this code at all. Simulating a duration read five times too
+    // large turns a two-second clip into a 9.7-second one, which is the shape
+    // of a thirty-five-second clip coming back an hour long.
+    //
+    // The length is compared against what the recording was asked to run for
+    // rather than against the source file's own header: the source is WebM,
+    // and reading its duration back through the browser would mean trusting
+    // the same API that is under suspicion.
+    test.setTimeout(600_000);
+
+    await page.goto(REVERSE);
+    const { bytes, mimeType } = await recordVideo(page, {
+      width: 160, height: 120, seconds: 2, fps: 15, prefer: 'webm',
+    });
+    expect(mimeType, 'this browser did not record WebM').toContain('webm');
+
+    await page.locator('#file-input').setInputFiles({
+      name: 'clip.webm', mimeType: 'video/webm', buffer: bytes,
+    });
+    await expect(page.locator('#source')).toBeVisible({ timeout: 60_000 });
+
+    // Confirm the slow path really was taken, so this cannot quietly become a
+    // second test of the fast one.
+    await expect(page.locator('#sum-path')).toContainText(/player|stepp/i, { timeout: 60_000 });
+
+    const reversed = await exportVideo(page, 480_000);
+    const seconds = readMp4(reversed).seconds;
+
+    expect(seconds, 'the reversed file declares no duration').toBeGreaterThan(0);
+    expect(
+      seconds,
+      `a two-second clip came back declaring ${seconds.toFixed(2)}s`,
+    ).toBeLessThan(2 * 1.6);
+    expect(seconds, 'the reversed clip is far shorter than the source')
+      .toBeGreaterThan(2 * 0.6);
+  });
+
+  test('the reversed clip is not starved of bits', async ({ page }) => {
+    // The other half of the same failure, and the reason it is worth testing
+    // separately. The bitrate ceiling on the playback path is what the source
+    // itself spent, worked out as fileSize * 8 / duration - so one duration
+    // read too large both stretches the output and collapses the ceiling, and
+    // the picture comes back far worse than it went in.
+    //
+    // A reversed clip holds exactly the same pictures as the clip that
+    // arrived, so re-encoding may cost it some size but should not cost it an
+    // order of magnitude.
+    test.setTimeout(300_000);
+    const original = await loadClip(page, REVERSE);
+    const reversed = await exportVideo(page);
+
+    expect(
+      reversed.length,
+      `the reversed file is ${reversed.length} bytes against the source's `
+      + `${original.length} - the encoder was given almost nothing to spend`,
+    ).toBeGreaterThan(original.length / 10);
   });
 });
 

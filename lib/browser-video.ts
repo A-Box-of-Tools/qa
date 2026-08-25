@@ -5,6 +5,17 @@ export interface VideoFixtureOptions {
   height?: number;
   seconds?: number;
   fps?: number;
+  /**
+   * Ask for WebM rather than MP4.
+   *
+   * The video tools read MP4 and MOV themselves and fall back to a slower
+   * path - seek to each frame, draw it, re-encode - for anything else the
+   * browser will merely play. A WebM is the way to reach that fallback on a
+   * browser whose MP4 support is fine, and the fallback is worth reaching:
+   * it is where the frame rate is guessed and where `duration` decides how
+   * many frames get written.
+   */
+  prefer?: 'mp4' | 'webm';
 }
 
 /**
@@ -34,6 +45,7 @@ export async function recordVideo(
     height: options.height ?? 240,
     seconds: options.seconds ?? 3,
     fps: options.fps ?? 20,
+    prefer: options.prefer ?? 'mp4',
   };
 
   const result = await page.evaluate(async (opts) => {
@@ -42,12 +54,14 @@ export async function recordVideo(
     canvas.height = opts.height;
     const context = canvas.getContext('2d')!;
 
-    const preferred = [
-      'video/mp4;codecs=avc1.42E01E',
-      'video/mp4',
-      'video/webm;codecs=vp8',
-      'video/webm',
-    ];
+    const preferred = opts.prefer === 'webm'
+      ? ['video/webm;codecs=vp8', 'video/webm']
+      : [
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4',
+        'video/webm;codecs=vp8',
+        'video/webm',
+      ];
     const mimeType = preferred.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
 
     const stream = canvas.captureStream(opts.fps);
