@@ -1,22 +1,25 @@
 #
-# Runs the QA suite and publishes its HTML report to the gh-pages branch,
-# which GitHub Pages serves as a static site.
+# Runs the QA suite across four runners at once and publishes one HTML report
+# to the gh-pages branch, which GitHub Pages serves as a static site.
 #
-# The branch holds one commit and no history. It used to keep every report
-# ever published, each carrying Playwright's traces and videos - thirty-two of
-# them had taken this repository to eight hundred megabytes, of zips nobody
-# was going to open again. Nobody diffs yesterday's report against today's, so
-# there is nothing to keep: it is force-pushed as an orphan every time, and the
-# traces go to an artifact that expires.
+# SHARDED, AND WHY
 #
-# Runs on a schedule so the published report never goes stale even with no
-# deploy to react to, on push to main so a change to the suite itself is
-# reflected, and on workflow_dispatch for an on-demand run (optionally
-# against a different site via the base_url input).
+# The suite is CPU-bound: video encodes, QR decodes, image stacking, across
+# two browser projects. On one four-vCPU runner it took 15 to 19 minutes, and
+# moving from two workers to four barely moved it - freed worker time was
+# reabsorbed by the same four cores. The lever that works is more cores, and
+# on hosted runners more cores means more runners: four shards, each taking a
+# quarter of the tests, each writing a blob report, stitched back into one
+# HTML report by `merge-reports` in the job that publishes.
 #
-# The job still fails (red X in the Actions tab) when the suite fails, but
-# only after publishing - a failing report is more useful on the page than
-# no page at all.
+# The gh-pages branch holds one commit and no history - it used to keep every
+# report ever published, which took this repository to eight hundred
+# megabytes. It is force-pushed as an orphan every time, the report is
+# published without its trace and video attachments, and the traces go to
+# per-shard artifacts that expire instead.
+#
+# The workflow still fails (red X) when the suite fails, but only after
+# publishing - a failing report is more useful on the page than no page.
 #
 
 name: Report
@@ -42,16 +45,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  report:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      # One shard failing must not cancel the other three: the report is only
+      # worth publishing if it describes the whole suite.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
       # lib/tools.ts, lib/csp.ts and hasFilePicker() all read etoolbox's own
-      # source (the tool list, its CSP allowlist, each tool's body.html) at
-      # test time rather than duplicating it here - see lib/site.ts. Locally
-      # that's a sibling checkout; on a runner nothing is there unless this
-      # checks it out too and ETOOLBOX_DIR is pointed at it explicitly.
+      # source at test time rather than duplicating it here - see lib/site.ts.
       - name: Check out etoolbox (source of truth for tool/CSP metadata)
         uses: actions/checkout@v4
         with:
@@ -67,13 +73,63 @@ jobs:
 
       - run: npx playwright install --with-deps chromium
 
-      - name: Run the suite
-        id: tests
-        continue-on-error: true
+      # blob rather than html: four quarter-reports are stitched into one page
+      # by the report job below. github stays so annotations still land on the
+      # commit.
+      - name: Run this shard
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://abox.tools/' }}
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
-        run: npx playwright test
+        run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=blob,github
+
+      # The traces this shard kept for its failures. Out of git and expiring,
+      # for the reasons in the header.
+      - name: Keep the traces where they expire
+        if: ${{ !cancelled() && failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: traces-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Uploaded whether the shard passed or failed: the merged report has to
+      # describe the failures, not omit the shards that had them.
+      - name: Hand this shard's results to the merge
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+          retention-days: 3
+
+  report:
+    needs: test
+    # Runs whether the shards passed or not - see the header - but not if the
+    # whole workflow was cancelled.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # merge-reports lives in @playwright/test; no browser is needed here,
+      # so none is installed.
+      - run: npm ci
+
+      - name: Collect the shard reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-report-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Stitch them into one report
+        run: npx playwright merge-reports --reporter html ./all-blob-reports
 
       - name: Publish the report to gh-pages
         env:
@@ -118,17 +174,9 @@ jobs:
       # The traces the report no longer carries. Fourteen days rather than for
       # ever, and out of git entirely: a failure worth investigating is worth
       # investigating this week.
-      - name: Keep the traces where they expire
-        if: steps.tests.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: traces
-          path: test-results/
-          retention-days: 14
-          if-no-files-found: ignore
 
-      - name: Fail the job if the suite failed
-        if: steps.tests.outcome == 'failure'
+      - name: Fail the workflow if the suite failed
+        if: ${{ needs.test.result != 'success' }}
         run: |
           echo "::error::the QA suite failed - see the published report for details."
           exit 1
