@@ -39,11 +39,34 @@ test.describe('404 page', () => {
       els.map((el) => el.getAttribute('href') ?? ''),
     );
 
+    // Fragments are exempt, and are not an oversight in the rule. What this
+    // test is about is that a 404 is served at whatever depth the visitor
+    // guessed, so a link written as a relative path resolves somewhere
+    // different on every wrong URL. '#main' has no path to resolve: it points
+    // into the page it is already on, wherever that is. The site's skip link
+    // is exactly that, and it arrived as an accessibility improvement - this
+    // rule flagging it was this test being too broad, not the link being
+    // wrong.
     const notRootAbsolute = hrefs.filter(
-      (href) => href && !href.startsWith('/') && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('mailto:'),
+      (href) => href && !href.startsWith('/') && !href.startsWith('#') && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('mailto:'),
     );
 
     expect(notRootAbsolute, `relative link(s) found: ${notRootAbsolute.join(', ')}`).toEqual([]);
+
+    // Having exempted fragments from the rule above, check the thing that can
+    // actually be wrong with one. A skip link is the first stop on the page
+    // for a keyboard user and it is invisible to everyone else, so a broken
+    // one is both serious and easy not to notice.
+    const danglingFragments = await page.locator('a[href^="#"]').evaluateAll((els) =>
+      els
+        .map((el) => el.getAttribute('href') ?? '')
+        .filter((href) => href.length > 1 && !document.getElementById(href.slice(1))),
+    );
+
+    expect(
+      danglingFragments,
+      `link(s) pointing at an element that does not exist: ${danglingFragments.join(', ')}`,
+    ).toEqual([]);
   });
 
   test('lists every shipped tool, same as the hub', async ({ page }) => {
