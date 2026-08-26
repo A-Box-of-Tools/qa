@@ -38,6 +38,8 @@ on:
 
 permissions:
   contents: write
+  # For the failure issues opened and closed after the report is published.
+  issues: write
 
 # A second run landing mid-publish should not race it.
 concurrency:
@@ -128,8 +130,13 @@ jobs:
           path: all-blob-reports
           merge-multiple: true
 
+      # Two reporters from the one merge: the HTML page people read, and a
+      # JSON copy of the same results for the triage step to act on. The JSON
+      # never leaves the runner.
       - name: Stitch them into one report
-        run: npx playwright merge-reports --reporter html ./all-blob-reports
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: merged.json
+        run: npx playwright merge-reports --reporter html,json ./all-blob-reports
 
       - name: Publish the report to gh-pages
         env:
@@ -174,6 +181,29 @@ jobs:
       # The traces the report no longer carries. Fourteen days rather than for
       # ever, and out of git entirely: a failure worth investigating is worth
       # investigating this week.
+
+      # After publishing, deliberately: the report is the thing people were
+      # promised, and a GitHub API problem here must not cost them the page.
+      #
+      # Only for runs against production from main. A dispatch aimed at a
+      # staging URL, or a run from a branch, is somebody trying something -
+      # and filing issues about a site nobody has deployed yet would teach
+      # everyone to ignore the label.
+      - name: Open and close issues for what failed
+        if: >-
+          ${{ !cancelled()
+              && github.ref == 'refs/heads/main'
+              && (github.event.inputs.base_url == ''
+                  || github.event.inputs.base_url == 'https://abox.tools/') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          QA_REPORT_URL: https://a-box-of-tools.github.io/qa/
+          # Closing an issue is a claim that a test was watched passing. If a
+          # shard was cancelled the report is partial, absence proves nothing,
+          # and the script is told to open issues but never close them.
+          QA_CAN_CLOSE: ${{ (needs.test.result == 'success' || needs.test.result == 'failure') && 'yes' || 'no' }}
+        run: node scripts/triage-failures.mjs merged.json
 
       - name: Fail the workflow if the suite failed
         if: ${{ needs.test.result != 'success' }}
