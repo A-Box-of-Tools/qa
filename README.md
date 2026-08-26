@@ -81,8 +81,9 @@ It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatc
   a security audit: it fails if a page contacts a host the site hasn't
   already declared, which is exactly the class of drift `etoolbox`'s own
   README warns about ("a tool missing an origin showed a blank ad slot").
-- File-upload/processing flows (drop a real image, get a real result) aren't
-  covered here yet — that logic already has direct unit tests in
-  `etoolbox/tests/js`. Add fixtures under a new `fixtures/` folder and
-  per-tool specs here if you want true end-to-end coverage of the pipelines
-  themselves.
+- Every tool also has a functional spec under `tests/tools/` — real files in,
+  the downloaded result decoded and measured against an independent
+  implementation (`lib/` carries its own PNG, GIF, PDF, JPEG/EXIF, MP4, WAV,
+  ICO, DICOM and HEIC readers and writers for exactly that reason). The
+  coverage guard in `tests/coverage.spec.ts` fails, and a workflow opens an
+  issue, the moment a tool ships without one.
