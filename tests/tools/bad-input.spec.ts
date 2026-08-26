@@ -177,9 +177,22 @@ async function offer(page: Page, subject: Subject, bytes: Buffer): Promise<{
     name: subject.name, mimeType: subject.mime, buffer: bytes,
   });
 
-  // No event to wait for when the answer may be "nothing happened", so this
-  // gives the page a fair chance to read the file and say its piece.
-  await page.waitForTimeout(3500);
+  // There is no single event to wait for when the answer may be "nothing
+  // happened" - but there is no need to wait the full window when something
+  // does happen. Most files are answered within a second, one way or the
+  // other; the fixed 3.5-second sleep this used to be spent four minutes a
+  // run mostly waiting behind questions that were already answered. The full
+  // window is only served when the page really does stay silent, which is
+  // itself the finding.
+  const spoke = page.locator(subject.errors).waitFor({ state: 'visible', timeout: 3500 })
+    .then(() => true, () => false);
+  const produced_ = subject.output
+    ? page.locator(subject.output).waitFor({ state: 'visible', timeout: 3500 })
+      .then(() => true, () => false)
+    : new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 3500); });
+  await Promise.race([spoke, produced_]);
+  // A beat for the message text to finish arriving after the element shows.
+  await page.waitForTimeout(250);
 
   const said = ((await page.locator(subject.errors).textContent()) ?? '').trim();
   const visible = await page.locator(subject.errors).isVisible().catch(() => false);

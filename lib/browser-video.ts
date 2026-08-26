@@ -19,6 +19,23 @@ export interface VideoFixtureOptions {
 }
 
 /**
+ * Recordings already made by this worker, by their settings.
+ *
+ * A recording is wall-clock: a three-second clip costs three seconds however
+ * fast the machine is, and it is the one cost in this suite that parallelism
+ * cannot touch. Most tests only need "a clip", not "a freshly recorded clip",
+ * so identical settings return the same bytes rather than paying the three
+ * seconds again. Each Playwright worker is its own process, so the cache is
+ * per worker and needs no locking.
+ *
+ * A test that truly needs two distinct recordings has only to vary the
+ * settings - and none currently does: the tests that compare two files
+ * compare a source against what a tool made from it, which caching serves
+ * better, not worse, since the source is bit-for-bit the same both times.
+ */
+const recordings = new Map<string, { bytes: Buffer; mimeType: string }>();
+
+/**
  * A real video, recorded by the browser under test from a canvas animation.
  *
  * Encoding H.264 in Node would mean vendoring an encoder; the browser already
@@ -47,6 +64,10 @@ export async function recordVideo(
     fps: options.fps ?? 20,
     prefer: options.prefer ?? 'mp4',
   };
+
+  const key = JSON.stringify(settings);
+  const cached = recordings.get(key);
+  if (cached) return cached;
 
   const result = await page.evaluate(async (opts) => {
     const canvas = document.createElement('canvas');
@@ -123,5 +144,7 @@ export async function recordVideo(
     return { base64: btoa(binary), mimeType };
   }, settings);
 
-  return { bytes: Buffer.from(result.base64, 'base64'), mimeType: result.mimeType };
+  const made = { bytes: Buffer.from(result.base64, 'base64'), mimeType: result.mimeType };
+  recordings.set(key, made);
+  return made;
 }

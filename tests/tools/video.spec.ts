@@ -367,8 +367,10 @@ test.describe('the video tools: the promise', () => {
       traffic.push(`${req.method()} ${req.url()} ${(req.postData() ?? '').slice(0, 8000)}`);
     });
 
+    // The standard fixture rather than a shorter one, so this recording is
+    // the cached clip every other test in the file already made.
     const { bytes } = await recordVideo(page, {
-      width: WIDTH, height: HEIGHT, seconds: 2, fps: 20,
+      width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
     });
     await page.locator('#file-input').setInputFiles({
       name: 'private.mp4', mimeType: 'video/mp4', buffer: bytes,

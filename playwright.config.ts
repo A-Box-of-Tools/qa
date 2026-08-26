@@ -7,7 +7,11 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : undefined,
+  // Four in CI because that is what a public-repo ubuntu runner actually has
+  // - four vCPUs. The old cap of two was sized from watching QR tests fail
+  // under eight workers on a local machine, which was the wrong evidence to
+  // size a different machine by.
+  workers: process.env.CI ? 4 : undefined,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
 
   use: {

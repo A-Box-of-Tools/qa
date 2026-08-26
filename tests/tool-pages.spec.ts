@@ -53,7 +53,19 @@ for (const slug of discoverTools()) {
       expect(errors, errors.join('\n')).toEqual([]);
       await expect(page.locator('#boot-warning')).toBeHidden();
     });
+  });
+}
 
+/**
+ * The CSP guard lives outside the describes above on purpose: those share a
+ * beforeEach that navigates, and this test needs its listeners attached
+ * before the page loads - which used to mean navigating twice, once for the
+ * beforeEach and once more for the capture. Sixty-six extra page loads per
+ * run, each waiting out the ad scripts, for a first navigation whose traffic
+ * nobody was listening to.
+ */
+for (const slug of discoverTools()) {
+  test.describe(`tool: ${slug}`, () => {
     test('contacts no host outside this site\'s declared CSP allowlist', async ({ page }) => {
       const allowed = allowedExternalHosts();
       const ownHost = new URL(BASE_URL).host;
@@ -79,7 +91,7 @@ for (const slug of discoverTools()) {
         unexpected.add(host);
       });
 
-      await page.reload();
+      await page.goto(`/${slug}/`);
       await page.waitForLoadState('networkidle');
 
       expect(
