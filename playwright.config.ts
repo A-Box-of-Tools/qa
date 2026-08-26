@@ -32,6 +32,12 @@ export default defineConfig({
     {
       name: 'Mobile Chrome',
       use: { ...devices['Pixel 5'] },
+      // tests/locales reads the checkout and makes HTTP requests; there is no
+      // browser in it and nothing it asserts can vary by viewport. Running it
+      // under this project too would add five hundred and eighty-nine skipped
+      // entries to the published report to prove the filesystem is the same
+      // shape on a narrower screen.
+      testIgnore: /tests[\/]locales[\/]/,
     },
   ],
 
