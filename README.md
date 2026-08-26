@@ -18,7 +18,7 @@ rendering the generated pages, at both form factors, clicking through them.
 | [`tests/hub.spec.ts`](tests/hub.spec.ts) | The front page: every tool listed once, links resolve, language switcher, footer, navigation, no console errors |
 | [`tests/tool-pages.spec.ts`](tests/tool-pages.spec.ts) | Every tool page (discovered from the checkout, not hand-listed): frame renders, drop zone is wired up, privacy panel toggles, no JS errors, and — specific to this site's no-upload promise — no request to a host outside `config/site.toml`'s own CSP allowlist |
 | [`tests/responsive.spec.ts`](tests/responsive.spec.ts) | No horizontal overflow, tap targets, header layout — run once per viewport since it's the same spec under both projects |
-| [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` scan (serious/critical only) on the hub and a sample of tool pages |
+| [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` (serious/critical) on every page — all tools, hub, RTL hub, guides, legal, roadmap, 404 — plus loaded/result/error states, dark mode, and Tab-reachability of every file picker |
 
 `lib/tools.ts` and `lib/csp.ts` read the tool list and the CSP allowlist
 straight out of the `etoolbox` checkout at test time, the same way its own
