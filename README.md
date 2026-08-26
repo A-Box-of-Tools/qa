@@ -73,7 +73,15 @@ already running needs nothing but Node.
 
 **https://a-box-of-tools.github.io/qa/**
 
-It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). The job still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
+It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). The suite is split across four runners and stitched back into one report by `merge-reports`. The workflow still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
+
+### Failure issues
+
+[`scripts/triage-failures.mjs`](scripts/triage-failures.mjs) turns that run's results into GitHub issues: one per failing test, listing which projects fail it, and **it closes the issue itself once the test passes again**. Issues are edited rather than duplicated while a failure persists, so a fortnight-long failure does not send a fortnight of mail, and the body says how long it has been broken.
+
+It is careful in two directions. It never closes an issue for a test it did not watch pass - a partial run proves nothing, so nothing is closed after one. And past a dozen simultaneous failures it files a single issue instead of a dozen, because that many at once is usually one cause (the site down, a half-finished deploy) and a bot people mute is worse than no bot.
+
+Only runs from `main` against production file issues; a dispatch at some other `base_url` never does.
 
 ## Notes
 
