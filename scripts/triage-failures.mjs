@@ -329,16 +329,34 @@ function main() {
 
     if (allPrints.has(issue.print)) continue; // still failing; handled above
 
-    // Not in the report at all. If the file it belonged to ran anyway, the
-    // test is gone rather than unobserved - a rename or a deletion - and the
-    // issue should not outlive it.
+    // Not in the report at all. Absence is normally not evidence - a partial
+    // run looks exactly like this - so there are only two cases where it is
+    // safe to conclude the test is genuinely gone rather than unobserved.
     const file = (issue.body.match(/\*\*`([^`]+)`\*\*/) ?? [])[1];
-    if (CAN_CLOSE && file && filesSeen.has(file)) {
+
+    // One: the file it belonged to ran without it. A rename or a deletion
+    // within a spec that is otherwise alive.
+    const testGone = file && filesSeen.has(file);
+
+    // Two: the spec file is not in the repository any more. This checkout is
+    // the same commit the report was produced from, so a path that does not
+    // exist here cannot have been skipped by a dead shard - there is nothing
+    // left to run. Without this, deleting a spec strands every issue it ever
+    // opened: they cannot fail again, and nothing can ever observe them
+    // passing. Seven of them were stranded exactly that way the first time a
+    // tool was split into three, which is how this case got written.
+    const specGone = file && !filesSeen.has(file) && !fs.existsSync(file);
+
+    if (CAN_CLOSE && (testGone || specGone)) {
       mutate(['issue', 'close', String(issue.number), '--comment',
-        'The test this was about no longer exists under that name — renamed or'
-        + ' removed — though its spec file still runs. Closed automatically;'
-        + ' reopen it if the rename hid a real problem.'],
-        `closed #${issue.number} (test no longer exists)`);
+        specGone
+          ? `The spec this was about (\`${file}\`) is no longer in the repository,`
+            + ' so this cannot fail again. Closed automatically; if the tool it'
+            + ' covered still ships, the coverage guard will say so separately.'
+          : 'The test this was about no longer exists under that name — renamed or'
+            + ' removed — though its spec file still runs. Closed automatically;'
+            + ' reopen it if the rename hid a real problem.'],
+        `closed #${issue.number} (${specGone ? 'spec removed' : 'test no longer exists'})`);
     } else {
       console.log(`  #${issue.number} was not in this report at all - left open`);
     }
