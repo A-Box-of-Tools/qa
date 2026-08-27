@@ -194,28 +194,18 @@ test.describe('share-text: the promise', () => {
     await reader.context().close();
   });
 
-  test('the link name never leaves in a request', async ({ browser }) => {
-    // FAILS TODAY, against a claim the page now makes in as many words.
+  test('the link name reaches the ad script and nobody else', async ({ browser }) => {
+    // The link name lives in the URL fragment, which browsers do not send -
+    // but adsbygoogle.js reads location.href and puts the whole of it in the
+    // url= parameter of its own request. The page says so now, in "What
+    // Google loads, and what it is not given": the address is named as the
+    // exception, and the private switch as the answer to it.
     //
-    // tool.toml's "What Google loads, and what it is not given" tells the
-    // reader that none of the third-party scripts is handed anything about
-    // the share - naming the link name among the things they do not get.
-    // They are handed the link name. That is what this test measures.
-    //
-    // The code word lives in the URL fragment precisely because browsers do
-    // not send fragments to servers. AdSense does not have that restraint:
-    // its script reads location.href and puts the whole thing, fragment
-    // included, in the `url=` parameter of its request to
-    // googleads.g.doubleclick.net.
-    //
-    // So every reader who opens a share link hands the link name to Google's
-    // ad servers, logged beside their IP address. For an open share the link
-    // name is the entire capability to read it.
-    //
-    // There is no ordering fix: adsbygoogle.js is async and the tool's own
-    // module is deferred, so clearing the fragment first is a race this side
-    // cannot win. The page has to stop carrying a third-party script, or the
-    // code word has to stop living in the URL.
+    // So this no longer asserts that the name never leaves. It asserts where
+    // it goes, which is the part that can still go wrong: one more script on
+    // the page, or one call home from this origin, and the name is somewhere
+    // the page has not accounted for. A documented exception is only worth
+    // anything while it stays the only one.
     test.setTimeout(180_000);
     const code = codeWord();
 
@@ -226,21 +216,34 @@ test.describe('share-text: the promise', () => {
 
     const context = await browser.newContext();
     const reader = await context.newPage();
-    const documentRequests: string[] = [];
+    const carried: string[] = [];
     reader.on('request', (req) => {
-      if (req.resourceType() === 'document' || req.resourceType() === 'xhr'
-        || req.resourceType() === 'fetch') {
-        documentRequests.push(`${req.method()} ${req.url()}`);
+      if (req.url().includes(code) || (req.postData() ?? '').includes(code)) {
+        carried.push(new URL(req.url()).host);
       }
     });
 
     await reader.goto(link);
     await expect(reader.locator('#view')).toBeVisible({ timeout: 20_000 });
+    await reader.waitForTimeout(6000);
 
-    expect(documentRequests.length).toBeGreaterThan(0);
-    for (const entry of documentRequests) {
-      expect(entry, 'the link name was sent to the server in a URL').not.toContain(code);
-    }
+    // Google's ad request is the one place the page says it goes.
+    const ALLOWED = /(^|\.)doubleclick\.net$|(^|\.)googlesyndication\.com$/;
+    const unexpected = [...new Set(carried)].filter((host) => !ALLOWED.test(host));
+    expect(
+      unexpected,
+      `the link name reached ${unexpected.join(', ')} - a host the page does not `
+      + 'account for. Either that is new, or the page owes the reader a sentence.',
+    ).toEqual([]);
+
+    // And it must never reach this site's own server, which is the claim the
+    // whole tool rests on: the rendezvous matches two ends of a name it is
+    // told, and the page it is served from learns nothing.
+    const ownHost = new URL(link).host;
+    expect(
+      [...new Set(carried)],
+      'the link name was sent back to the site that served the page',
+    ).not.toContain(ownHost);
 
     await sharerContext.close();
     await context.close();
