@@ -195,7 +195,12 @@ test.describe('share-text: the promise', () => {
   });
 
   test('the link name never leaves in a request', async ({ browser }) => {
-    // FAILS TODAY, and this one is not a wording problem.
+    // FAILS TODAY, against a claim the page now makes in as many words.
+    //
+    // tool.toml's "What Google loads, and what it is not given" tells the
+    // reader that none of the third-party scripts is handed anything about
+    // the share - naming the link name among the things they do not get.
+    // They are handed the link name. That is what this test measures.
     //
     // The code word lives in the URL fragment precisely because browsers do
     // not send fragments to servers. AdSense does not have that restraint:

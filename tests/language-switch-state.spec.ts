@@ -9,13 +9,18 @@ import { HEIC_FIXTURE } from '../lib/heic';
 import fs from 'node:fs';
 
 /**
- * Changing language in the middle of a job should not throw the job away.
+ * Changing language in the middle of a job must not throw the job away.
  *
  * Somebody drops a photo into the resizer, sees the page is in the wrong
- * language, and switches. Today that costs them the photo: the switcher is a
- * plain link to a different URL, the page reloads from nothing, and every
- * tool starts again at its empty state. The work was never anywhere but that
- * one document, so navigating away is the same as closing it.
+ * language, and switches. That used to cost them the photo: the switcher is a
+ * plain link to a different URL, the page reloaded from nothing, and every
+ * tool started again at its empty state.
+ *
+ * These tests were written while that was still true, and were marked as
+ * expected failures - the specification of what the switcher should do rather
+ * than a report of what it did. shared/lang-keep.js has since made them pass,
+ * so the marking is gone and they are now what they look like: a guard on
+ * behaviour that exists.
  *
  * WHAT THESE TESTS ASSERT, AND WHY IT IS NOT "the file input still has files"
  *
@@ -139,21 +144,6 @@ test.describe('switching language keeps the work', () => {
     test(`${slug} still has the file afterwards`, async ({ page }) => {
       test.setTimeout(120_000);
 
-      // Expected to fail, today, everywhere: nothing on the site carries tool
-      // state across a navigation, and the switcher is a navigation. All
-      // twenty-five tools that can be fed a fixture lose the file; none
-      // preserves it.
-      //
-      // Marked rather than deleted because the tests are the specification of
-      // what the switcher should do, and because Playwright reports an
-      // expected failure that starts passing as a failure of its own - so the
-      // day somebody implements this, these say so instead of sitting green
-      // and unread. Delete this line then.
-      //
-      // shared/handoff.js already carries a file between two pages through
-      // IndexedDB, which is the machinery this would be built on rather than
-      // a thing that would need inventing.
-      test.fail();
 
       await page.goto(`/${slug}/`);
 
@@ -178,7 +168,12 @@ test.describe('switching language keeps the work', () => {
       // file produced was a complaint, this tool rejected the fixture and the
       // test has nothing to say about it - better to skip loudly than to
       // assert that an error message should survive a language change.
-      const opened = appeared.filter((id) => !/error|invalid|fail/i.test(id));
+      // Errors are not state worth preserving, and neither is a progress bar:
+      // both are things the page says while something is happening, not
+      // things the visitor made. split-gif was still drawing its frames when
+      // the switch happened, and demanding its progress bar survive would be
+      // demanding the new page still be busy with work the old one finished.
+      const opened = appeared.filter((id) => !/error|invalid|fail|progress|spinner|working|busy/i.test(id));
       test.skip(
         opened.length === 0,
         `/${slug}/ did not accept the shared fixture (it showed ${appeared.join(', ') || 'nothing'})`,
@@ -186,11 +181,19 @@ test.describe('switching language keeps the work', () => {
 
       await switchLanguage(page);
 
-      // Give the new page the same chance to restore itself that the first
-      // one had to load the file.
-      await page.waitForTimeout(3000);
-      const after = await visible(page);
+      // Polled rather than sampled once. Restoring the work means reading it
+      // back and re-running whatever the tool does with it, which takes a
+      // different length of time on every tool - a single fixed pause tests
+      // whichever ones happen to be quicker than it.
+      await expect
+        .poll(async () => {
+          const now = await visible(page);
+          return opened.filter((id) => !now.includes(id)).length;
+        }, { timeout: 20_000 })
+        .toBe(0)
+        .catch(() => { /* the precise list is reported below */ });
 
+      const after = await visible(page);
       const lost = opened.filter((id) => !after.includes(id));
       expect(
         lost,
