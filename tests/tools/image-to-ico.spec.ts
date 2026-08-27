@@ -75,9 +75,22 @@ async function makeIco(page: Page): Promise<Buffer> {
   return fs.readFileSync(path);
 }
 
-/** Tick exactly these sizes. */
+/**
+ * Tick exactly these sizes.
+ *
+ * The grid has to be asked for first. Under a named preset the ticks are not
+ * decisions - they are the preset's own answer drawn as controls - so the
+ * page stopped showing them there and shows them under "choose the sizes
+ * yourself", which is the one place they are a question. Before that change
+ * this helper could tick a box on a page that was already open; now it says
+ * what it wants first, the same way a visitor would.
+ */
 async function chooseSizes(page: Page, wanted: number[]): Promise<void> {
+  const custom = page.locator('input[name="preset"][value="custom"]');
+  await custom.check();
+
   const boxes = page.locator('#size-grid input[type="checkbox"]');
+  await expect(boxes.first()).toBeVisible({ timeout: 20_000 });
   const count = await boxes.count();
   for (let i = 0; i < count; i += 1) {
     const box = boxes.nth(i);

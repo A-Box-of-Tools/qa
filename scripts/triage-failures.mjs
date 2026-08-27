@@ -307,10 +307,19 @@ function main() {
 
   for (const issue of open) {
     if (!issue.print || issue.print === 'broad') {
-      if (issue.print === 'broad' && failing.length === 0 && CAN_CLOSE) {
+      // The broad issue exists only because there were too many failures to
+      // file one by one. It should go the moment that stops being true - not
+      // only when the suite is green - or it sits alongside the individual
+      // issues describing a state the suite is no longer in, which is how it
+      // outlived a run that had four failures and four issues to match.
+      if (issue.print === 'broad' && failing.length <= TOO_MANY && CAN_CLOSE) {
         mutate(['issue', 'close', String(issue.number), '--comment',
-          'The suite is green again. Closed automatically.'],
-          `closed #${issue.number} (broad failure resolved)`);
+          failing.length === 0
+            ? 'The suite is green again. Closed automatically.'
+            : `Down to ${failing.length} failing test(s), which is few enough to file`
+              + ' one by one - so they have their own issues now and this one is'
+              + ' describing a state the suite is no longer in. Closed automatically.'],
+          `closed #${issue.number} (${failing.length} failures; below the threshold)`);
       }
       continue;
     }
