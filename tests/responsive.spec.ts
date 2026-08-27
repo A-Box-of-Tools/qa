@@ -46,3 +46,51 @@ test.describe('responsive layout', () => {
     expect(overlapsPledge).toBe(false);
   });
 });
+
+/**
+ * The language switcher's menu, opened.
+ *
+ * The overflow test above measures the document with everything closed, which
+ * is the state a page is in when nobody is using it. A menu that is absolutely
+ * positioned does not widen the document when it hangs off the side - it is
+ * simply clipped - so the check above cannot see this and did not: the menu
+ * sat forty-two pixels past the left edge of a 393-pixel phone, with every
+ * language name cut in half, and the suite called the page green.
+ *
+ * The people this fails are exactly the people who need it. Somebody reaching
+ * for the language switcher is telling you they cannot read the page they are
+ * on, and what they got was a column of half-words.
+ *
+ * Measured rather than eyeballed, and measured on a tool page as well as the
+ * hub, because the switcher lives in the shared frame and a rule that fixes
+ * one is meant to fix all of them.
+ */
+test.describe('the language menu stays on screen', () => {
+  for (const path of ['/', '/redact-image/', '/resize-image/']) {
+    test(`opened, it fits within the viewport: ${path}`, async ({ page }) => {
+      await page.goto(path);
+      await page.locator('details.lang-pick summary').first().click();
+
+      const menu = page.locator('.lang-pick-menu').first();
+      await expect(menu).toBeVisible();
+
+      const box = await menu.boundingBox();
+      const width = page.viewportSize()?.width ?? 0;
+      expect(box, 'the menu has no box to measure').not.toBeNull();
+
+      // Half a pixel of slack for subpixel layout, and no more: this is about
+      // whole words being unreadable, not hairlines.
+      expect(
+        box!.x,
+        `the menu starts ${Math.round(box!.x)}px from the left edge, so its first `
+        + `${Math.round(-box!.x)}px are off screen and the language names are cut off`,
+      ).toBeGreaterThanOrEqual(-0.5);
+
+      expect(
+        box!.x + box!.width,
+        `the menu ends ${Math.round(box!.x + box!.width - width)}px past the right edge `
+        + `of a ${width}px viewport`,
+      ).toBeLessThanOrEqual(width + 0.5);
+    });
+  }
+});
