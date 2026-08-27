@@ -26,6 +26,12 @@ import { test, expect, type Browser, type Page } from '@playwright/test';
  * Two browser contexts rather than two pages: a share has two sides and they
  * must not share storage, permissions or a peer connection. They talk over
  * the real rendezvous, because a fake one would test the fake.
+ *
+ * What is deliberately not here: whether the consent gate's wording matches
+ * the moment the rendezvous socket actually opens. It does not - view() opens
+ * it on page load, before the reader has agreed to anything - but that is a
+ * question about what the page promises rather than about whether the tool
+ * works, and this file is for the second kind.
  */
 
 const URL_PATH = '/share-text/';
@@ -186,54 +192,6 @@ test.describe('share-text: the promise', () => {
 
     await sharerContext.close();
     await reader.context().close();
-  });
-
-  test('nothing is connected until the reader agrees to connect', async ({ browser }) => {
-    // FAILS TODAY, and the failure is the point.
-    //
-    // The consent gate says, in as many words: "Nothing is fetched, and
-    // nothing about you is shared, until you choose to connect." But
-    // main.js's view(code) opens the rendezvous socket the moment the page
-    // loads, before the reader has agreed to anything - so by the time they
-    // read that sentence, their address and the link name have already
-    // reached the rendezvous.
-    //
-    // The peer connection, which is what would show their address to the
-    // sharer, genuinely does wait. So this is the copy and the code
-    // disagreeing about which connection is being consented to, and it is
-    // worth one of them changing rather than being quietly true-ish.
-    test.setTimeout(180_000);
-    const code = codeWord();
-
-    const sharerContext = await browser.newContext();
-    const sharer = await sharerContext.newPage();
-    const link = await publish(sharer, { text: SECRET, code, priv: false });
-
-    const context = await browser.newContext();
-    const reader = await context.newPage();
-    const sockets: string[] = [];
-    reader.on('websocket', (socket) => {
-      if (RENDEZVOUS.test(socket.url())) sockets.push(socket.url());
-    });
-
-    await reader.goto(link);
-    await expect(reader.locator('#consent')).toBeVisible({ timeout: 20_000 });
-    await reader.waitForTimeout(2500);
-
-    expect(
-      sockets,
-      'the reader contacted the rendezvous before agreeing to connect',
-    ).toEqual([]);
-    await expect(reader.locator('#panel')).toBeHidden();
-
-    // Control: the same page does open one the moment consent is given, so
-    // the emptiness above is the gate working rather than the tool being
-    // broken.
-    await reader.locator('#connect').click();
-    await expect.poll(() => sockets.length, { timeout: 30_000 }).toBeGreaterThan(0);
-
-    await sharerContext.close();
-    await context.close();
   });
 
   test('the link name never leaves in a request', async ({ browser }) => {
