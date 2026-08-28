@@ -246,3 +246,38 @@ test.describe('stack-images: the promise', () => {
     }
   });
 });
+
+test.describe('stack-images: a browser that cannot do the work', () => {
+  test('says so, and goes on saying so when a file is chosen', async ({ page }) => {
+    // This tool draws every surface on an OffscreenCanvas and has no fallback,
+    // which it says plainly on load where the browser has none. What it then
+    // did, the moment a file was picked, was replace that with "could not be
+    // opened as a picture and was left out" - blaming the file for a browser
+    // that was never going to manage it.
+    //
+    // Skipped where the browser does have it, because there is nothing to say
+    // then. Playwright's WebKit has no OffscreenCanvas at all, so this runs
+    // there; real Safari 16.4 and newer do have it, so a passing Chrome and a
+    // skipping Safari are both correct outcomes on somebody else's machine.
+    test.setTimeout(120_000);
+    await page.goto(URL_PATH);
+
+    const capable = await page.evaluate(() => typeof OffscreenCanvas === 'function');
+    test.skip(capable, 'this browser has OffscreenCanvas; there is no refusal to check');
+
+    const error = page.locator('#error');
+    await expect(error).toContainText(/OffscreenCanvas/);
+
+    await page.locator('#file-input').setInputFiles(VALUES.map((value, index) => ({
+      name: `frame-${index}.png`,
+      mimeType: 'image/png',
+      buffer: frame(value),
+    })));
+    await page.waitForTimeout(4000);
+
+    await expect(
+      error,
+      'the accurate message was replaced by one that blames the file',
+    ).toContainText(/OffscreenCanvas/);
+  });
+});
