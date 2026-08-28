@@ -219,8 +219,22 @@ async function offer(page: Page, subject: Subject, bytes: Buffer): Promise<{
     ? await page.locator(subject.output).evaluate((node) => {
       const el = node as HTMLElement;
       if (el.offsetParent === null) return false;
+      // Result-shaped things only. The first draft fell back to the panel's
+      // own text, and split-gif's frames card carries a heading and three
+      // buttons of its own - "3 The frames, Select all, Select none, Start
+      // again" - so an empty card read as a full one. It is meant to be
+      // visible before a file arrives, the way compress-pdf's inventory is,
+      // so its presence says nothing at all; what says something is whether
+      // there is a frame in it.
       if (el.querySelector('li, tr, img, canvas, a[download]')) return true;
-      return (el.textContent ?? '').trim().length > 0;
+      // And the tools whose result is text rather than rows: a digest, a data
+      // URI, a formatted document. Read from the elements that carry content
+      // rather than from the panel, so a label never counts as an answer.
+      for (const holder of Array.from(el.querySelectorAll('textarea, output, pre, code'))) {
+        const value = (holder as HTMLTextAreaElement).value ?? holder.textContent ?? '';
+        if (value.trim().length > 0) return true;
+      }
+      return false;
     }).catch(() => false)
     : false;
 
