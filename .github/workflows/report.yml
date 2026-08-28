@@ -73,7 +73,13 @@ jobs:
 
       - run: npm ci
 
-      - run: npx playwright install --with-deps chromium
+      # Both engines, because the suite runs four projects: two Chromium and
+      # two WebKit. On iOS every browser is WebKit, Chrome included, so the
+      # second one is not a luxury - it is what an iPhone visitor actually
+      # gets. Installing only chromium left every Safari test failing at
+      # launch, which is seventeen hundred failures that say nothing about
+      # the site.
+      - run: npx playwright install --with-deps chromium webkit
 
       # blob rather than html: four quarter-reports are stitched into one page
       # by the report job below. github stays so annotations still land on the
