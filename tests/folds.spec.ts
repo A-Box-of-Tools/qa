@@ -52,15 +52,20 @@ async function unansweredByKeyboard(page: Page): Promise<string[]> {
     // elsewhere, which is luck rather than a difference worth encoding.
     (document.activeElement as HTMLElement | null)?.blur();
 
-    // The element and the mark it draws. The site puts its hover feedback on
-    // ::after - the mark goes from grey to blue and the summary's own colour
-    // never moves - so a reading that looked only at the element itself
-    // reported every fold on the site as answering nothing under the pointer.
-    const read = (el: Element) => [undefined, '::before', '::after']
+    // The whole summary: itself, the marks it draws, and everything inside
+    // it. Feedback lands in all three places on this site - ::after for the
+    // step notes, a child .pledge-caret for the pledge, a child h2 for the
+    // how-to heading - and a reading narrower than the subtree reports a fold
+    // as silent when it is only answering somewhere else. This is the third
+    // time this function was too narrow, which is the argument for reading
+    // everything rather than guessing where the designer put it.
+    const readOne = (el: Element) => [undefined, '::before', '::after']
       .map((part) => {
         const style = getComputedStyle(el, part);
         return props.map((name) => style[name as keyof CSSStyleDeclaration] as string).join('|');
       }).join('||');
+    const read = (el: Element) => [el, ...Array.from(el.querySelectorAll('*'))]
+      .map(readOne).join('###');
 
     const missing: string[] = [];
     for (const el of Array.from(document.querySelectorAll('summary'))) {
@@ -128,11 +133,15 @@ test.describe('folds answer the pointer too', () => {
         // Same exemption as above: an inert card's fold answers nothing,
         // correctly, because nothing can reach it yet.
         if (await fold.evaluate((el) => !!el.closest('[inert]'))) continue;
-        const rest = await fold.evaluate((el, props) => [undefined, '::before', '::after']
-          .map((part) => {
-            const st = getComputedStyle(el, part);
-            return props.map((n) => st[n as keyof CSSStyleDeclaration] as string).join('|');
-          }).join('||'), NOTICEABLE);
+        const subtree = (el: Element, props: string[]) => {
+          const one = (node: Element) => [undefined, '::before', '::after']
+            .map((part) => {
+              const st = getComputedStyle(node, part as string);
+              return props.map((n) => st[n as keyof CSSStyleDeclaration] as string).join('|');
+            }).join('||');
+          return [el, ...Array.from(el.querySelectorAll('*'))].map(one).join('###');
+        };
+        const rest = await fold.evaluate(subtree, NOTICEABLE);
 
         await fold.hover();
         // These marks fade rather than snap - the shared rule transitions
@@ -143,11 +152,7 @@ test.describe('folds answer the pointer too', () => {
         // the pointer arrives is still the resting one; sampling there
         // reported every fold on the site as answering nothing.
         await page.waitForTimeout(400);
-        const hovered = await fold.evaluate((el, props) => [undefined, '::before', '::after']
-          .map((part) => {
-            const st = getComputedStyle(el, part);
-            return props.map((n) => st[n as keyof CSSStyleDeclaration] as string).join('|');
-          }).join('||'), NOTICEABLE);
+        const hovered = await fold.evaluate(subtree, NOTICEABLE);
 
         if (rest === hovered) {
           silent.push(((await fold.textContent()) ?? '').trim().slice(0, 40));
