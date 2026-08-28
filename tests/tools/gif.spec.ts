@@ -336,3 +336,40 @@ test.describe('gif-analyzer: describing one', () => {
     }
   });
 });
+
+test.describe('split-gif: a file it cannot read', () => {
+  test('leaves the frames card waiting rather than live and empty', async ({ page }) => {
+    // `inert` comes off the last card the moment files are handed over, which
+    // is right for a file the tool can read. For one it cannot, the card sat
+    // there live and empty: Select all, Select none and Start again all
+    // offering to act on no frames, under a line saying the file was not a
+    // GIF at all.
+    test.setTimeout(120_000);
+    const rubbish = Buffer.alloc(4096);
+    for (let i = 0; i < rubbish.length; i += 1) rubbish[i] = (i * 37 + 11) & 0xff;
+
+    await page.goto('/split-gif/');
+    await page.locator('#file-input').setInputFiles({
+      name: 'clip.gif', mimeType: 'image/gif', buffer: rubbish,
+    });
+    await expect(page.locator('#error')).toBeVisible({ timeout: 20_000 });
+    await page.waitForTimeout(2000);
+
+    await expect(
+      page.locator('#frames-card'),
+      'the card came alive over an empty list',
+    ).toHaveAttribute('inert', '');
+  });
+
+  test('and a real GIF still wakes it', async ({ page }) => {
+    // The control. A card that never woke would pass the test above and would
+    // have broken the tool for every file it can read.
+    test.setTimeout(120_000);
+    await page.goto('/split-gif/');
+    await page.locator('#file-input').setInputFiles({
+      name: 'walk.gif', mimeType: 'image/gif', buffer: animationFixture(32, 24, 3).bytes,
+    });
+    await expect(page.locator('#frames li')).toHaveCount(3, { timeout: 30_000 });
+    await expect(page.locator('#frames-card')).not.toHaveAttribute('inert', '');
+  });
+});
