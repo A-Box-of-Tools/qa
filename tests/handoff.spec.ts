@@ -26,7 +26,7 @@ const ROW = 'nav.handoff';
 test.describe('the carry-on row', () => {
   test('is not offered before there is anything to carry', async ({ page }) => {
     test.setTimeout(180_000);
-    await page.goto('/stack-images/');
+    await page.goto('/images-to-pdf/');
 
     await expect(
       page.locator(ROW),
@@ -35,12 +35,12 @@ test.describe('the carry-on row', () => {
 
     // Still nothing to carry with a file merely chosen: the tool has
     // something to work on, not something to hand on.
-    await page.locator('#file-input').setInputFiles([40, 120, 200].map((v, i) => ({
-      name: `frame-${i}.png`,
+    await page.locator('#file-input').setInputFiles([40, 120].map((v, i) => ({
+      name: `page-${i}.png`,
       mimeType: 'image/png',
-      buffer: encodePng(64, 48, () => [v, v, v]),
+      buffer: encodePng(120, 90, () => [v, v, v]),
     })));
-    await expect(page.locator('#frame-list li')).toHaveCount(3, { timeout: 30_000 });
+    await expect(page.locator('#image-list li')).toHaveCount(2, { timeout: 30_000 });
     await expect(
       page.locator(ROW),
       'the offer appeared when files were chosen rather than when one was made',
@@ -50,18 +50,21 @@ test.describe('the carry-on row', () => {
   test('is offered once the tool has made something', async ({ page }) => {
     // The other half. A row that never appears would pass the test above
     // perfectly, and would have quietly removed a feature.
+    // images-to-pdf rather than the stacker, which needs OffscreenCanvas and
+    // therefore cannot make anything at all in WebKit - a tool that cannot
+    // produce a result is no way to ask whether producing one reveals the
+    // row. This one draws no canvases and works in every engine.
     test.setTimeout(240_000);
-    await page.goto('/stack-images/');
-    await page.locator('#file-input').setInputFiles([40, 120, 200].map((v, i) => ({
-      name: `frame-${i}.png`,
+    await page.goto('/images-to-pdf/');
+    await page.locator('#file-input').setInputFiles([40, 120].map((v, i) => ({
+      name: `page-${i}.png`,
       mimeType: 'image/png',
-      buffer: encodePng(64, 48, () => [v, v, v]),
+      buffer: encodePng(120, 90, () => [v, v, v]),
     })));
-    await expect(page.locator('#frame-list li')).toHaveCount(3, { timeout: 30_000 });
+    await expect(page.locator('#image-list li')).toHaveCount(2, { timeout: 30_000 });
 
-    await page.locator('#align').selectOption('none');
-    await expect(page.locator('#run')).toBeEnabled({ timeout: 30_000 });
-    await page.locator('#run').click();
+    await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
+    await page.locator('#export').click();
     await expect(page.locator('#result')).toBeVisible({ timeout: 120_000 });
 
     await expect(
