@@ -215,7 +215,19 @@ test.describe('password-generator: password mode', () => {
 test.describe('password-generator: passphrase mode', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
-    await page.locator('#tab-passphrase').click();
+    // Chosen by its value, not by an id. The two modes were a pair of tab
+    // buttons with ids on them and are now radios in a segmented control -
+    // the same one click to the visitor, six failures at once here, because
+    // every test in this describe goes through this line. A radio named for
+    // what it selects survives that kind of reshaping; #tab-passphrase did
+    // not.
+    // The label, because the radio itself is visually hidden - the segmented
+    // control draws the span beside it and Playwright will not click what a
+    // visitor cannot see. Selected by the value of the input it contains
+    // rather than by its text, which is a different word in fifteen
+    // languages.
+    await page.locator('label.segment:has(input[name="mode"][value="passphrase"])').click();
+    await expect(page.locator('input[name="mode"][value="passphrase"]')).toBeChecked();
     await expect(page.locator('#options-passphrase')).toBeVisible();
     // A space separator throughout: the README warns that four words on the
     // long list carry a hyphen of their own (drop-down, felt-tip, t-shirt,

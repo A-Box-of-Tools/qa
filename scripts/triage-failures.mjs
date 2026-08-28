@@ -240,6 +240,7 @@ function main() {
 
   /* --- the site is broadly down: one story, not many ---------------------- */
 
+  let broadly = false;
   if (failing.length > TOO_MANY) {
     const title = 'The QA suite is failing broadly';
     const existing = open.find((issue) => issue.title === title);
@@ -275,12 +276,21 @@ function main() {
       mutate(['issue', 'create', '--title', title, '--label', LABEL, '--body-file', 'issue-body.md'],
         `opened the broad-failure issue (${failing.length} failures)`);
     }
-    return;
+    // Deliberately not returning. This used to, and the closing pass below is
+    // what it skipped: with more than a dozen failures open, an issue whose
+    // test had since been fixed could never be closed, because nothing ever
+    // reached the code that closes it. Two of them sat open for a day that
+    // way, describing failures that no longer happened, while the count
+    // stayed high for reasons of their own.
+    //
+    // Filing one issue per test is the only thing the threshold should
+    // suppress. Noticing that a test passes again is always worth doing.
+    broadly = true;
   }
 
   /* --- open or refresh an issue per failing test -------------------------- */
 
-  for (const [key, entry] of failing) {
+  for (const [key, entry] of broadly ? [] : failing) {
     const print = fingerprint(key);
     const title = `QA: ${entry.name}`.slice(0, 250);
     const existing = byPrint.get(print) ?? byTitle.get(title);
@@ -354,7 +364,15 @@ function main() {
     // opened: they cannot fail again, and nothing can ever observe them
     // passing. Seven of them were stranded exactly that way the first time a
     // tool was split into three, which is how this case got written.
-    const specGone = file && !filesSeen.has(file) && !fs.existsSync(file);
+    // Playwright reports a spec's path relative to testDir, so the body says
+    // "tools/x.spec.ts" where the repository has "tests/tools/x.spec.ts".
+    // Checked against both, because checking only the first made every spec
+    // look deleted: in a full run that never showed, since a spec that exists
+    // is in the report and never reaches here - but one partial run, or one
+    // person running a subset, and this would have closed every issue on the
+    // list as though its test had been removed.
+    const onDisk = file && (fs.existsSync(file) || fs.existsSync(`tests/${file}`));
+    const specGone = file && !filesSeen.has(file) && !onDisk;
 
     if (CAN_CLOSE && (testGone || specGone)) {
       mutate(['issue', 'close', String(issue.number), '--comment',
