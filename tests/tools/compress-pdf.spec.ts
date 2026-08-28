@@ -212,6 +212,14 @@ test.describe('compress-pdf: the promise', () => {
 
     await page.locator('#clear-file').click();
     await expect(page.locator('#result')).toBeHidden();
-    await expect(page.locator('#inventory-card')).toBeHidden();
+
+    // The card itself stays: it describes the job before a file is chosen as
+    // well as after one, which is what it is for. What must not stay is the
+    // last document - its page counts and byte shares sitting under a picker
+    // that has just been emptied, on a tool whose promise is that the file
+    // goes no further than the page.
+    await expect(page.locator('#breakdown-list > *')).toHaveCount(0);
+    await expect(page.locator('#breakdown-bar')).toBeHidden();
+    await expect(page.locator('#inventory-notes')).toBeEmpty();
   });
 });

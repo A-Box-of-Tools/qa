@@ -178,21 +178,27 @@ async function offer(page: Page, subject: Subject, bytes: Buffer): Promise<{
   });
 
   // There is no single event to wait for when the answer may be "nothing
-  // happened" - but there is no need to wait the full window when something
-  // does happen. Most files are answered within a second, one way or the
-  // other; the fixed 3.5-second sleep this used to be spent four minutes a
-  // run mostly waiting behind questions that were already answered. The full
-  // window is only served when the page really does stay silent, which is
-  // itself the finding.
-  const spoke = page.locator(subject.errors).waitFor({ state: 'visible', timeout: 3500 })
-    .then(() => true, () => false);
-  const produced_ = subject.output
-    ? page.locator(subject.output).waitFor({ state: 'visible', timeout: 3500 })
-      .then(() => true, () => false)
-    : new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 3500); });
-  await Promise.race([spoke, produced_]);
-  // A beat for the message text to finish arriving after the element shows.
-  await page.waitForTimeout(250);
+  // happened", but there is no need to wait out the whole window when the
+  // page does answer. The error is that answer, and it is the only signal
+  // worth stopping on.
+  //
+  // An earlier version of this raced the error against the tool's output
+  // panel, which was wrong and flaky in a way that took a CI run to show:
+  // several tools open their results card first and decide the bytes are
+  // rubbish a moment later, so the race ended on a panel that was about to
+  // disappear and the sample was taken mid-transition. The test then reported
+  // that the tool had produced a result from bytes that are not a file, which
+  // it had not. Passing alone, failing under load, which is the signature.
+  //
+  // So it waits for the error alone. A tool that really does accept rubbish
+  // never shows one, waits out the full window, and is reported - which is
+  // the finding, and takes as long as it takes.
+  await page.locator(subject.errors).waitFor({ state: 'visible', timeout: 6000 })
+    .catch(() => { /* silence is the answer, and it is asserted below */ });
+
+  // A beat for the message to finish arriving and for any panel the page is
+  // in the middle of putting away to have gone.
+  await page.waitForTimeout(400);
 
   const said = ((await page.locator(subject.errors).textContent()) ?? '').trim();
   const visible = await page.locator(subject.errors).isVisible().catch(() => false);
