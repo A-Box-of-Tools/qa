@@ -124,11 +124,13 @@ const SUBJECTS: Subject[] = [
     // This one calls it #error, not #load-error.
     errors: '#error',
     output: '#result',
-    knownSilent: 'edit-audio writes the reason into #error and unhides it, but '
-      + '#error sits inside <section id="export-card" hidden>, which is only '
-      + 'revealed once a file has loaded successfully. So a file it cannot '
-      + 'decode produces a message nobody can see, and the page appears to do '
-      + 'nothing at all.',
+    // Was knownSilent: the reason went into #error, which sat inside
+    // <section id="export-card" hidden> and was only revealed once a file had
+    // loaded successfully - so a file it could not decode produced a message
+    // nobody could see. The page says it out loud now ("This browser could
+    // not read any sound out of that file"), with the card revealed and no
+    // result beside it, so the exemption is gone and this is held to the same
+    // rule as everything else.
   },
   {
     slug: 'dicom-viewer',
@@ -203,8 +205,23 @@ async function offer(page: Page, subject: Subject, bytes: Buffer): Promise<{
   const said = ((await page.locator(subject.errors).textContent()) ?? '').trim();
   const visible = await page.locator(subject.errors).isVisible().catch(() => false);
 
+  // Visible is not the same as produced, and the difference is the whole
+  // assertion. split-gif refuses a file that is not a GIF, says so plainly -
+  // "That is not a GIF. The file does not start..." - and leaves its frames
+  // card on screen with nothing in it. An empty container is not a result,
+  // and calling it one reported the tool as accepting rubbish it had just
+  // refused out loud.
+  //
+  // So the output must be visible AND have something in it. A tool that
+  // really did produce something from rubbish has rows, or an image, or text
+  // in that panel; a leftover shell has none of those.
   const produced = subject.output
-    ? await page.locator(subject.output).isVisible().catch(() => false)
+    ? await page.locator(subject.output).evaluate((node) => {
+      const el = node as HTMLElement;
+      if (el.offsetParent === null) return false;
+      if (el.querySelector('li, tr, img, canvas, a[download]')) return true;
+      return (el.textContent ?? '').trim().length > 0;
+    }).catch(() => false)
     : false;
 
   return { crashed, said: visible ? said : '', produced };
