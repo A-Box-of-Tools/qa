@@ -44,6 +44,14 @@ type Fold = { where: string; restingAndFocused: boolean };
 async function unansweredByKeyboard(page: Page): Promise<string[]> {
   await page.keyboard.press('Tab');
   return page.evaluate((props) => {
+    // That keystroke landed somewhere, and in WebKit "somewhere" is often the
+    // first fold on the page - so the resting reading would be taken from an
+    // element that is already focused, match its focused reading exactly, and
+    // report the site as giving no feedback at all. It reported forty folds
+    // that way before this line. Chromium happens to put the first tab stop
+    // elsewhere, which is luck rather than a difference worth encoding.
+    (document.activeElement as HTMLElement | null)?.blur();
+
     // The element and the mark it draws. The site puts its hover feedback on
     // ::after - the mark goes from grey to blue and the summary's own colour
     // never moves - so a reading that looked only at the element itself

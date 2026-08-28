@@ -83,6 +83,12 @@ for (const slug of discoverTools()) {
         if (req.frame() !== page.mainFrame()) return;
 
         const host = new URL(req.url()).host;
+        // A URL with no host is not a host this page contacted: data:, blob:
+        // and about: are the page's own bytes, and handing a result around as
+        // a data URI is what several of these tools do for a living. WebKit
+        // reports them as requests where Chromium does not, which turned an
+        // engine difference into eight tools apparently phoning "" home.
+        if (!host) return;
         if (host === ownHost) return;
         if (isKnownBenignHost(host)) return;
         for (const allowedHost of allowed) {

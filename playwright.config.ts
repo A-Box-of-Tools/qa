@@ -29,6 +29,26 @@ export default defineConfig({
       name: 'Desktop Chrome',
       use: { ...devices['Desktop Chrome'] },
     },
+    // Safari's engine, which is not Chromium and is not optional: on iOS every
+    // browser is WebKit, Chrome included, so a fault here is a fault for every
+    // iPhone visitor whatever they think they are using. The reverse-video bug
+    // reported from an iPhone "in Chrome" was this engine.
+    //
+    // Playwright's WebKit is a WebKit build rather than Safari itself - the
+    // codec set and a few APIs differ - so a pass here is not a promise about
+    // Safari, and a failure here is still a real failure. It is the closest
+    // thing to that engine that can be run on a machine that is not a Mac.
+    {
+      name: 'Desktop Safari',
+      use: { ...devices['Desktop Safari'] },
+    },
+    {
+      name: 'Mobile Safari',
+      use: { ...devices['iPhone 13'] },
+      // Same reasoning as Mobile Chrome below: tests/locales reads the
+      // checkout and makes HTTP requests, and neither varies by engine.
+      testIgnore: /tests[\/]locales[\/]/,
+    },
     {
       name: 'Mobile Chrome',
       use: { ...devices['Pixel 5'] },
