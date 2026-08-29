@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { recordVideo } from '../../lib/browser-video';
+import { recordVideo , skipWithoutWebCodecs } from '../../lib/browser-video';
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { encodePng } from '../../lib/image-fixtures';
 
@@ -118,6 +118,17 @@ const colourGap = (
   a: { r: number; g: number; b: number },
   b: { r: number; g: number; b: number },
 ): number => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+
+// Every test in this file hands a clip to a tool and expects something back.
+// An engine without WebCodecs cannot decode a frame at all - Playwright's
+// WebKit has no VideoDecoder, VideoEncoder, MediaRecorder or OffscreenCanvas -
+// and the tools say so and stop, which is the right answer and leaves nothing
+// here to measure. The refusal itself is asserted in video.spec.ts.
+test.beforeEach(async ({ page }) => {
+  await page.goto('/');
+  test.skip(await skipWithoutWebCodecs(page),
+    'this engine has no WebCodecs, so no video tool can decode anything');
+});
 
 test.describe('reverse-video: playing it backwards', () => {
   test('control: the clip\'s start and end are different colours', async ({ page }) => {

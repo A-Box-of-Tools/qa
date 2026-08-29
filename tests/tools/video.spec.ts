@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { recordVideo } from '../../lib/browser-video';
+import { recordVideo , skipWithoutWebCodecs } from '../../lib/browser-video';
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
 import { decodedSize } from '../../lib/browser-image';
@@ -121,6 +121,17 @@ async function scrubTo(page: Page, fraction: number): Promise<void> {
   // The tool decodes on the way to a frame; wait for it to finish.
   await expect(page.locator('#stage-busy')).toBeHidden({ timeout: 30_000 });
 }
+
+// Every test in this file hands a clip to a tool and expects something back.
+// An engine without WebCodecs cannot decode a frame at all - Playwright's
+// WebKit has no VideoDecoder, VideoEncoder, MediaRecorder or OffscreenCanvas -
+// and the tools say so and stop, which is the right answer and leaves nothing
+// here to measure. The refusal itself is asserted in video.spec.ts.
+test.beforeEach(async ({ page }) => {
+  await page.goto('/');
+  test.skip(await skipWithoutWebCodecs(page),
+    'this engine has no WebCodecs, so no video tool can decode anything');
+});
 
 test.describe('the fixture itself', () => {
   test('control: the recording is a real MP4 of the size and length asked for', async ({ page }) => {

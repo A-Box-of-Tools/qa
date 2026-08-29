@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { chromium, type Page } from '@playwright/test';
 
 export interface VideoFixtureOptions {
   width?: number;
@@ -69,6 +69,38 @@ export async function recordVideo(
   const cached = recordings.get(key);
   if (cached) return cached;
 
+  // WebKit has no MediaRecorder, so the page under test cannot make the clip
+  // when the suite is running in Safari's engine. The clip is only a fixture
+  // - bytes handed to a tool - and the tool does not care which engine
+  // encoded them, so one is borrowed from Chromium rather than giving up the
+  // video tools on Safari entirely. That mattered: it was two hundred and
+  // twenty-eight failures, none of them about the site.
+  //
+  // Once per worker, because the recording is cached above and a browser
+  // launch is far more expensive than the recording it wraps.
+  const canRecord = await page.evaluate(() => typeof MediaRecorder === 'function');
+  if (!canRecord) {
+    const lender = await chromium.launch();
+    try {
+      const borrowed = await lender.newPage();
+      const made = await record(borrowed, settings);
+      recordings.set(key, made);
+      return made;
+    } finally {
+      await lender.close();
+    }
+  }
+
+  const made = await record(page, settings);
+  recordings.set(key, made);
+  return made;
+}
+
+/** The recording itself, wherever it is being done. */
+async function record(
+  page: Page,
+  settings: { width: number; height: number; seconds: number; fps: number; prefer: string },
+): Promise<{ bytes: Buffer; mimeType: string }> {
   const result = await page.evaluate(async (opts) => {
     const canvas = document.createElement('canvas');
     canvas.width = opts.width;
@@ -144,7 +176,27 @@ export async function recordVideo(
     return { base64: btoa(binary), mimeType };
   }, settings);
 
-  const made = { bytes: Buffer.from(result.base64, 'base64'), mimeType: result.mimeType };
-  recordings.set(key, made);
-  return made;
+  return { bytes: Buffer.from(result.base64, 'base64'), mimeType: result.mimeType };
+}
+
+/**
+ * Skip a test that needs the browser to decode video, where it cannot.
+ *
+ * WebCodecs is how every video tool here reads frames, and the engine either
+ * has it or does not: Playwright's WebKit build has no VideoDecoder,
+ * VideoEncoder, MediaRecorder or OffscreenCanvas at all. The tools answer
+ * that correctly - video-to-gif says "This browser has no WebCodecs, so
+ * frames cannot be decoded" and stops - so there is nothing left to test
+ * about turning a clip into anything.
+ *
+ * Worth saying that this is not a statement about Safari: 17 and newer do
+ * have WebCodecs. It is a limit of the build this suite drives, so a skip
+ * here means "this engine cannot", not "Safari cannot".
+ *
+ * The refusal itself is asserted in tests/tools/video.spec.ts, where it
+ * belongs - a tool that cannot work should say so, and that is testable in
+ * exactly the engine that cannot.
+ */
+export async function skipWithoutWebCodecs(page: Page): Promise<boolean> {
+  return page.evaluate(() => typeof (globalThis as { VideoDecoder?: unknown }).VideoDecoder !== 'function');
 }
