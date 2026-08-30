@@ -286,6 +286,20 @@ export async function canDecodeVideo(
  * `isConfigSupported` is asked about H.264 at a small size because that is
  * what the tools ask for. An engine that has the class and supports no codec
  * is exactly the case a `typeof` check misses.
+ *
+ * AND THE ANSWER THAT NEVER COMES
+ *
+ * `VideoEncoder.isConfigSupported` does not always settle. On the WebKit build
+ * CI runs it returns a promise that is still pending two minutes later - the
+ * same build whose `VideoDecoder.isConfigSupported` answers immediately, which
+ * is how video-to-gif passes there while nothing that encodes does.
+ *
+ * The first version of this awaited it and inherited the hang: nineteen tests
+ * failed on a test timeout inside the probe that existed to skip them. So the
+ * question is asked with a deadline, and no answer counts as no. That is the
+ * right reading whatever the cause - a browser that cannot say within two
+ * seconds whether it supports H.264 is not a browser that is about to encode
+ * any.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
   return page.evaluate(async () => {
@@ -296,9 +310,13 @@ export async function canEncodeVideo(page: Page): Promise<boolean> {
       MediaRecorder?: { isTypeSupported?: (type: string) => boolean };
     };
     try {
-      const supported = await global.VideoEncoder?.isConfigSupported?.({
+      const asked = global.VideoEncoder?.isConfigSupported?.({
         codec: 'avc1.42001E', width: 320, height: 240,
       });
+      const supported = await Promise.race([
+        asked,
+        new Promise<undefined>((resolve) => { setTimeout(() => resolve(undefined), 2_000); }),
+      ]);
       if (supported?.supported) return true;
     } catch { /* an engine that throws here cannot encode either */ }
     const recorder = global.MediaRecorder;

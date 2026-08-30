@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { hasCameraApi, quiet } from '../../lib/engine';
+import { canFakeCamera, hasCameraInterface, quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the QR reader's camera path.
@@ -29,18 +29,28 @@ import { hasCameraApi, quiet } from '../../lib/engine';
  * whether a real camera can be opened at all. Those are the browser's, not the
  * tool's.
  *
- * AN ENGINE WITH NO CAMERA INTERFACE
+ * AN ENGINE THAT CANNOT BE GIVEN A CAMERA
  *
  * The stub above needs somewhere to be installed and something to hand back,
- * and Playwright's WebKit offers neither: `navigator.mediaDevices` is not
- * defined at all, so there is no object to put a getUserMedia on, and
- * `canvas.captureStream` is missing, so there would be no stream to return
- * from it. Real Safari has had both for years; this is the test build, not
- * the browser.
+ * and Playwright's WebKit gives trouble on both counts - differently on
+ * different platforms, which is the whole reason the gate below asks rather
+ * than names a browser.
  *
- * Every test in the describe below is skipped there, and one that only makes
- * sense there runs instead: a reader on a browser with no camera has to say
- * so, and that is the half of this page such an engine can actually check.
+ * On the Windows build there is no `navigator.mediaDevices` to put a
+ * getUserMedia on and no `canvas.captureStream` to return from it. On the
+ * Linux build CI runs, both exist - and the stream captured from a canvas
+ * never paints, so `camera.open()` rejects and the camera card never appears.
+ * A gate that checked for the two names passed there and left six tests
+ * failing on a card that was never going to open.
+ *
+ * So lib/engine.ts runs the stub's own steps end to end and answers whether
+ * they finish with a picture. Real Safari has had all of this for years; this
+ * is the test build, not the browser.
+ *
+ * Where a camera cannot be supplied the describe below is skipped. Where the
+ * engine has no camera interface at all - a narrower case, and the one the
+ * tool itself can see - a different test runs instead: the reader has to say
+ * so, and that is the half of this page such an engine can check.
  */
 
 const ENCODER = '/qr-barcode/';
@@ -127,8 +137,9 @@ test.describe('qr-barcode-reader: reading through the camera', () => {
   // to a page that was really served.
   test.beforeEach(async ({ page }) => {
     await page.goto(READER);
-    test.skip(!await hasCameraApi(page),
-      'this engine has no navigator.mediaDevices, so it can be given no camera');
+    test.skip(!await canFakeCamera(page),
+      'no camera can be supplied on this engine: a canvas stream never reaches '
+      + 'a <video> here, so there is nothing to point the reader at');
   });
 
   test('a code held in front of the camera is read', async ({ page }) => {
@@ -258,8 +269,13 @@ test.describe('qr-barcode-reader: with no camera interface at all', () => {
   test('says so, rather than doing nothing', async ({ page }) => {
     test.setTimeout(60_000);
     await page.goto(READER);
-    test.skip(await hasCameraApi(page),
-      'this engine has a camera interface; the tests above cover it');
+    // The narrow question, not canFakeCamera's. This test is about what the
+    // reader says when it can see no camera interface, so it has to run
+    // exactly where the reader sees none - an engine that has the interface
+    // and merely cannot be given a picture says something else, correctly.
+    test.skip(await hasCameraInterface(page),
+      'this engine offers a camera interface, so this is not the refusal it '
+      + 'would give');
 
     // The offer is still made. A browser can gain a camera between page loads
     // - a plugged-in webcam, a permission granted - and the page cannot know
