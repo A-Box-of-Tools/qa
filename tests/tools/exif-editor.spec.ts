@@ -10,6 +10,7 @@ import {
   withExifGps,
 } from '../../lib/jpeg-fixtures';
 import { realJpeg } from '../../lib/browser-jpeg';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the EXIF Viewer & Remover.
@@ -202,7 +203,7 @@ test.describe('exif-editor: the promise', () => {
     await load(page, await fixture(page));
     await page.locator('#strip-all').click();
     await expect(page.locator('#clean-results')).toBeVisible({ timeout: 20_000 });
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const suspicious = traffic.filter((entry) => /image\/|base64|\/9j\/|Exif/.test(entry));
     expect(suspicious, 'something that looks like photo data was sent').toEqual([]);

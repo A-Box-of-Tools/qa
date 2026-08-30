@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the formatter.
@@ -239,7 +240,7 @@ test.describe('format-json: the promise', () => {
     await mode(page, 'format');
     await page.locator('#language').selectOption('json');
     await run(page, `{"token":"${secret}"}`);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'the pasted text was sent').not.toContain(secret);

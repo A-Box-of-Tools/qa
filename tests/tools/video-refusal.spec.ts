@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { recordVideo } from '../../lib/browser-video';
+import { canEncodeVideo, recordVideo } from '../../lib/browser-video';
 
 /**
  * What a video tool says in a browser that cannot decode video.
@@ -46,5 +46,47 @@ test.describe('a browser that cannot decode video', () => {
       said.first(),
       'the page refused the file without saying the browser was the reason',
     ).toContainText(/WebCodecs/i);
+  });
+});
+
+/**
+ * And the tools that write a video rather than read one.
+ *
+ * The mirror of the file above, and the assertion that keeps video-more.spec's
+ * skip honest. That file now steps aside wherever the engine can encode
+ * nothing, which is right - there is no result to inspect - but a skip alone
+ * would hide the difference between a tool that says so and a tool that sits
+ * there. CI saw the second: a Create video button whose click had not returned
+ * five minutes later.
+ *
+ * This is the sentence that must be there instead.
+ */
+test.describe('a browser that cannot write video', () => {
+  test('images-to-video says so instead of trying', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto('/images-to-video/');
+    test.skip(await canEncodeVideo(page),
+      'this engine can encode video, so there is no refusal to check');
+
+    const { encodePng } = await import('../../lib/image-fixtures');
+    await page.locator('#file-input').setInputFiles([0, 1].map((index) => ({
+      name: `shot-${index}.png`,
+      mimeType: 'image/png',
+      buffer: encodePng(320, 240, () => (index ? [220, 40, 40] : [40, 200, 60])),
+    })));
+    await expect(page.locator('#image-list li').first()).toBeVisible({ timeout: 60_000 });
+
+    // The button is offered rather than disabled, which is the right choice:
+    // what a browser will encode is not reliably knowable until it is asked,
+    // and a permanently greyed button explains nothing.
+    await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
+    await page.locator('#export').click();
+
+    const said = page.locator('#error');
+    await expect(
+      said,
+      'pressing Create video on a browser that cannot encode said nothing at all',
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(said).toContainText(/WebCodecs|recording/i);
   });
 });

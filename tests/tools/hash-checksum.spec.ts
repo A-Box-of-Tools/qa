@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import crypto from 'node:crypto';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for Hash & Checksum.
@@ -264,7 +265,7 @@ test.describe('hash-checksum: the promise', () => {
     const data = Buffer.from('a secret document nobody should see', 'latin1');
     await chooseAlgorithms(page, ['sha256']);
     await hash(page, data, 'secret.txt');
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const digest = digestOf('sha256', data);
     for (const entry of traffic) {

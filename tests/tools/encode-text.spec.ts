@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the encoder.
@@ -94,6 +95,13 @@ test.describe('encode-text: against Node, not against itself', () => {
   });
 
   test('every codec that claims to reverse actually reverses', async ({ page }) => {
+    // Ten round trips where every other test here does one, and each is a
+    // clear, a fill and two waits on the output. That is comfortably more
+    // than the default thirty seconds on WebKit, where it was timing out
+    // part-way through the fifth codec - a slow test reported as a broken
+    // one, which is the least useful kind of failure.
+    test.setTimeout(120_000);
+
     // One round trip each, rather than a hand-written expectation each: the
     // property that matters for all of them is that decode(encode(x)) is x,
     // and the codecs where that quietly fails are the ones with characters
@@ -177,7 +185,7 @@ test.describe('encode-text: the promise', () => {
     await codec(page, 'base64');
     await direction(page, 'encode');
     await run(page, `{"token":"${secret}"}`);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     // Both forms: this tool's whole job is producing the second one, so
     // checking only for the plain text would miss the leak it is most

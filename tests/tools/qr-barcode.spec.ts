@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the QR & Barcode Generator, verified by
@@ -216,7 +217,7 @@ test.describe('qr-barcode: the Wi-Fi password people actually put in these', () 
     await page.locator('#field-ssid').fill('Home');
     await page.locator('#field-password').fill(password);
     await savePng(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'the Wi-Fi password was sent somewhere').not.toContain(password);

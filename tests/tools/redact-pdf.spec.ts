@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { allText, buildPdf, readPages, type FixturePage } from '../../lib/pdf';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the PDF Redactor.
@@ -180,7 +181,7 @@ test.describe('redact-pdf: the promise', () => {
     await load(page, PAGES, 'private.pdf');
     await findAndTick(page, SECRET);
     await redact(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'the secret word was sent').not.toContain(SECRET);

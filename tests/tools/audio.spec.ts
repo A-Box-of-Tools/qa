@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { loudThenQuiet, peakBetween, readWav } from '../../lib/wav';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the two sound tools: the editor and the
@@ -253,7 +254,7 @@ test.describe('the sound tools: the promise', () => {
 
     const bytes = await loadSound(page, EDITOR, 'private.wav');
     await exportSound(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = bytes.toString('base64').slice(4000, 4080);
     expect(marker.length).toBeGreaterThan(0);

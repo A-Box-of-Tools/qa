@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { realJpeg } from '../../lib/browser-jpeg';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the ID Photo Maker.
@@ -187,7 +188,7 @@ test.describe('id-photo: the promise', () => {
     await page.locator('#spec').selectOption('icao');
     await page.locator('#fit-box').click();
     await makeFiles(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     // Looked for by a distinctive slice of the file's own bytes rather than by
     // words like "jpeg" or "base64": the analytics tag legitimately reports the

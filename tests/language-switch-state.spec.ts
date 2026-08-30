@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools, hasFilePicker } from '../lib/tools';
+import { keepsFilesInStorage } from '../lib/engine';
 import { encodePng } from '../lib/image-fixtures';
 import { buildPdf } from '../lib/pdf';
 import { animationFixture } from '../lib/gif';
@@ -49,6 +50,21 @@ import fs from 'node:fs';
  * Tools with no file picker are not here either: they generate rather than
  * receive, and what would be preserved is a typed box rather than a chosen
  * file, which is a different question from the one asked.
+ *
+ * AN ENGINE THAT CANNOT CARRY A FILE ANYWHERE
+ *
+ * The only storage a File survives a navigation in is IndexedDB, which is why
+ * lang-keep.js uses it. Playwright's WebKit cannot write one there at all -
+ * `UnknownError: Error preparing Blob/File data to be stored in object store`
+ * - so on that engine there is no implementation of this feature, correct or
+ * otherwise, and the twenty-five tests below were reporting the absence of a
+ * browser capability as twenty-five site bugs.
+ *
+ * They are skipped there, by asking rather than by naming the browser: see
+ * lib/engine.ts. Real Safari stores Files in IndexedDB and would run them.
+ * Safari in private browsing would not, which is worth saying out loud - the
+ * skip describes a state some visitors are really in, and the settings that
+ * travel without it are the subject of the last tests in this file.
  */
 
 const SUBJECTS = discoverTools().filter((slug) => hasFilePicker(slug) && slug !== 'share-text');
@@ -144,8 +160,16 @@ test.describe('switching language keeps the work', () => {
     test(`${slug} still has the file afterwards`, async ({ page }) => {
       test.setTimeout(120_000);
 
-
       await page.goto(`/${slug}/`);
+
+      // Asked on the tool's own page rather than once for the file, because a
+      // skip has to be decided per test and this is the cheapest place that
+      // has a page open. See the note in the header: an engine that cannot
+      // put a File in IndexedDB cannot carry one across a navigation by any
+      // means, so there is nothing here for it to get right or wrong.
+      test.skip(!await keepsFilesInStorage(page),
+        'this engine cannot put a File in IndexedDB, which is the only place '
+        + 'one survives a navigation');
 
       const accept = (await page.locator('#file-input').getAttribute('accept')) ?? '';
       const fixture = fixtureFor(slug, accept);
@@ -202,4 +226,74 @@ test.describe('switching language keeps the work', () => {
       ).toEqual([]);
     });
   }
+});
+
+/**
+ * The other half of what the switcher carries, and the half every engine can
+ * do.
+ *
+ * lang-keep.js carries two things across the navigation: the files, which
+ * need IndexedDB and a browser willing to put a File in it, and the settings,
+ * which are strings and need neither. The tests above cover the first and
+ * skip wherever it is impossible; without these, an engine that cannot store
+ * a File would run no test of this feature at all, and a switcher that had
+ * stopped carrying anything would look exactly like an engine limitation.
+ */
+test.describe('switching language keeps the settings too', () => {
+  test('a typed box and a chosen option both come back', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto('/format-json/');
+
+    // format-json rather than a tool with a file: this is the settings path
+    // on its own, so a subject that needs nothing decoded says more about the
+    // switcher and less about a decoder. Both kinds of control are here - a
+    // textarea, and a select whose value the tool acts on.
+    const typed = '{"language":"switch","kept":true}';
+    await page.locator('#input').fill(typed);
+    await page.locator('#indent').selectOption('4');
+
+    // The control. If the tool ignored either of them, restoring them would
+    // prove nothing about the visitor getting their work back.
+    await expect(page.locator('#output, #result, pre').first())
+      .toContainText('language', { timeout: 30_000 });
+
+    await switchLanguage(page);
+
+    await expect(
+      page.locator('#input'),
+      'the text typed into the box was thrown away by the language switch',
+    ).toHaveValue(typed, { timeout: 20_000 });
+    await expect(
+      page.locator('#indent'),
+      'the chosen indent was thrown away by the language switch',
+    ).toHaveValue('4', { timeout: 20_000 });
+
+    // And the tool was told, rather than merely having its box refilled: a
+    // restored value the page never reacted to is a value that vanishes the
+    // moment anything else happens.
+    await expect(page.locator('#output, #result, pre').first())
+      .toContainText('language', { timeout: 30_000 });
+  });
+
+  test('the switcher stays a plain link when there is nothing to carry',
+    async ({ page }) => {
+      // The other side of the same rule, and the reason the click handler
+      // checks before it intercepts: a reader who has only been reading pays
+      // nothing for a feature they are not using, and the language menu is a
+      // link that behaves like one.
+      await page.goto('/format-json/');
+      const before = await page.evaluate(async () => {
+        const names = await indexedDB.databases?.() ?? [];
+        return names.map((one) => one.name).join(',');
+      });
+      await switchLanguage(page);
+      const after = await page.evaluate(async () => {
+        const names = await indexedDB.databases?.() ?? [];
+        return names.map((one) => one.name).join(',');
+      });
+      expect(
+        after.includes('abox-lang-keep'),
+        'switching an untouched page opened the store anyway',
+      ).toBe(before.includes('abox-lang-keep'));
+    });
 });

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { encodePng, type Rgb } from '../../lib/image-fixtures';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the Image Stacker.
@@ -237,7 +238,7 @@ test.describe('stack-images: the promise', () => {
     await load(page);
     await losslessOutput(page);
     await stack(page, 'mean');
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = frame(VALUES[0]).toString('base64').slice(60, 140);
     expect(marker.length).toBeGreaterThan(0);

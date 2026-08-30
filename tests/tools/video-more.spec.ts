@@ -1,8 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { recordVideo , skipWithoutWebCodecs } from '../../lib/browser-video';
+import { canDecodeVideo, canEncodeVideo, recordVideo } from '../../lib/browser-video';
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { encodePng } from '../../lib/image-fixtures';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the three remaining video tools: playing a
@@ -119,16 +120,50 @@ const colourGap = (
   b: { r: number; g: number; b: number },
 ): number => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
 
-// Every test in this file hands a clip to a tool and expects something back.
-// An engine without WebCodecs cannot decode a frame at all - Playwright's
-// WebKit has no VideoDecoder, VideoEncoder, MediaRecorder or OffscreenCanvas -
-// and the tools say so and stop, which is the right answer and leaves nothing
-// here to measure. The refusal itself is asserted in video.spec.ts.
+/*
+ * TWO CAPABILITIES, ASKED SEPARATELY, BECAUSE THEY COME APART
+ *
+ * Every test in this file ends with a tool writing a video file, so an engine
+ * that cannot encode one has nothing here to be right or wrong about. That is
+ * the gate below.
+ *
+ * Reading is a second question and not the same one. `frameColour` above -
+ * the oracle almost every assertion in this file rests on - decodes with a
+ * plain <video> element, and Playwright's WebKit on Linux, which is what CI
+ * runs, has WebCodecs but no H.264 in its media pipeline: the tools decode a
+ * clip perfectly well there while a <video> handed the same bytes paints
+ * nothing. That is not a tool failing. It is this file having no way to look,
+ * and it cost twelve failures a run reported as "the fixture does not change
+ * colour as it plays".
+ *
+ * Neither is a statement about Safari, which has had both for years. It is
+ * the build this suite drives, and the first draft of this gate - `typeof
+ * VideoDecoder` - was wrong on exactly the platform CI uses, which is the
+ * argument for asking what an engine can do rather than what it has.
+ */
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
-  test.skip(await skipWithoutWebCodecs(page),
-    'this engine has no WebCodecs, so no video tool can decode anything');
+  test.skip(!await canEncodeVideo(page),
+    'this engine can write no video, by WebCodecs or MediaRecorder, so no tool '
+    + 'here can produce anything');
 });
+
+/**
+ * Stop unless this engine can also read a clip back.
+ *
+ * Called by the tests whose oracle is a decoded frame rather than the file's
+ * structure, and always after the tool's own page is open: playing a blob:
+ * video needs `media-src blob:`, which the site grants to the tools that need
+ * it and the hub refuses.
+ */
+async function needsToRead(page: Page): Promise<void> {
+  const { bytes } = await recordVideo(page, {
+    width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
+  });
+  test.skip(!await canDecodeVideo(page, bytes),
+    'a plain <video> gets no picture out of an H.264 clip on this engine, so '
+    + 'there is no way here to look at what a tool produced');
+}
 
 test.describe('reverse-video: playing it backwards', () => {
   test('control: the clip\'s start and end are different colours', async ({ page }) => {
@@ -140,6 +175,7 @@ test.describe('reverse-video: playing it backwards', () => {
     // version of this test read that refusal as a broken fixture.
     test.setTimeout(180_000);
     await page.goto(REVERSE);
+    await needsToRead(page);
     const { bytes } = await recordVideo(page, {
       width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
     });
@@ -156,6 +192,8 @@ test.describe('reverse-video: playing it backwards', () => {
     // have the same length, size and track, so a tool that quietly passed the
     // input through would look correct in every structural test.
     test.setTimeout(300_000);
+    await page.goto(REVERSE);
+    await needsToRead(page);
     const original = await loadClip(page, REVERSE);
 
     const reversed = await exportVideo(page);
@@ -295,6 +333,8 @@ test.describe('timelapse-video: speeding it up', () => {
     // the same length as the source still plays, and looks like a tool that
     // worked until somebody checks the clock.
     test.setTimeout(300_000);
+    await page.goto(TIMELAPSE);
+    await needsToRead(page);
     await loadClip(page, TIMELAPSE);
 
     await page.locator('#speed').fill('10');
@@ -312,6 +352,8 @@ test.describe('timelapse-video: speeding it up', () => {
   test('a gentler speed gives a longer file than a faster one', async ({ page }) => {
     // The speed has to behave like a scale rather than a label.
     test.setTimeout(420_000);
+    await page.goto(TIMELAPSE);
+    await needsToRead(page);
     await loadClip(page, TIMELAPSE);
     await page.locator('#speed').fill('2');
     await page.locator('#speed').blur();
@@ -352,6 +394,8 @@ test.describe('images-to-video: building one out of pictures', () => {
   test('four pictures held a second each make a video of about four seconds', async ({ page }) => {
     test.setTimeout(300_000);
     await loadPictures(page, 4);
+    // The length is read off a decoded result, so this one needs a reader too.
+    await needsToRead(page);
 
     await page.locator('#duration-unit').selectOption('seconds');
     await page.locator('#bulk-amount').fill('1');
@@ -396,7 +440,7 @@ test.describe('images-to-video: building one out of pictures', () => {
     await expect(page.locator('#file-list li, #image-list li').first())
       .toBeVisible({ timeout: 60_000 });
     await exportVideo(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = shots[0].buffer.toString('base64').slice(60, 140);
     for (const entry of traffic) {

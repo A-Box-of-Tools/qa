@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { realJpeg } from '../../lib/browser-jpeg';
 import { readImages, readPages } from '../../lib/pdf';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for Images to PDF.
@@ -202,7 +203,7 @@ test.describe('images-to-pdf: the list and the promise', () => {
 
     await load(page, [{ name: 'private.jpg', bytes: await realJpeg(page, 200, 200, 12) }]);
     await create(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'image or document data was sent')

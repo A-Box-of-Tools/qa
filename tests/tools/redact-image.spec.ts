@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { redactionFixture, type Rect, type Rgb } from '../../lib/image-fixtures';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the Image Redactor.
@@ -370,7 +371,7 @@ test.describe('redact-image: the editing controls', () => {
 
     await page.locator('#add-box').click();
     await save(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     // Nothing should be carrying image data off the page; a picture leaving
     // would mean a large body or a very long URL going somewhere.

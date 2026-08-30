@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
+import { hasCameraApi, quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the QR reader's camera path.
@@ -27,6 +28,19 @@ import fs from 'node:fs';
  * What this does not cover, and is not claimed to: the permission prompt, and
  * whether a real camera can be opened at all. Those are the browser's, not the
  * tool's.
+ *
+ * AN ENGINE WITH NO CAMERA INTERFACE
+ *
+ * The stub above needs somewhere to be installed and something to hand back,
+ * and Playwright's WebKit offers neither: `navigator.mediaDevices` is not
+ * defined at all, so there is no object to put a getUserMedia on, and
+ * `canvas.captureStream` is missing, so there would be no stream to return
+ * from it. Real Safari has had both for years; this is the test build, not
+ * the browser.
+ *
+ * Every test in the describe below is skipped there, and one that only makes
+ * sense there runs instead: a reader on a browser with no camera has to say
+ * so, and that is the half of this page such an engine can actually check.
  */
 
 const ENCODER = '/qr-barcode/';
@@ -108,6 +122,15 @@ async function startCamera(page: Page): Promise<void> {
 }
 
 test.describe('qr-barcode-reader: reading through the camera', () => {
+  // Asked once per test, on the reader's own page: mediaDevices is not
+  // defined on about:blank whatever the engine, so the question has to be put
+  // to a page that was really served.
+  test.beforeEach(async ({ page }) => {
+    await page.goto(READER);
+    test.skip(!await hasCameraApi(page),
+      'this engine has no navigator.mediaDevices, so it can be given no camera');
+  });
+
   test('a code held in front of the camera is read', async ({ page }) => {
     // The round trip the file path already makes, made through a video stream
     // instead: the generator writes it, the camera sees it, the reader says
@@ -209,11 +232,57 @@ test.describe('qr-barcode-reader: reading through the camera', () => {
 
     await startCamera(page);
     await expect(page.locator('#results .result').first()).toBeVisible({ timeout: 60_000 });
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'what the camera read was sent').not.toContain(text);
       expect(entry, 'the frame was sent').not.toContain(png.toString('base64').slice(100, 180));
     }
+  });
+});
+
+/**
+ * What the reader says on a browser that has no camera at all.
+ *
+ * The mirror image of the describe above, and the only part of the camera
+ * path such an engine can be asked about. It matters because the answer must
+ * not be silence: a Start button that does nothing when pressed is
+ * indistinguishable from a broken page, and the reader's whole other half -
+ * choosing a picture - still works and needs saying.
+ *
+ * Deliberately not written as "skip unless WebKit". If a later Playwright
+ * build gives WebKit a camera interface, this test stops running and the six
+ * above start, which is the correct outcome and needs no edit here.
+ */
+test.describe('qr-barcode-reader: with no camera interface at all', () => {
+  test('says so, rather than doing nothing', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.goto(READER);
+    test.skip(await hasCameraApi(page),
+      'this engine has a camera interface; the tests above cover it');
+
+    // The offer is still made. A browser can gain a camera between page loads
+    // - a plugged-in webcam, a permission granted - and the page cannot know
+    // in advance which refusal it will get, so the honest design is to ask
+    // and report.
+    await expect(page.locator('#start-camera')).toBeVisible();
+    await page.locator('#start-camera').click();
+
+    const said = page.locator('#pick-error');
+    await expect(
+      said,
+      'pressing Start on a browser with no camera interface said nothing at all',
+    ).toBeVisible({ timeout: 30_000 });
+
+    // Named as the browser's limit rather than as a fault, and not left as a
+    // phrase key - which is the failure tests/phrases.spec.ts exists for and
+    // which this path, reachable on almost no desktop, would hide well.
+    await expect(said).toContainText(/camera interface/i);
+    await expect(said).not.toContainText('camera.');
+
+    // And the rest of the tool is still offered, which is the sentence's own
+    // claim: "Everything else here still works."
+    await expect(page.locator('#file-input')).toBeAttached();
+    await expect(page.locator('#dropzone')).toBeVisible();
   });
 });

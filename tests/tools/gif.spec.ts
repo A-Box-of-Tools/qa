@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { animationFixture, readGif } from '../../lib/gif';
 import { encodePng } from '../../lib/image-fixtures';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the three GIF tools: the maker, the
@@ -156,7 +157,7 @@ test.describe('gif-maker: the animation it writes', () => {
     }]);
     await expect(page.locator('#frame-list li')).toHaveCount(1, { timeout: 30_000 });
     await makeGif(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = png.toString('base64').slice(60, 140);
     for (const entry of traffic) {
@@ -243,7 +244,7 @@ test.describe('split-gif: taking one apart', () => {
       name: 'private.gif', mimeType: 'image/gif', buffer: bytes,
     });
     await expect(page.locator('#frames-card')).toBeVisible({ timeout: 30_000 });
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = bytes.toString('base64').slice(60, 140);
     for (const entry of traffic) {
@@ -328,7 +329,7 @@ test.describe('gif-analyzer: describing one', () => {
       name: 'private.gif', mimeType: 'image/gif', buffer: bytes,
     });
     await expect(page.locator('#summary-card')).toBeVisible({ timeout: 30_000 });
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = bytes.toString('base64').slice(60, 140);
     for (const entry of traffic) {

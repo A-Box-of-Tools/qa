@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for SVG to Image.
@@ -97,7 +98,7 @@ test.describe('svg-to-image: a hostile SVG cannot act', () => {
     // Rasterizing is the moment the file is handed to a decoder, so the check
     // has to survive it rather than stop at loading.
     const png = await rasterize(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     expect(attempted, `the SVG reached ${HOSTILE_HOST}`).toEqual([]);
 
@@ -131,7 +132,7 @@ test.describe('svg-to-image: a hostile SVG cannot act', () => {
     await page.goto(URL_PATH);
     await load(page, svg, 'private.svg');
     await rasterize(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'the drawing was sent').not.toContain(canary);
