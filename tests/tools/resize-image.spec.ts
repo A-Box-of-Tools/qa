@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { realJpeg } from '../../lib/browser-jpeg';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the Image Resizer.
@@ -239,7 +240,7 @@ test.describe('resize-image: formats and batches', () => {
     await page.locator('#resize-mode').selectOption('percent');
     await page.locator('#size-percent').fill('25');
     await run(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     // Looked for by a distinctive slice of the file's own bytes rather than by
     // words like "jpeg" or "base64": the analytics tag legitimately reports the

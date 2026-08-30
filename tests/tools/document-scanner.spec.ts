@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { encodePng, type Rgb } from '../../lib/image-fixtures';
 import { readPages } from '../../lib/pdf';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the Document Scanner.
@@ -185,7 +186,7 @@ test.describe('document-scanner: the promise', () => {
     }]);
     await expect(page.locator('#page-strip li')).toHaveCount(1, { timeout: 60_000 });
     await savePdf(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = photo.toString('base64').slice(200, 280);
     for (const entry of traffic) {

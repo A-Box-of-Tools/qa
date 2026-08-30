@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { SYMBOL_SETS, LOOKALIKES } from '../../lib/password-generator';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the Password & Passphrase Generator:
@@ -357,7 +358,7 @@ test.describe('password-generator: batch, and the promise', () => {
       values.push(await secret(page));
       await page.locator('#regenerate').click();
     }
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const value of values) {
       const leak = traffic.find((request) => carries(request, value));

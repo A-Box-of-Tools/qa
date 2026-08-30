@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the comparer.
@@ -180,7 +181,7 @@ test.describe('compare-text: the promise', () => {
     const leftSecret = 'ghp_QAcanaryLEFT9f3e71dNotForSending';
     const rightSecret = 'ghp_QAcanaryRIGHT4a2c88eNotForSending';
     await compare(page, `token=${leftSecret}`, `token=${rightSecret}`);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'the left-hand text was sent').not.toContain(leftSecret);

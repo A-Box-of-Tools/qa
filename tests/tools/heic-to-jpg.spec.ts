@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { HEIC_HEIGHT, HEIC_WIDTH, fullSize, heicBytes } from '../../lib/heic';
 import { decodedSize } from '../../lib/browser-image';
 import { hasExif, metadataSegments } from '../../lib/jpeg-fixtures';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for HEIC to JPG.
@@ -187,7 +188,7 @@ test.describe('heic-to-jpg: the promise', () => {
 
     const bytes = await load(page, 'private.heic');
     await convert(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = bytes.toString('base64').slice(20_000, 20_080);
     expect(marker.length).toBeGreaterThan(0);

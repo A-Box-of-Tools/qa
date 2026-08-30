@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { quiet } from '../lib/engine';
 
 /**
  * The measurement tag, from both sides.
@@ -64,7 +65,7 @@ test.describe('analytics', () => {
     const hits = await countHits(page);
 
     await page.goto('/dicom-viewer/');
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const state = await page.evaluate((id) => ({
       webdriver: navigator.webdriver,

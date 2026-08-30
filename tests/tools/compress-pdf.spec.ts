@@ -4,6 +4,7 @@ import { realJpeg } from '../../lib/browser-jpeg';
 import {
   allText, buildImagePdf, buildPdf, readImages, readPages, type FixturePage,
 } from '../../lib/pdf';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the PDF Compressor.
@@ -196,7 +197,7 @@ test.describe('compress-pdf: the promise', () => {
 
     await load(page, buildPdf(TEXT_PAGES), 'private.pdf');
     await compress(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'document content was sent')

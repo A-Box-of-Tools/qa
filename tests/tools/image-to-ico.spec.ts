@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { realJpeg } from '../../lib/browser-jpeg';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for Image to Icon.
@@ -188,7 +189,7 @@ test.describe('image-to-ico: the promise', () => {
     await load(page, logo, 'private.jpg');
     await chooseSizes(page, [32]);
     await makeIco(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = logo.toString('base64').slice(400, 480);
     expect(marker.length).toBeGreaterThan(0);

@@ -200,3 +200,110 @@ async function record(
 export async function skipWithoutWebCodecs(page: Page): Promise<boolean> {
   return page.evaluate(() => typeof (globalThis as { VideoDecoder?: unknown }).VideoDecoder !== 'function');
 }
+
+/**
+ * Can this engine get pictures out of the fixture at all?
+ *
+ * A better question than `typeof VideoDecoder`, because the two come apart.
+ * Playwright's WebKit answers differently on different platforms - the
+ * Windows build has no VideoDecoder, VideoEncoder, MediaRecorder or
+ * OffscreenCanvas, while the Linux build the CI runners use has WebCodecs and
+ * still cannot decode H.264, which is what a browser MediaRecorder writes and
+ * what every fixture in this suite therefore is. A name check passes there
+ * and every test behind it then fails on a black frame, which is a hundred
+ * minutes of CI saying "this engine has no codec" in the most expensive way
+ * available.
+ *
+ * Asked with a bare <video> and a canvas, so the answer is the engine's and
+ * not a tool's: if this returns false, nothing on the site could have got a
+ * picture out of that file either.
+ *
+ * Two different frames rather than one non-black frame. A decoder that
+ * produces the first frame and then stops - or a <video> that reports a size
+ * it never paints - would pass "is this black", and a tool asked to reverse
+ * such a clip has nothing to work with.
+ */
+export async function canDecodeVideo(
+  page: Page,
+  bytes: Buffer,
+  mimeType = 'video/mp4',
+): Promise<boolean> {
+  return page.evaluate(async ({ data, mimeType }) => {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: mimeType }));
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    try {
+      const ready = new Promise<boolean>((resolve) => {
+        video.onloadeddata = () => resolve(true);
+        video.onerror = () => resolve(false);
+        setTimeout(() => resolve(false), 15_000);
+      });
+      video.src = url;
+      if (!await ready) return false;
+      if (!video.videoWidth || !video.duration || !Number.isFinite(video.duration)) return false;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) return false;
+
+      const at = async (time: number) => {
+        await new Promise<void>((resolve) => {
+          video.onseeked = () => resolve();
+          setTimeout(resolve, 10_000);
+          video.currentTime = time;
+        });
+        context.drawImage(video, 0, 0);
+        const middle = context.getImageData(
+          Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1,
+        ).data;
+        return [middle[0], middle[1], middle[2]];
+      };
+
+      const first = await at(0.1);
+      const later = await at(Math.max(0.2, video.duration - 0.2));
+      return Math.abs(first[0] - later[0])
+        + Math.abs(first[1] - later[1])
+        + Math.abs(first[2] - later[2]) > 12;
+    } finally {
+      video.src = '';
+      URL.revokeObjectURL(url);
+    }
+  }, { data: Array.from(bytes), mimeType });
+}
+
+/**
+ * Can this engine write a video?
+ *
+ * The other half, for the tools that make one rather than read one. Either
+ * road counts: images-to-video reaches for WebCodecs where it can and a
+ * MediaRecorder where it cannot, so an engine with neither cannot produce a
+ * file by any path open to the page.
+ *
+ * `isConfigSupported` is asked about H.264 at a small size because that is
+ * what the tools ask for. An engine that has the class and supports no codec
+ * is exactly the case a `typeof` check misses.
+ */
+export async function canEncodeVideo(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    const global = globalThis as {
+      VideoEncoder?: {
+        isConfigSupported?: (config: unknown) => Promise<{ supported?: boolean }>;
+      };
+      MediaRecorder?: { isTypeSupported?: (type: string) => boolean };
+    };
+    try {
+      const supported = await global.VideoEncoder?.isConfigSupported?.({
+        codec: 'avc1.42001E', width: 320, height: 240,
+      });
+      if (supported?.supported) return true;
+    } catch { /* an engine that throws here cannot encode either */ }
+    const recorder = global.MediaRecorder;
+    if (!recorder?.isTypeSupported) return false;
+    return ['video/mp4;codecs=avc1', 'video/webm;codecs=vp8', 'video/webm']
+      .some((type) => recorder.isTypeSupported!(type));
+  });
+}

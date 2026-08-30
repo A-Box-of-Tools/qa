@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../lib/tools';
+import { quiet } from '../lib/engine';
 
 // A deep, mistyped path - not just a bare bad slug - because the template's
 // own comment on templates/404.html warns this is the one page served at an
@@ -97,7 +98,7 @@ test.describe('404 page', () => {
     });
 
     await page.goto(BROKEN_PATH);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     expect(errors, errors.join('\n')).toEqual([]);
   });

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { FIXTURE_PATIENT, writeDicom, writeSeries } from '../../lib/dicom';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the DICOM Viewer.
@@ -186,7 +187,7 @@ test.describe('dicom-viewer: the promise', () => {
       name: 'patient.dcm', mimeType: 'application/dicom', buffer: bytes,
     });
     await expect(page.locator('#identity-card')).toBeVisible({ timeout: 30_000 });
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'the patient name was sent').not.toContain('QATEST');

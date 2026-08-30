@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { buildPdf, readPages, allText, type FixturePage } from '../../lib/pdf';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the PDF Merger & Splitter.
@@ -231,7 +232,7 @@ test.describe('merge-pdf: the promise', () => {
 
     await load(page, [{ name: 'private.pdf', pages: FIRST }]);
     await build(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     for (const entry of traffic) {
       expect(entry, 'document content was sent').not.toMatch(/one-a|%PDF|application\/pdf/);

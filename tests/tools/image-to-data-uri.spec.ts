@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { realJpeg } from '../../lib/browser-jpeg';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for Image to Data URI.
@@ -153,7 +154,7 @@ test.describe('image-to-data-uri: the promise', () => {
     const jpeg = await realJpeg(page, 200, 200, 26);
     await load(page, jpeg, 'private.jpg');
     await output(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     // A distinctive slice of the file's own base64, rather than a word like
     // "jpeg": the analytics tag legitimately reports this page's address and

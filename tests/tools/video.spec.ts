@@ -4,6 +4,7 @@ import { recordVideo , skipWithoutWebCodecs } from '../../lib/browser-video';
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the video tools: grabbing a frame, cropping,
@@ -389,7 +390,7 @@ test.describe('the video tools: the promise', () => {
     await expect(page.locator('#source')).toBeVisible({ timeout: 60_000 });
     await page.locator('#grab').click();
     await expect(page.locator('#shots-card')).toBeVisible({ timeout: 30_000 });
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = bytes.toString('base64').slice(2000, 2080);
     expect(marker.length).toBeGreaterThan(0);

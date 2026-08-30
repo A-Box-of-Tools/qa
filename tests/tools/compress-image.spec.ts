@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { noisyJpeg, realJpeg } from '../../lib/browser-jpeg';
 import { decodedSize } from '../../lib/browser-image';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the Image Compressor.
@@ -168,7 +169,7 @@ test.describe('compress-image: the promise', () => {
     await load(page, [{ name: 'private.jpg', bytes: photo }]);
     await target(page, 200);
     await compress(page);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     const marker = photo.toString('base64').slice(500, 580);
     expect(marker.length).toBeGreaterThan(0);

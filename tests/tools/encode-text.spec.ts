@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the encoder.
@@ -177,7 +178,7 @@ test.describe('encode-text: the promise', () => {
     await codec(page, 'base64');
     await direction(page, 'encode');
     await run(page, `{"token":"${secret}"}`);
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     // Both forms: this tool's whole job is producing the second one, so
     // checking only for the plain text would miss the leak it is most

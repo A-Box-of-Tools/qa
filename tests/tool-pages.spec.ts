@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { allowedExternalHosts, isKnownBenignHost } from '../lib/csp';
 import { BASE_URL } from '../lib/site';
 import { discoverTools, hasFilePicker } from '../lib/tools';
+import { quiet } from '../lib/engine';
 
 // One test.describe per shipped tool, discovered from the etoolbox checkout
 // itself (see lib/tools.ts) - add a tool there and it is covered here with
@@ -48,7 +49,7 @@ for (const slug of discoverTools()) {
       const errors: string[] = [];
       page.on('pageerror', (err) => errors.push(String(err)));
 
-      await page.waitForLoadState('networkidle');
+      await quiet(page);
 
       expect(errors, errors.join('\n')).toEqual([]);
       await expect(page.locator('#boot-warning')).toBeHidden();
@@ -98,7 +99,7 @@ for (const slug of discoverTools()) {
       });
 
       await page.goto(`/${slug}/`);
-      await page.waitForLoadState('networkidle');
+      await quiet(page);
 
       expect(
         [...unexpected],

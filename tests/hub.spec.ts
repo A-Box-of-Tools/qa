@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../lib/tools';
+import { quiet } from '../lib/engine';
 
 const tools = discoverTools();
 
@@ -74,7 +75,7 @@ test.describe('hub page', () => {
     });
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await quiet(page);
 
     expect(errors, errors.join('\n')).toEqual([]);
   });
