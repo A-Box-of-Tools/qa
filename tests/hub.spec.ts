@@ -109,6 +109,35 @@ test.describe('hub page', () => {
       return route.continue();
     });
 
+    /*
+     * A rejected promise reaches `pageerror` as the string "Unhandled Promise
+     * Rejection: undefined" and nothing else - no reason, no stack, no script
+     * that raised it. That is what this test has been failing on, intermittently
+     * and on WebKit, and blocking the three scripts above did not stop it: the
+     * cause is this site's own code, or a fourth party nobody has named yet.
+     *
+     * Either way, another run reporting the same eleven words would teach us
+     * nothing. This listener is installed before any script on the page and
+     * writes down what the browser knows at the moment of rejection - the
+     * reason's own stack where there is one, its type and text where there is
+     * not - so the next failure arrives with something in it to act on.
+     */
+    await page.addInitScript(() => {
+      const seen: string[] = [];
+      (window as unknown as { __rejections: string[] }).__rejections = seen;
+      window.addEventListener('unhandledrejection', (event) => {
+        const why = (event as PromiseRejectionEvent).reason;
+        if (why === undefined || why === null) {
+          seen.push(`rejected with ${String(why)}; no stack. Script that was running: `
+            + `${document.currentScript?.getAttribute('src') ?? 'none named'}`);
+        } else if (why instanceof Error) {
+          seen.push(`${why.name}: ${why.message}\n${why.stack ?? 'no stack'}`);
+        } else {
+          seen.push(`rejected with ${typeof why}: ${String(why).slice(0, 300)}`);
+        }
+      });
+    });
+
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(String(err)));
     page.on('console', (msg) => {
@@ -123,6 +152,13 @@ test.describe('hub page', () => {
     // would look exactly like a pass.
     await expect(page.locator('a.tool-card').first()).toBeVisible();
 
-    expect(errors, errors.join('\n')).toEqual([]);
+    const detail = await page.evaluate(
+      () => (window as unknown as { __rejections?: string[] }).__rejections ?? [],
+    );
+    expect(
+      errors,
+      [...errors, ...(detail.length ? ['', 'what the page knew about it:', ...detail] : [])]
+        .join('\n'),
+    ).toEqual([]);
   });
 });
