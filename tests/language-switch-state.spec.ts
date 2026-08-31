@@ -242,9 +242,9 @@ test.describe('switching language keeps the work', () => {
 test.describe('switching language keeps the settings too', () => {
   test('a typed box and a chosen option both come back', async ({ page }) => {
     test.setTimeout(120_000);
-    await page.goto('/format-json/');
+    await page.goto('/json-formatter/');
 
-    // format-json rather than a tool with a file: this is the settings path
+    // json-formatter rather than a tool with a file: this is the settings path
     // on its own, so a subject that needs nothing decoded says more about the
     // switcher and less about a decoder. Both kinds of control are here - a
     // textarea, and a select whose value the tool acts on.
@@ -281,7 +281,7 @@ test.describe('switching language keeps the settings too', () => {
       // checks before it intercepts: a reader who has only been reading pays
       // nothing for a feature they are not using, and the language menu is a
       // link that behaves like one.
-      await page.goto('/format-json/');
+      await page.goto('/json-formatter/');
       const before = await page.evaluate(async () => {
         const names = await indexedDB.databases?.() ?? [];
         return names.map((one) => one.name).join(',');

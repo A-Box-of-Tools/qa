@@ -16,6 +16,19 @@ export interface VideoFixtureOptions {
    * many frames get written.
    */
   prefer?: 'mp4' | 'webm';
+  /**
+   * Give the clip a soundtrack.
+   *
+   * A tone from an oscillator, mixed into the recording as a second track.
+   * Off by default and cached separately, so every test that wants a picture
+   * and nothing else goes on getting the silent clip it always had.
+   *
+   * It exists for extract-audio-from-video, where a clip with no sound in it
+   * is not a fixture but a different test: the tool's whole job is to find
+   * the audio track, and it would refuse a silent file for the correct
+   * reason while proving nothing about the job.
+   */
+  withSound?: boolean;
 }
 
 /**
@@ -63,6 +76,7 @@ export async function recordVideo(
     seconds: options.seconds ?? 3,
     fps: options.fps ?? 20,
     prefer: options.prefer ?? 'mp4',
+    withSound: options.withSound ?? false,
   };
 
   const key = JSON.stringify(settings);
@@ -99,7 +113,10 @@ export async function recordVideo(
 /** The recording itself, wherever it is being done. */
 async function record(
   page: Page,
-  settings: { width: number; height: number; seconds: number; fps: number; prefer: string },
+  settings: {
+    width: number; height: number; seconds: number; fps: number;
+    prefer: string; withSound: boolean;
+  },
 ): Promise<{ bytes: Buffer; mimeType: string }> {
   const result = await page.evaluate(async (opts) => {
     const canvas = document.createElement('canvas');
@@ -118,12 +135,38 @@ async function record(
     const mimeType = preferred.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
 
     const stream = canvas.captureStream(opts.fps);
+
+    // The soundtrack, when one was asked for. An oscillator through a
+    // MediaStreamDestination is the only way to get a real audio track into a
+    // MediaRecorder without a microphone, and a microphone is not something a
+    // test runner has. 440 Hz at a quarter of full scale: loud enough to be
+    // unmistakable in the samples that come back, quiet enough not to clip.
+    let audio: { context: AudioContext; oscillator: OscillatorNode } | null = null;
+    if (opts.withSound) {
+      const context = new AudioContext();
+      const oscillator = context.createOscillator();
+      oscillator.frequency.value = 440;
+      const level = context.createGain();
+      level.gain.value = 0.25;
+      const destination = context.createMediaStreamDestination();
+      oscillator.connect(level).connect(destination);
+      oscillator.start();
+      for (const track of destination.stream.getAudioTracks()) stream.addTrack(track);
+      audio = { context, oscillator };
+    }
+
     const recorder = new MediaRecorder(stream, {
       mimeType,
       videoBitsPerSecond: 1_200_000,
     });
 
     const chunks: Blob[] = [];
+    const hush = () => {
+      if (!audio) return;
+      audio.oscillator.stop();
+      void audio.context.close();
+      audio = null;
+    };
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     };
@@ -164,6 +207,10 @@ async function record(
     recorder.stop();
     await stopped;
     stream.getTracks().forEach((track) => track.stop());
+    // The oscillator outlives the recording otherwise, and an AudioContext
+    // left open in a page the next test reuses is a page that never goes
+    // quiet.
+    hush();
 
     const blob = new Blob(chunks, { type: mimeType });
     const bytes = new Uint8Array(await blob.arrayBuffer());

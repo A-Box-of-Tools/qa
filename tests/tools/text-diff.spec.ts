@@ -16,7 +16,7 @@ import { quiet } from '../../lib/engine';
  * the same two inputs are reported as different with the switch off.
  */
 
-const URL_PATH = '/compare-text/';
+const URL_PATH = '/text-diff/';
 
 /**
  * Put both sides in and wait for a verdict.
@@ -57,7 +57,7 @@ async function afterSwitch(page: Page, id: string): Promise<string> {
 /** The tool's two ways of saying "no differences". */
 const SAYS_SAME = /identical|the same|no difference/i;
 
-test.describe('compare-text: finding the difference', () => {
+test.describe('text-diff: finding the difference', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
   });
@@ -92,7 +92,7 @@ test.describe('compare-text: finding the difference', () => {
   });
 });
 
-test.describe('compare-text: the switches, each with its control', () => {
+test.describe('text-diff: the switches, each with its control', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
   });
@@ -138,7 +138,7 @@ test.describe('compare-text: the switches, each with its control', () => {
   });
 });
 
-test.describe('compare-text: the presentation', () => {
+test.describe('text-diff: the presentation', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
   });
@@ -166,7 +166,7 @@ test.describe('compare-text: the presentation', () => {
   });
 });
 
-test.describe('compare-text: the promise', () => {
+test.describe('text-diff: the promise', () => {
   test('neither side ever appears in a request', async ({ page }) => {
     // People compare a config against a working one, and a contract against
     // the version they signed. Both boxes are as sensitive as each other, so

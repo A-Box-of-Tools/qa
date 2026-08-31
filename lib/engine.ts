@@ -202,3 +202,68 @@ export async function quiet(
     page.off('request', seen);
   }
 }
+
+/**
+ * Can this engine decode a sound file?
+ *
+ * Three tools need it - the audio editor, the trimmer, and the extractor
+ * website #297 added - and all three ask the browser rather than carrying a
+ * decoder, which is the right choice and makes them exactly as capable as the
+ * browser is. Playwright's WebKit on Windows has no Web Audio at all:
+ * `AudioContext`, `webkitAudioContext` and `OfflineAudioContext` are every
+ * one of them undefined. The Linux build CI runs has them, which is why this
+ * asks instead of naming a browser - a gate written from either machine alone
+ * would be wrong on the other, and that mistake has already been made twice
+ * in this repository.
+ *
+ * Asked by decoding rather than by name: a tenth of a second of silence,
+ * built here as a WAV, handed to decodeAudioData. An engine that will not
+ * take that will not take anything a visitor brings either.
+ */
+export async function canDecodeAudio(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    const Context = (globalThis as {
+      AudioContext?: typeof AudioContext;
+      webkitAudioContext?: typeof AudioContext;
+    }).AudioContext ?? (globalThis as {
+      webkitAudioContext?: typeof AudioContext;
+    }).webkitAudioContext;
+    if (typeof Context !== 'function') return false;
+
+    // A tenth of a second of 16-bit PCM silence: forty-four bytes of header
+    // and then the samples, which is the whole of a WAV.
+    const rate = 44_100;
+    const frames = Math.round(rate / 10);
+    const bytes = new ArrayBuffer(44 + (frames * 2));
+    const view = new DataView(bytes);
+    const ascii = (at: number, text: string) => {
+      for (let i = 0; i < text.length; i += 1) view.setUint8(at + i, text.charCodeAt(i));
+    };
+    ascii(0, 'RIFF');
+    view.setUint32(4, 36 + (frames * 2), true);
+    ascii(8, 'WAVEfmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true);
+    view.setUint32(28, rate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    ascii(36, 'data');
+    view.setUint32(40, frames * 2, true);
+
+    let context: AudioContext | null = null;
+    try {
+      context = new Context();
+      const decoded = await Promise.race([
+        context.decodeAudioData(bytes),
+        new Promise<null>((resolve) => { setTimeout(() => resolve(null), 5_000); }),
+      ]);
+      return Boolean(decoded && decoded.length > 0);
+    } catch {
+      return false;
+    } finally {
+      void context?.close();
+    }
+  });
+}

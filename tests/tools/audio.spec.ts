@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { loudThenQuiet, peakBetween, readWav } from '../../lib/wav';
-import { quiet } from '../../lib/engine';
+import { canDecodeAudio, quiet } from '../../lib/engine';
 
 /**
  * Tool-level functional tests for the two sound tools: the editor and the
@@ -26,6 +26,25 @@ import { quiet } from '../../lib/engine';
 
 const EDITOR = '/edit-audio/';
 const TRIMMER = '/trim-audio/';
+
+/*
+ * Both tools ask the browser to decode the sound, which is the right choice
+ * and makes them exactly as capable as the browser is. Playwright's WebKit on
+ * Windows has no Web Audio at all - AudioContext, webkitAudioContext and
+ * OfflineAudioContext are every one of them undefined - so nothing here can
+ * be loaded, let alone edited. The Linux build CI runs has it and runs these
+ * tests, which is why the question is asked rather than answered by naming a
+ * browser.
+ *
+ * What such an engine does instead is asserted in
+ * tests/tools/extract-audio-from-video.spec.ts, where the sentence is
+ * clearest: a page that cannot read a sound file has to say so.
+ */
+test.beforeEach(async ({ page }) => {
+  await page.goto(EDITOR);
+  test.skip(!await canDecodeAudio(page),
+    'this engine has no Web Audio, so no sound file can be read here at all');
+});
 
 const SECONDS = 3;
 const SAMPLE_RATE = 44_100;
