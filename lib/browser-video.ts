@@ -1,4 +1,5 @@
 import { chromium, type Page } from '@playwright/test';
+import { ask } from './engine';
 
 export interface VideoFixtureOptions {
   width?: number;
@@ -275,7 +276,12 @@ export async function canDecodeVideo(
   bytes: Buffer,
   mimeType = 'video/mp4',
 ): Promise<boolean> {
-  return page.evaluate(async ({ data, mimeType }) => {
+  // Bounded and remembered from out here, like every other probe - see ask()
+  // in lib/engine.ts for why a deadline inside the page is not enough. The
+  // fixture's length is in the key because this one is a question about
+  // particular bytes, and a different clip is a different question.
+  return ask(page, `decode-video:${mimeType}:${bytes.length}`, () =>
+    page.evaluate(async ({ data, mimeType }) => {
     const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: mimeType }));
     const video = document.createElement('video');
     video.muted = true;
@@ -319,7 +325,7 @@ export async function canDecodeVideo(
       video.src = '';
       URL.revokeObjectURL(url);
     }
-  }, { data: Array.from(bytes), mimeType });
+  }, { data: Array.from(bytes), mimeType }), false, 45_000);
 }
 
 /**
@@ -349,7 +355,7 @@ export async function canDecodeVideo(
  * any.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
-  return page.evaluate(async () => {
+  return ask(page, 'encode-video', () => page.evaluate(async () => {
     const global = globalThis as {
       VideoEncoder?: {
         isConfigSupported?: (config: unknown) => Promise<{ supported?: boolean }>;
@@ -370,5 +376,5 @@ export async function canEncodeVideo(page: Page): Promise<boolean> {
     if (!recorder?.isTypeSupported) return false;
     return ['video/mp4;codecs=avc1', 'video/webm;codecs=vp8', 'video/webm']
       .some((type) => recorder.isTypeSupported!(type));
-  });
+  }), false);
 }

@@ -22,7 +22,71 @@ import type { Page } from '@playwright/test';
  * browser's own objects - a File, a canvas, an IndexedDB store - and touch no
  * page of the site at all, so a tool that broke can never make one of them
  * return false and quietly take its own test out of the run.
+ *
+ * EVERY ONE OF THEM IS BOUNDED FROM OUT HERE, AND ASKED ONCE
+ *
+ * See ask() below. Both halves of that were learned the expensive way and
+ * both are load-bearing.
  */
+
+/**
+ * Answers this worker already has, by engine and question.
+ *
+ * A browser does not grow a codec halfway through a run, so asking once and
+ * remembering is not an optimisation of a correct thing - it is what makes
+ * these affordable at all. Before this, every test in a gated file paid the
+ * probe again, inside its own thirty-second budget, on top of a navigation to
+ * the live site; the camera gate alone could spend ten seconds per test
+ * establishing a fact that had not changed since the first one.
+ *
+ * Keyed by engine as well as question, because a worker is not guaranteed to
+ * stay with one project for its whole life and an answer from Chromium is not
+ * an answer about WebKit.
+ */
+const answers = new Map<string, unknown>();
+
+/**
+ * Put a question to the page, and take silence for an answer.
+ *
+ * THE PART THAT MATTERS: the deadline is out here, in Node, and not inside
+ * the page. The first version of these probes raced the question against a
+ * `setTimeout` in the browser, which is sound reasoning about a promise that
+ * never settles and useless against the thing that actually happens.
+ * `VideoEncoder.isConfigSupported` on the WebKit build CI runs does not merely
+ * fail to resolve - it blocks the main thread, so the timer set to rescue it
+ * never gets a turn. A probe with a two-second internal deadline sat there for
+ * a hundred and twenty seconds and took nineteen tests down with it, every one
+ * of them a test the probe existed to skip.
+ *
+ * A timer in this process cannot be blocked by that page. So the bound is
+ * here, the fallback is the cautious answer, and a wedged page costs one
+ * deadline rather than one test timeout per test in the file.
+ *
+ * The abandoned evaluate is left running. There is nothing useful to do with
+ * a page whose main thread is stuck, and the only caller is a skip - after
+ * which Playwright discards the page anyway.
+ */
+export async function ask<T>(
+  page: Page,
+  question: string,
+  work: () => Promise<T>,
+  cautious: T,
+  ms = 8_000,
+): Promise<T> {
+  const engine = page.context().browser()?.browserType().name() ?? 'unknown';
+  const key = `${engine}:${question}`;
+  if (answers.has(key)) return answers.get(key) as T;
+
+  let timer: NodeJS.Timeout | undefined;
+  const answer = await Promise.race([
+    work().catch(() => cautious),
+    new Promise<T>((resolve) => { timer = setTimeout(() => resolve(cautious), ms); }),
+  ]);
+  clearTimeout(timer);
+
+  answers.set(key, answer);
+  return answer;
+}
 
 /**
  * Can this engine keep a File in IndexedDB?
@@ -42,7 +106,7 @@ import type { Page } from '@playwright/test';
  * test build - it is a state some visitors are in.
  */
 export async function keepsFilesInStorage(page: Page): Promise<boolean> {
-  return page.evaluate(async () => {
+  return ask(page, 'files-in-storage', () => page.evaluate(async () => {
     const NAME = 'abox-qa-storage-probe';
     try {
       const db: IDBDatabase = await new Promise((resolve, reject) => {
@@ -67,7 +131,7 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
     } catch {
       return false;
     }
-  });
+  }), false);
 }
 
 /**
@@ -84,7 +148,8 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
  * picture to, and the CI build is exactly that.
  */
 export async function hasCameraInterface(page: Page): Promise<boolean> {
-  return page.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia));
+  return ask(page, 'camera-interface',
+    () => page.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia)), false);
 }
 
 /**
@@ -113,7 +178,7 @@ export async function hasCameraInterface(page: Page): Promise<boolean> {
  * difference.
  */
 export async function canFakeCamera(page: Page): Promise<boolean> {
-  return page.evaluate(async () => {
+  return ask(page, 'fake-camera', () => page.evaluate(async () => {
     // A 2x2 red PNG, the smallest thing that proves the decode path works.
     const PICTURE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAAB'
       + 'ytg0kAAAAFElEQVR4nGP8z4AATAxIYBQAAgAA//8DPQEQdOJPHwAAAABJRU5ErkJggg==';
@@ -140,7 +205,7 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
         image.onload = () => resolve(true);
         image.onerror = () => resolve(false);
         image.src = PICTURE;
-      }), 5_000, false);
+      }), 3_000, false);
       if (!drawn) return false;
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
@@ -151,7 +216,10 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
       video.muted = true;
       video.playsInline = true;
       video.srcObject = stream;
-      await video.play().catch(() => {});
+      // Bounded like everything else here. On an engine whose canvas stream
+      // never paints, play() is a promise that may never settle, and this one
+      // is inside the page - so it is raced there as well as out in Node.
+      await give(video.play().catch(() => {}), 3_000, undefined);
 
       const painted = await give(new Promise<boolean>((resolve) => {
         const look = () => {
@@ -159,7 +227,7 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
           else requestAnimationFrame(look);
         };
         look();
-      }), 5_000, false);
+      }), 3_000, false);
 
       for (const track of stream.getTracks()) track.stop();
       video.srcObject = null;
@@ -167,7 +235,7 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
     } catch {
       return false;
     }
-  });
+  }), false);
 }
 
 /**
@@ -221,7 +289,7 @@ export async function quiet(
  * take that will not take anything a visitor brings either.
  */
 export async function canDecodeAudio(page: Page): Promise<boolean> {
-  return page.evaluate(async () => {
+  return ask(page, 'decode-audio', () => page.evaluate(async () => {
     const Context = (globalThis as {
       AudioContext?: typeof AudioContext;
       webkitAudioContext?: typeof AudioContext;
@@ -265,5 +333,5 @@ export async function canDecodeAudio(page: Page): Promise<boolean> {
     } finally {
       void context?.close();
     }
-  });
+  }), false);
 }
