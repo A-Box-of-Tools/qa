@@ -66,7 +66,7 @@ test.describe('no tool shows a phrase key where a sentence belongs', () => {
       //
       // The heading rather than a length of text. How much text a tool page
       // shows at rest varies enormously - gif-analyzer is seventy-nine
-      // characters and compare-text is nothing at all, being two boxes and
+      // characters and text-diff is nothing at all, being two boxes and
       // some buttons - so a threshold would fail honest pages while proving
       // very little about the rest.
       await expect(page.locator('header.topbar h1'),

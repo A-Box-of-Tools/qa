@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { quiet } from '../../lib/engine';
+import { through } from '../../lib/text-panes';
 
 /**
  * Tool-level functional tests for the encoder.
@@ -16,7 +17,7 @@ import { quiet } from '../../lib/engine';
  * plane - one string that catches four different ways of getting UTF-8 wrong.
  */
 
-const URL_PATH = '/encode-text/';
+const URL_PATH = '/base64/';
 
 const AWKWARD = 'héllo — 東京 🧰';
 
@@ -33,25 +34,7 @@ async function direction(page: Page, which: 'encode' | 'decode'): Promise<void> 
   await page.locator(`input[name="direction"][value="${which}"]`).check();
 }
 
-/**
- * Type into the main box and read the output back.
- *
- * Clearing first is what makes the reading trustworthy. The output box is
- * already full from whatever ran before, so "wait until it is not empty"
- * is satisfied instantly by the previous answer - which is how the first
- * draft of this file managed to compare base64url's output against base64's
- * and call it a round-trip failure. Empty, then filled, is a state the
- * previous run cannot have left behind.
- */
-async function run(page: Page, text: string): Promise<string> {
-  await page.locator('#clear').click();
-  await expect(page.locator('#output')).toBeEmpty({ timeout: 20_000 });
-  await page.locator('#input').fill(text);
-  await expect(page.locator('#output')).not.toBeEmpty({ timeout: 20_000 });
-  return (await page.locator('#output').textContent()) ?? '';
-}
-
-test.describe('encode-text: against Node, not against itself', () => {
+test.describe('base64: against Node, not against itself', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
   });
@@ -60,7 +43,7 @@ test.describe('encode-text: against Node, not against itself', () => {
     await codec(page, 'base64');
     await direction(page, 'encode');
 
-    const out = (await run(page, AWKWARD)).trim();
+    const out = (await through(page, AWKWARD)).trim();
     expect(out).toBe(Buffer.from(AWKWARD, 'utf8').toString('base64'));
   });
 
@@ -68,7 +51,7 @@ test.describe('encode-text: against Node, not against itself', () => {
     await codec(page, 'base64');
     await direction(page, 'decode');
 
-    const out = await run(page, Buffer.from(AWKWARD, 'utf8').toString('base64'));
+    const out = await through(page, Buffer.from(AWKWARD, 'utf8').toString('base64'));
     expect(out.trim()).toBe(AWKWARD);
   });
 
@@ -78,7 +61,7 @@ test.describe('encode-text: against Node, not against itself', () => {
     await codec(page, 'base64url');
     await direction(page, 'encode');
 
-    const out = (await run(page, text)).trim();
+    const out = (await through(page, text)).trim();
     expect(out).not.toMatch(/[+/]/);
     expect(out).toBe(
       Buffer.from(text, 'utf8').toString('base64')
@@ -90,7 +73,7 @@ test.describe('encode-text: against Node, not against itself', () => {
     await codec(page, 'hex');
     await direction(page, 'encode');
 
-    const out = (await run(page, AWKWARD)).trim().toLowerCase().replace(/[^0-9a-f]/g, '');
+    const out = (await through(page, AWKWARD)).trim().toLowerCase().replace(/[^0-9a-f]/g, '');
     expect(out).toBe(Buffer.from(AWKWARD, 'utf8').toString('hex'));
   });
 
@@ -109,18 +92,18 @@ test.describe('encode-text: against Node, not against itself', () => {
     for (const id of ['base64', 'base64url', 'hex', 'url', 'escapes']) {
       await codec(page, id);
       await direction(page, 'encode');
-      const encoded = (await run(page, AWKWARD)).trim();
+      const encoded = (await through(page, AWKWARD)).trim();
 
       await codec(page, id);
       await direction(page, 'decode');
-      const back = await run(page, encoded);
+      const back = await through(page, encoded);
 
       expect(back.trim(), `${id} did not survive the return trip`).toBe(AWKWARD);
     }
   });
 });
 
-test.describe('encode-text: the ones with a point to them', () => {
+test.describe('base64: the ones with a point to them', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
   });
@@ -129,7 +112,7 @@ test.describe('encode-text: the ones with a point to them', () => {
     await codec(page, 'html');
     await direction(page, 'encode');
 
-    const out = await run(page, '<script>alert("x" & \'y\')</script>');
+    const out = await through(page, '<script>alert("x" & \'y\')</script>');
     expect(out).not.toContain('<script>');
     expect(out).toContain('&lt;');
     expect(out).toContain('&gt;');
@@ -145,11 +128,11 @@ test.describe('encode-text: the ones with a point to them', () => {
 
     await codec(page, 'url');
     await direction(page, 'encode');
-    const asValue = (await run(page, url)).trim();
+    const asValue = (await through(page, url)).trim();
 
     await codec(page, 'url-whole');
     await direction(page, 'encode');
-    const asWhole = (await run(page, url)).trim();
+    const asWhole = (await through(page, url)).trim();
 
     expect(asValue, 'the two URL codecs produced identical output').not.toBe(asWhole);
     // The value form has to escape the separators; the whole-URL form must not.
@@ -172,7 +155,7 @@ test.describe('encode-text: the ones with a point to them', () => {
   });
 });
 
-test.describe('encode-text: the promise', () => {
+test.describe('base64: the promise', () => {
   test('what is typed never appears in a request', async ({ page }) => {
     await page.goto(URL_PATH);
 
@@ -184,7 +167,7 @@ test.describe('encode-text: the promise', () => {
     const secret = 'ghp_QAcanary9f3e71dNotForSending';
     await codec(page, 'base64');
     await direction(page, 'encode');
-    await run(page, `{"token":"${secret}"}`);
+    await through(page, `{"token":"${secret}"}`);
     await quiet(page);
 
     // Both forms: this tool's whole job is producing the second one, so

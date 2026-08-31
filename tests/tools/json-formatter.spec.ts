@@ -1,5 +1,6 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { quiet } from '../../lib/engine';
+import { afterSetting, mode, through } from '../../lib/text-panes';
 
 /**
  * Tool-level functional tests for the formatter.
@@ -22,52 +23,9 @@ import { quiet } from '../../lib/engine';
  * text where the setting under test is about the text.
  */
 
-const URL_PATH = '/format-json/';
+const URL_PATH = '/json-formatter/';
 
-/** Switch to a tab and wait for its panel. */
-async function mode(page: Page, name: 'format' | 'convert'): Promise<void> {
-  await page.locator(`#tab-${name}`).click();
-  await expect(page.locator(`#options-${name}`)).toBeVisible();
-}
-
-/**
- * Type into the main box and read the output back.
- *
- * Clearing first is what makes the reading trustworthy: the output box is
- * already full from whatever ran before, so "wait until it is not empty" is
- * satisfied instantly by the previous answer. Empty, then filled, is a state
- * the previous run cannot have left behind.
- */
-async function run(page: Page, text: string): Promise<string> {
-  await page.locator('#clear').click();
-  await expect(page.locator('#output')).toBeEmpty({ timeout: 20_000 });
-  await page.locator('#input').fill(text);
-  await expect(page.locator('#output')).not.toBeEmpty({ timeout: 20_000 });
-  return (await page.locator('#output').textContent()) ?? '';
-}
-
-/**
- * Change a setting and wait for the answer to actually change.
- *
- * Same trap as above in a different shape: after flipping a switch the old
- * output is still on screen, and reading it immediately reads the answer to
- * the previous question.
- *
- * Polling the text rather than using toHaveText, because toHaveText
- * normalises whitespace - and on this tool the whitespace is the entire
- * subject. Changing the indent from two spaces to four changes nothing that
- * a normalising comparison can see, so the wait would sit there until it
- * timed out while the page had in fact answered immediately.
- */
-async function afterSetting(page: Page, change: () => Promise<unknown>): Promise<string> {
-  const read = async () => (await page.locator('#output').textContent()) ?? '';
-  const before = await read();
-  await change();
-  await expect.poll(read, { timeout: 20_000 }).not.toBe(before);
-  return read();
-}
-
-test.describe('format-json: laying things out', () => {
+test.describe('json-formatter: laying things out', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
     await mode(page, 'format');
@@ -80,7 +38,7 @@ test.describe('format-json: laying things out', () => {
     const source = '{"b":1,"a":[3,2,{"deep":true}],"s":"x","n":null,"f":1.5}';
     await page.locator('#language').selectOption('json');
 
-    const out = await run(page, source);
+    const out = await through(page, source);
     expect(JSON.parse(out)).toEqual(JSON.parse(source));
     // And it was actually laid out, not handed back unchanged.
     expect(out).toContain('\n');
@@ -90,7 +48,7 @@ test.describe('format-json: laying things out', () => {
     await page.locator('#language').selectOption('json');
 
     await page.locator('#indent').selectOption('2');
-    const two = await run(page, '{"a":{"b":1}}');
+    const two = await through(page, '{"a":{"b":1}}');
     expect(two.split('\n').find((line) => line.includes('"a"'))).toMatch(/^ {2}"a"/);
 
     const four = await afterSetting(page, () => page.locator('#indent').selectOption('4'));
@@ -107,7 +65,7 @@ test.describe('format-json: laying things out', () => {
     await page.locator('#language').selectOption('json');
     await page.locator('#style').selectOption('minify');
 
-    const out = (await run(page, source)).trim();
+    const out = (await through(page, source)).trim();
     expect(out).not.toContain('\n');
     expect(JSON.parse(out)).toEqual(JSON.parse(source));
   });
@@ -116,7 +74,7 @@ test.describe('format-json: laying things out', () => {
     await page.locator('#language').selectOption('json');
     await page.locator('#sort-keys').check();
 
-    const out = await run(page, '{"c":3,"a":1,"b":2}');
+    const out = await through(page, '{"c":3,"a":1,"b":2}');
     expect(JSON.parse(out)).toEqual({ a: 1, b: 2, c: 3 });
     expect(out.indexOf('"a"')).toBeLessThan(out.indexOf('"b"'));
     expect(out.indexOf('"b"')).toBeLessThan(out.indexOf('"c"'));
@@ -129,7 +87,7 @@ test.describe('format-json: laying things out', () => {
     // number is the very mistake being tested for.
     await page.locator('#language').selectOption('json');
 
-    const out = await run(page, '{"id":9007199254740993,"small":1e-7,"neg":-0.0}');
+    const out = await through(page, '{"id":9007199254740993,"small":1e-7,"neg":-0.0}');
     expect(out).toContain('9007199254740993');
   });
 
@@ -145,7 +103,7 @@ test.describe('format-json: laying things out', () => {
   });
 });
 
-test.describe('format-json: the other languages', () => {
+test.describe('json-formatter: the other languages', () => {
   // The tool is named for JSON and handles five languages. The four that are
   // not JSON had no coverage at all when this page was split out of Text &
   // Code, which makes them exactly where a regression would go unnoticed.
@@ -157,7 +115,7 @@ test.describe('format-json: the other languages', () => {
   test('XML is laid out and keeps its content', async ({ page }) => {
     await page.locator('#language').selectOption('xml');
 
-    const out = await run(page, '<a><b attr="1">text</b><c/></a>');
+    const out = await through(page, '<a><b attr="1">text</b><c/></a>');
     expect(out).toContain('\n');
     expect(out).toContain('<b');
     expect(out).toContain('text');
@@ -167,7 +125,7 @@ test.describe('format-json: the other languages', () => {
   test('CSS is laid out and keeps its declarations', async ({ page }) => {
     await page.locator('#language').selectOption('css');
 
-    const out = await run(page, 'a{color:red;background:blue}b{margin:0}');
+    const out = await through(page, 'a{color:red;background:blue}b{margin:0}');
     expect(out).toContain('\n');
     expect(out).toContain('color');
     expect(out).toContain('red');
@@ -179,12 +137,12 @@ test.describe('format-json: the other languages', () => {
     // the one where being wrong is least visible.
     await page.locator('#language').selectOption('auto');
 
-    await run(page, '{"clearly":"json"}');
+    await through(page, '{"clearly":"json"}');
     await expect(page.locator('#detected')).toContainText(/json/i);
   });
 });
 
-test.describe('format-json: converting', () => {
+test.describe('json-formatter: converting', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
     await mode(page, 'convert');
@@ -197,11 +155,11 @@ test.describe('format-json: converting', () => {
     const data = { name: 'Ada', age: 36, tags: ['one', 'two'], ok: true, none: null };
 
     await page.locator('#conversion').selectOption('json-yaml');
-    const yaml = await run(page, JSON.stringify(data));
+    const yaml = await through(page, JSON.stringify(data));
     expect(yaml.length).toBeGreaterThan(0);
 
     await page.locator('#conversion').selectOption('yaml-json');
-    const back = await run(page, yaml);
+    const back = await through(page, yaml);
     expect(JSON.parse(back)).toEqual(data);
   });
 
@@ -212,12 +170,12 @@ test.describe('format-json: converting', () => {
     const data = { name: 'Ada', city: 'Cairo' };
 
     await page.locator('#conversion').selectOption('json-xml');
-    const xml = await run(page, JSON.stringify(data));
+    const xml = await through(page, JSON.stringify(data));
     expect(xml).toContain('Ada');
     expect(xml).toContain('Cairo');
 
     await page.locator('#conversion').selectOption('xml-json');
-    const back = await run(page, xml);
+    const back = await through(page, xml);
     expect(back).toContain('Ada');
     expect(back).toContain('Cairo');
     // Whatever it wrapped it in, it must still be JSON.
@@ -225,7 +183,7 @@ test.describe('format-json: converting', () => {
   });
 });
 
-test.describe('format-json: the promise', () => {
+test.describe('json-formatter: the promise', () => {
   test('what is typed never appears in a request', async ({ page }) => {
     // The tool's own example of what people paste into an online formatter:
     // access tokens, session cookies, customer records.
@@ -239,7 +197,7 @@ test.describe('format-json: the promise', () => {
     const secret = 'ghp_QAcanary9f3e71dNotForSending';
     await mode(page, 'format');
     await page.locator('#language').selectOption('json');
-    await run(page, `{"token":"${secret}"}`);
+    await through(page, `{"token":"${secret}"}`);
     await quiet(page);
 
     for (const entry of traffic) {
