@@ -71,26 +71,102 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
 }
 
 /**
- * Can this engine be handed a camera at all?
+ * Does this engine offer a camera interface at all?
  *
- * Both halves are needed and for different reasons. `navigator.mediaDevices`
- * is what the tool asks for, and Playwright's WebKit does not define it -
- * which means the camera path cannot even be reached there, and also that a
- * stub cannot be installed, since there is no object to put one on.
- * `canvas.captureStream` is how this suite supplies a picture to that stub;
- * without it there is nothing to hand back.
+ * The narrow question, and the one the tool itself asks: `camera.available()`
+ * in tools/qr-barcode-reader/src/camera.js is this same expression. When it is
+ * false the reader says "This browser has no camera interface for a page to
+ * ask for", which is the sentence the refusal test checks - so that test needs
+ * to know exactly what the tool knows, and nothing more.
+ *
+ * Distinct from canFakeCamera() below, which asks whether a camera can be
+ * supplied. An engine can have the interface and still be impossible to hand a
+ * picture to, and the CI build is exactly that.
+ */
+export async function hasCameraInterface(page: Page): Promise<boolean> {
+  return page.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia));
+}
+
+/**
+ * Can this engine be given the fake camera the reader's tests hand it?
+ *
+ * Not "does it have the API", which was the first version of this and was
+ * wrong in the expensive direction. Playwright's WebKit on Windows defines no
+ * `navigator.mediaDevices` at all; the Linux build CI runs defines it, and
+ * `canvas.captureStream` beside it, and then hands back a stream that never
+ * paints - so a presence check said yes and six tests then failed on a camera
+ * card that never appeared.
+ *
+ * So this runs the stub's own steps, in order, and answers whether they end
+ * with a picture: decode a picture from a data: URL, draw it, capture the
+ * canvas, put the stream in a <video>, and wait for the frame the tool waits
+ * for. Every one of those is something tests/tools/qr-camera.spec.ts does,
+ * which is what makes a false here mean "no fake camera is possible on this
+ * engine" rather than "some API was missing".
+ *
+ * Bounded, and false on the way out. A probe that can hang is a probe that
+ * turns a skip into a test timeout, which is the one outcome worse than the
+ * failure it was meant to prevent.
  *
  * A page has to be open for this: `navigator` on `about:blank` is not the
- * navigator of a page served over https, and mediaDevices is one of the
- * things that depends on the difference.
+ * navigator of a page served over https, and mediaDevices depends on the
+ * difference.
  */
-export async function hasCameraApi(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+export async function canFakeCamera(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    // A 2x2 red PNG, the smallest thing that proves the decode path works.
+    const PICTURE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAAB'
+      + 'ytg0kAAAAFElEQVR4nGP8z4AATAxIYBQAAgAA//8DPQEQdOJPHwAAAABJRU5ErkJggg==';
+
+    const give = <T>(work: Promise<T>, ms: number, fallback: T): Promise<T> =>
+      Promise.race([work, new Promise<T>((resolve) => { setTimeout(() => resolve(fallback), ms); })]);
+
+    if (!navigator.mediaDevices?.getUserMedia) return false;
+
     const canvas = document.createElement('canvas');
-    return Boolean(navigator.mediaDevices?.getUserMedia)
-      && typeof (canvas as HTMLCanvasElement & {
-        captureStream?: () => MediaStream;
-      }).captureStream === 'function';
+    canvas.width = 64;
+    canvas.height = 64;
+    const capture = (canvas as HTMLCanvasElement & {
+      captureStream?: (fps?: number) => MediaStream;
+    }).captureStream;
+    if (typeof capture !== 'function') return false;
+
+    const context = canvas.getContext('2d');
+    if (!context) return false;
+
+    try {
+      const image = new Image();
+      const drawn = await give(new Promise<boolean>((resolve) => {
+        image.onload = () => resolve(true);
+        image.onerror = () => resolve(false);
+        image.src = PICTURE;
+      }), 5_000, false);
+      if (!drawn) return false;
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+      const stream = capture.call(canvas, 30);
+      if (!stream || stream.getVideoTracks().length === 0) return false;
+
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await video.play().catch(() => {});
+
+      const painted = await give(new Promise<boolean>((resolve) => {
+        const look = () => {
+          if (video.videoWidth > 0) resolve(true);
+          else requestAnimationFrame(look);
+        };
+        look();
+      }), 5_000, false);
+
+      for (const track of stream.getTracks()) track.stop();
+      video.srcObject = null;
+      return painted;
+    } catch {
+      return false;
+    }
   });
 }
 

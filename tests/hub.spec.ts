@@ -67,7 +67,48 @@ test.describe('hub page', () => {
     await expect(page.locator('nav.crumbs [aria-current="page"]')).toBeVisible();
   });
 
+  /*
+   * The hub loads three scripts nobody here wrote - AdSense, the Google tag,
+   * and the Buy Me a Coffee button - and they are refused for the length of
+   * this test.
+   *
+   * Not to make it pass. To make it mean something. What it kept catching was
+   * `Unhandled Promise Rejection: undefined`, on WebKit, from one of those
+   * three: a rejection with no reason, no stack and no origin, which cannot be
+   * attributed, cannot be acted on, and is not this site's to fix. It failed
+   * on Mobile Safari one night and Desktop Safari the next, which is what a
+   * third party having a bad minute looks like.
+   *
+   * A suite that fails on somebody else's script teaches everyone to skim its
+   * failures, which costs more than this test is worth. So the question it
+   * asks is the answerable one: does the code in this repository raise
+   * anything when the hub loads.
+   *
+   * Refused rather than left out of the assertion, because the two are not the
+   * same. Filtering would leave their errors uncounted while their side
+   * effects stayed on the page; this way nothing of theirs runs at all, and
+   * anything that then goes wrong is ours.
+   *
+   * Answered with an empty script rather than aborted. An abort is a failed
+   * request, and a failed request is a console error - three of them, which
+   * this test would then have counted as the very thing it is looking for.
+   */
+  const OTHERS = [
+    'googlesyndication.com',
+    'googletagmanager.com',
+    'google-analytics.com',
+    'buymeacoffee.com',
+  ];
+
   test('raises no console or page errors while loading', async ({ page }) => {
+    await page.route('**/*', (route) => {
+      const url = route.request().url();
+      if (OTHERS.some((host) => url.includes(host))) {
+        return route.fulfill({ status: 200, contentType: 'application/javascript', body: '' });
+      }
+      return route.continue();
+    });
+
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(String(err)));
     page.on('console', (msg) => {
@@ -76,6 +117,11 @@ test.describe('hub page', () => {
 
     await page.reload();
     await quiet(page);
+
+    // The control. With every request routed there is a way to break this
+    // test into one that loads nothing and therefore reports nothing, and it
+    // would look exactly like a pass.
+    await expect(page.locator('a.tool-card').first()).toBeVisible();
 
     expect(errors, errors.join('\n')).toEqual([]);
   });
