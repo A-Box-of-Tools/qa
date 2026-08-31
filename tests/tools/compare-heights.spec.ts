@@ -174,15 +174,27 @@ test.describe('compare-heights: what goes in the picture', () => {
       const wide = await page.evaluate(() =>
         document.querySelector('#preview svg')!.getAttribute('viewBox'));
 
-      // The ground line, which only the ruler draws: no figure is nought tall,
-      // so "0 cm" is in the picture when the ruler is and not otherwise. The
-      // first draft looked for any centimetre label and found the heights
-      // written above each figure, which stay whatever the ruler does.
-      expect(await chartText(page), 'the ruler was never drawn').toContain('0 cm');
+      // What a ruler is, said as a test: marks at heights nobody typed. The
+      // figures here are 100 and 200, so any other centimetre label in the
+      // picture - 20, 40, 60 - is a gradation and can only have come from the
+      // ruler.
+      //
+      // Two drafts got this wrong in opposite directions. The first looked for
+      // any centimetre label and found the heights written above each figure,
+      // which stay whatever the ruler does. The second looked for "0 cm" on the
+      // ground line, which was there the day it was written and was gone by the
+      // next deploy - a label the design is entitled to drop. A gradation is
+      // neither: it is what the feature IS, so the test says so.
+      const gradations = async () => (await chartText(page))
+        .filter((one) => /^\d+\s*cm$/.test(one))
+        .filter((one) => one !== '100 cm' && one !== '200 cm');
+
+      expect((await gradations()).length, 'the ruler was never drawn')
+        .toBeGreaterThan(0);
 
       await page.locator('#show-ruler').uncheck();
-      await expect.poll(async () => (await chartText(page)).includes('0 cm'),
-        { timeout: 20_000 }).toBe(false);
+      await expect.poll(async () => (await gradations()).length,
+        { timeout: 20_000 }).toBe(0);
 
       const narrow = await page.evaluate(() =>
         document.querySelector('#preview svg')!.getAttribute('viewBox'));

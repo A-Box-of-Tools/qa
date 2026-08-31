@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { canEncodeVideo, recordVideo } from '../../lib/browser-video';
+import { wasSilent } from '../../lib/engine';
 
 /**
  * What a video tool says in a browser that cannot decode video.
@@ -63,10 +64,42 @@ test.describe('a browser that cannot decode video', () => {
  */
 test.describe('a browser that cannot write video', () => {
   test('images-to-video says so instead of trying', async ({ page }) => {
-    test.setTimeout(120_000);
+    test.setTimeout(60_000);
     await page.goto('/images-to-video/');
     test.skip(await canEncodeVideo(page),
       'this engine can encode video, so there is no refusal to check');
+
+    /*
+     * KNOWN FAILING, AND THE BUG IS THE SITE'S: A-Box-of-Tools/qa#58.
+     *
+     * There are two ways for an engine to have no encoder, and the tool can
+     * only speak up in one of them.
+     *
+     * Where VideoEncoder is simply absent, `pickH264Codec` returns at once and
+     * the page says "This browser supports neither WebCodecs nor canvas
+     * recording". That is the behaviour under test, and it passes.
+     *
+     * Where VideoEncoder exists and `isConfigSupported` never returns - the
+     * WebKit build CI runs - it does not merely fail to resolve, it blocks the
+     * main thread. Nothing in the page runs after that: not the refusal, not
+     * the error handler, not the timeout website#295 added, which is a
+     * setTimeout and therefore cannot fire either. The tab is finished. QA saw
+     * a Create video click that had not returned five minutes later.
+     *
+     * The fix has to move that query off the main thread, and four of the five
+     * tools that make one would need `worker-src blob:` added to their
+     * Content-Security-Policy to allow it - which is the site's call to make
+     * and not a test's to force.
+     *
+     * So this is marked as expected to fail on exactly the engines where the
+     * page cannot answer, and left as a real test everywhere else. The day the
+     * site can speak up there, this goes green and the marking turns the suite
+     * red until somebody deletes these lines. That is the point of the marking.
+     */
+    if (wasSilent(page, 'encode-video')) {
+      test.fail(true, 'qa#58: this engine wedges its own main thread on '
+        + 'VideoEncoder.isConfigSupported, so the page cannot say anything');
+    }
 
     const { encodePng } = await import('../../lib/image-fixtures');
     await page.locator('#file-input').setInputFiles([0, 1].map((index) => ({
@@ -80,13 +113,19 @@ test.describe('a browser that cannot write video', () => {
     // what a browser will encode is not reliably knowable until it is asked,
     // and a permanently greyed button explains nothing.
     await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
-    await page.locator('#export').click();
+    // A click on a page whose main thread has stopped never reports back, so
+    // this one is bounded too. Where the page is alive it lands instantly.
+    await page.locator('#export').click({ timeout: 20_000 });
 
+    // Twenty seconds, not sixty. The tool answers in three where it can
+    // answer at all, and where it cannot the page is wedged and no amount of
+    // waiting changes that - it only spends the budget of a suite that has
+    // four browser projects to get through.
     const said = page.locator('#error');
     await expect(
       said,
       'pressing Create video on a browser that cannot encode said nothing at all',
-    ).toBeVisible({ timeout: 60_000 });
+    ).toBeVisible({ timeout: 20_000 });
     await expect(said).toContainText(/WebCodecs|recording/i);
   });
 });

@@ -12,11 +12,63 @@ test.describe('responsive layout', () => {
   for (const path of paths) {
     test(`no horizontal overflow at this viewport: ${path}`, async ({ page }) => {
       await page.goto(path);
-      const overflow = await page.evaluate(() => {
+
+      /*
+       * The number, and - when there is one - what is making it.
+       *
+       * /base64/ has been failing here at eight pixels and then five, on both
+       * phone projects, and does not reproduce against the same production
+       * site from a developer's machine. A bare number cannot be acted on: it
+       * says a page scrolls sideways without saying what is over the edge, and
+       * two runs of guessing is one more than that is worth.
+       *
+       * So the page finds the culprit itself, by hiding one child at a time
+       * and descending into whichever one made the overflow go away. It costs
+       * nothing on a passing page, because it only runs when there is
+       * something to explain.
+       */
+      const { overflow, culprit } = await page.evaluate(() => {
         const doc = document.documentElement;
-        return doc.scrollWidth - doc.clientWidth;
+        const over = doc.scrollWidth - doc.clientWidth;
+        if (over <= 1) return { overflow: over, culprit: '' };
+
+        const name = (el: Element) => {
+          const one = el as HTMLElement;
+          const classes = typeof one.className === 'string' && one.className.trim()
+            ? `.${one.className.trim().split(/\s+/).join('.')}` : '';
+          return `${el.tagName.toLowerCase()}${one.id ? `#${one.id}` : ''}${classes}`;
+        };
+
+        let node: Element = document.body;
+        const trail: string[] = [];
+        for (let depth = 0; depth < 12; depth += 1) {
+          let found: Element | null = null;
+          for (const child of Array.from(node.children)) {
+            const one = child as HTMLElement;
+            const was = one.style.display;
+            one.style.display = 'none';
+            if (doc.scrollWidth - doc.clientWidth < over) found = child;
+            one.style.display = was;
+            if (found) break;
+          }
+          if (!found) break;
+          node = found;
+          trail.push(name(found));
+        }
+
+        const box = (node as HTMLElement).getBoundingClientRect();
+        return {
+          overflow: over,
+          culprit: `${trail.join(' > ') || '(nothing found)'} `
+            + `[${box.left.toFixed(0)}..${box.right.toFixed(0)}, `
+            + `viewport ${doc.clientWidth}]`,
+        };
       });
-      expect(overflow, `document is ${overflow}px wider than the viewport at ${path}`).toBeLessThanOrEqual(1);
+
+      expect(
+        overflow,
+        `document is ${overflow}px wider than the viewport at ${path}: ${culprit}`,
+      ).toBeLessThanOrEqual(1);
     });
   }
 
