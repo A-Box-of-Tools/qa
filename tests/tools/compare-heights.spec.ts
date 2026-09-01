@@ -283,3 +283,128 @@ test.describe('compare-heights: the promise', () => {
     }
   });
 });
+
+/**
+ * The two ways a visitor puts a shape of their own on the ruler, added by
+ * website #309 (an SVG) and #316 (a photograph).
+ *
+ * Both end in the same place and it is a place worth guarding: the chart is
+ * one self-contained SVG that gets downloaded and sent to other people. What
+ * it must never carry out is a reference to somewhere else, or anything that
+ * runs.
+ *
+ * The tool's own modules say so in as many words - "An SVG is a program",
+ * "what needs care here is the opposite end: what goes OUT" - so these tests
+ * hand it exactly what those sentences are about and read the file it
+ * produces.
+ */
+
+/** An SVG carrying every trick the importer says it takes out. */
+const HOSTILE_SVG = [
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 200">',
+  '  <script>fetch("https://qa.invalid/stolen")</script>',
+  '  <rect x="20" y="0" width="60" height="200" fill="#3366cc"',
+  '        onload="fetch(\'https://qa.invalid/onload\')"/>',
+  '  <image href="https://qa.invalid/pixel.png" x="0" y="0" width="10" height="10"/>',
+  '  <a href="https://qa.invalid/link"><circle cx="50" cy="50" r="8"/></a>',
+  '</svg>',
+].join('\n');
+
+/** Add a shape from a file, and wait for the row it makes. */
+async function addOwnShape(
+  page: Page,
+  file: { name: string; mimeType: string; buffer: Buffer },
+): Promise<void> {
+  const before = await page.locator('#rows .row').count();
+  await page.locator('#svg-file').setInputFiles(file);
+  await expect(page.locator('#rows .row')).toHaveCount(before + 1, { timeout: 30_000 });
+  await expect(page.locator('#input-error')).toBeHidden();
+}
+
+test.describe('compare-heights: a shape of your own', () => {
+  test('an uploaded SVG reaches the chart with nothing that runs, and no way out',
+    async ({ page }) => {
+      test.setTimeout(120_000);
+
+      // Watched from before the page loads: the point of the whitelist is that
+      // nothing in the uploaded file ever reaches the network, so the check is
+      // whether anything was even attempted.
+      const traffic: string[] = [];
+      page.on('request', (req) => traffic.push(req.url()));
+
+      await page.goto(URL_PATH);
+      await addOwnShape(page, {
+        name: 'shape.svg',
+        mimeType: 'image/svg+xml',
+        buffer: Buffer.from(HOSTILE_SVG, 'utf8'),
+      });
+
+      // The control. If the file were rejected outright, everything below
+      // would pass for the wrong reason - nothing got in, so nothing got out.
+      const drawn = await figureHeights(page);
+      expect(drawn.length, 'the uploaded shape never reached the chart')
+        .toBeGreaterThan(2);
+
+      const pending = page.waitForEvent('download');
+      await page.locator('#download-svg').click();
+      const saved = await pending;
+      const where = await saved.path();
+      const chart = fs.readFileSync(where!, 'utf8');
+
+      // The same control again, on the file rather than the screen: the
+      // drawing itself has to have survived the whitelist, or "no script in
+      // the chart" would only be saying that nothing arrived. The colour does
+      // not survive - a row is drawn in the colour its own picker holds - so
+      // the element is what to look for.
+      expect(chart, 'the uploaded shape is not in the saved chart')
+        .toContain('<rect');
+
+      expect(chart, 'a script came through into a file people send each other')
+        .not.toContain('<script');
+      expect(chart, 'an event handler came through').not.toMatch(/\son[a-z]+\s*=/i);
+      expect(chart, 'the chart carries a reference to somewhere else')
+        .not.toContain('qa.invalid');
+
+      await quiet(page);
+      for (const url of traffic) {
+        expect(url, 'the uploaded file made the page fetch something')
+          .not.toContain('qa.invalid');
+      }
+    });
+
+  test('a photograph is redrawn, so its metadata cannot travel with the chart',
+    async ({ page }) => {
+      test.setTimeout(120_000);
+      const { realJpeg } = await import('../../lib/browser-jpeg');
+      const { withExifGps, FIXTURE_MODEL, FIXTURE_DESCRIPTION } =
+        await import('../../lib/jpeg-fixtures');
+
+      await page.goto(URL_PATH);
+      const photo = withExifGps(await realJpeg(page, 240, 320));
+
+      await addOwnShape(page, {
+        name: 'holiday.jpg', mimeType: 'image/jpeg', buffer: photo,
+      });
+
+      const pending = page.waitForEvent('download');
+      await page.locator('#download-svg').click();
+      const saved = await pending;
+      const chart = fs.readFileSync((await saved.path())!, 'utf8');
+
+      // What the module promises: "the metadata is gone. Whatever the file had
+      // in it - the camera, the place, the colour profile, a comment - is not
+      // in a canvas, so it cannot be in the chart."
+      expect(chart, 'the camera model travelled with the chart')
+        .not.toContain(FIXTURE_MODEL);
+      expect(chart, 'the description travelled with the chart')
+        .not.toContain(FIXTURE_DESCRIPTION);
+      expect(chart, 'an EXIF block travelled with the chart').not.toContain('Exif');
+
+      // And the picture did arrive, as a PNG this page encoded rather than the
+      // file passed through - which is the same sentence from the other side.
+      expect(chart, 'the picture is not in the chart at all')
+        .toContain('data:image/png;base64,');
+      expect(chart, 'the chart points at a file instead of carrying one')
+        .not.toMatch(/href="(?!data:image\/png;base64,)/);
+    });
+});
