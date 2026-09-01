@@ -46,6 +46,24 @@ import type { Page } from '@playwright/test';
 const answers = new Map<string, unknown>();
 
 /**
+ * The questions this engine did not answer at all, as opposed to answered no.
+ *
+ * Both come back as the cautious value, and for choosing whether to run a test
+ * that is right: an engine that will not say whether it can encode is not one
+ * to hand a video to. But they are different facts about the browser, and one
+ * caller needs the difference. A page whose main thread wedges on a capability
+ * query is a page that will wedge again when a button asks the same question,
+ * and a test can only demand a tool speak up if the tool is able to.
+ */
+const silences = new Set<string>();
+
+/** Did this engine simply fail to answer, rather than answering no? */
+export function wasSilent(page: Page, question: string): boolean {
+  const engine = page.context().browser()?.browserType().name() ?? 'unknown';
+  return silences.has(`${engine}:${question}`);
+}
+
+/**
  * Put a question to the page, and take silence for an answer.
  *
  * THE PART THAT MATTERS: the deadline is out here, in Node, and not inside
@@ -77,15 +95,19 @@ export async function ask<T>(
   const key = `${engine}:${question}`;
   if (answers.has(key)) return answers.get(key) as T;
 
+  const QUIET = Symbol('no answer');
   let timer: NodeJS.Timeout | undefined;
   const answer = await Promise.race([
     work().catch(() => cautious),
-    new Promise<T>((resolve) => { timer = setTimeout(() => resolve(cautious), ms); }),
+    new Promise<T | symbol>((resolve) => { timer = setTimeout(() => resolve(QUIET), ms); }),
   ]);
   clearTimeout(timer);
 
-  answers.set(key, answer);
-  return answer;
+  if (answer === QUIET) silences.add(key);
+  const settled = (answer === QUIET ? cautious : answer) as T;
+
+  answers.set(key, settled);
+  return settled;
 }
 
 /**
