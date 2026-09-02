@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../lib/tools';
-import { quiet } from '../lib/engine';
+import { quiet, withoutThirdParties } from '../lib/engine';
 
 const tools = discoverTools();
 
@@ -93,21 +93,9 @@ test.describe('hub page', () => {
    * request, and a failed request is a console error - three of them, which
    * this test would then have counted as the very thing it is looking for.
    */
-  const OTHERS = [
-    'googlesyndication.com',
-    'googletagmanager.com',
-    'google-analytics.com',
-    'buymeacoffee.com',
-  ];
 
   test('raises no console or page errors while loading', async ({ page }) => {
-    await page.route('**/*', (route) => {
-      const url = route.request().url();
-      if (OTHERS.some((host) => url.includes(host))) {
-        return route.fulfill({ status: 200, contentType: 'application/javascript', body: '' });
-      }
-      return route.continue();
-    });
+    await withoutThirdParties(page);
 
     /*
      * A rejected promise reaches `pageerror` as the string "Unhandled Promise

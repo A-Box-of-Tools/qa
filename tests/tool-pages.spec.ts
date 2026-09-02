@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { allowedExternalHosts, isKnownBenignHost } from '../lib/csp';
 import { BASE_URL } from '../lib/site';
 import { discoverTools, hasFilePicker } from '../lib/tools';
-import { quiet } from '../lib/engine';
+import { quiet, withoutThirdParties } from '../lib/engine';
 
 // One test.describe per shipped tool, discovered from the etoolbox checkout
 // itself (see lib/tools.ts) - add a tool there and it is covered here with
@@ -46,6 +46,15 @@ for (const slug of discoverTools()) {
     });
 
     test('boots cleanly: no JS error, no-JS warning stays hidden', async ({ page }) => {
+      // This site's code, not the ad network's. gif-maker failed here on
+      // Mobile Safari with an ad iframe complaining that "https://abox.tools"
+      // may not touch a frame from doubleclick.net - true, and nothing this
+      // repository can do about it. The page is loaded again with those
+      // scripts answered by nothing, so what is counted below is ours. The
+      // CSP test in this file still watches the real requests.
+      await withoutThirdParties(page);
+      await page.reload();
+
       const errors: string[] = [];
       page.on('pageerror', (err) => errors.push(String(err)));
 
