@@ -363,8 +363,16 @@ export async function canEncodeVideo(page: Page): Promise<boolean> {
       MediaRecorder?: { isTypeSupported?: (type: string) => boolean };
     };
     try {
+      // The tool's own question, field for field: images-to-video's
+      // pickH264Codec asks with a frame rate, a bitrate and `avc.format`, and
+      // the first draft here asked with three fields and got a prompt "no"
+      // from an engine that wedges its main thread on the full one. A probe
+      // that asks an easier question than the code it stands in for is not
+      // measuring that code. See video-refusal.spec.ts for what depends on
+      // the answer being the same.
       const asked = global.VideoEncoder?.isConfigSupported?.({
-        codec: 'avc1.42001E', width: 320, height: 240,
+        codec: 'avc1.640034', width: 320, height: 240, framerate: 30,
+        bitrate: 1_200_000, avc: { format: 'avc' },
       });
       const supported = await Promise.race([
         asked,

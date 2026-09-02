@@ -261,6 +261,45 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
 }
 
 /**
+ * The scripts nobody here wrote, answered with nothing for the length of a test.
+ *
+ * Every tool page and the hub load AdSense, the Google tag and the Buy Me a
+ * Coffee button. Their failures are real and are not this site's: an ad iframe
+ * complaining that "https://abox.tools" may not touch a frame from
+ * googleads.g.doubleclick.net, a rejection with no reason and no stack from
+ * a measurement script. A test that asks "does this page raise anything" has
+ * to mean this site's code, or it is a test of somebody else's afternoon.
+ *
+ * Answered with an empty script rather than aborted, because an abort is a
+ * failed request and a failed request is a console error - the very thing
+ * being counted. And answered rather than filtered out of the assertion: a
+ * filter would leave their errors uncounted while their side effects stayed
+ * on the page.
+ *
+ * Install before the navigation that should run without them; a page already
+ * loaded has already loaded them.
+ */
+export const THIRD_PARTY_HOSTS = [
+  'googlesyndication.com',
+  'googletagmanager.com',
+  'google-analytics.com',
+  'doubleclick.net',
+  'googleadservices.com',
+  'adtrafficquality.google',
+  'buymeacoffee.com',
+];
+
+export async function withoutThirdParties(page: Page): Promise<void> {
+  await page.route('**/*', (route) => {
+    const url = route.request().url();
+    if (THIRD_PARTY_HOSTS.some((host) => url.includes(host))) {
+      return route.fulfill({ status: 200, contentType: 'application/javascript', body: '' });
+    }
+    return route.continue();
+  });
+}
+
+/**
  * Wait until the page has stopped talking to the network, or give up.
  *
  * A replacement for `waitForLoadState('networkidle')`, which the tests that
