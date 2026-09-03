@@ -41,6 +41,11 @@ export default defineConfig({
     {
       name: 'Desktop Safari',
       use: { ...devices['Desktop Safari'] },
+      // tests/locales reads the checkout and makes HTTP requests, and nothing
+      // in it can vary by engine any more than by viewport - so it runs once,
+      // under Desktop Chrome, rather than twice. Seven hundred and twenty-seven
+      // tests that took two minutes and proved the same files twice.
+      testIgnore: /tests[\/]locales[\/]/,
     },
     {
       name: 'Mobile Safari',
