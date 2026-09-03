@@ -328,7 +328,7 @@ jobs:
         if: needs.announce.outputs.production != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: report-${{ needs.announce.outputs.pr && format('website-pr-{0}', needs.announce.outputs.pr) || 'production' }}
+          name: report-${{ needs.announce.outputs.pr && format('website-pr-{0}', needs.announce.outputs.pr) || (github.event_name == 'pull_request' && format('qa-pr-{0}', github.event.pull_request.number)) || 'production' }}
           path: playwright-report/
           retention-days: 7
 
