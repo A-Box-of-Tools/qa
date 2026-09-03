@@ -5,12 +5,24 @@
 # SHARDED, AND WHY
 #
 # The suite is CPU-bound: video encodes, QR decodes, image stacking, across
-# two browser projects. On one four-vCPU runner it took 15 to 19 minutes, and
+# two browser engines. On one four-vCPU runner it took 15 to 19 minutes, and
 # moving from two workers to four barely moved it - freed worker time was
 # reabsorbed by the same four cores. The lever that works is more cores, and
-# on hosted runners more cores means more runners: four shards, each taking a
-# quarter of the tests, each writing a blob report, stitched back into one
-# HTML report by `merge-reports` in the job that publishes.
+# on hosted runners more cores means more runners: each job takes a slice of
+# the tests, writes a blob report, and `merge-reports` in the job that
+# publishes stitches the slices back into one HTML report.
+#
+# SLICED BY PROJECT FIRST, AND WHY
+#
+# `--shard` cuts the test list into equal counts, in file order. Four such
+# quarters of the whole suite took 9, 16, 35 and 53 minutes: the tool specs
+# sit together at the end of the list, WebKit takes three times as long as
+# Chromium on every one of them, and a count says nothing about either. So
+# the cut is by project first - each project is its own list, so a Safari
+# job never waits on a Chrome quarter and the other way round - and each
+# WebKit project is then cut four ways where each Chrome project is cut two,
+# because that is the ratio the measured minutes came out at (162 and 154
+# against 56 and 55). Twelve jobs, none predicted past fourteen minutes.
 #
 # The gh-pages branch holds one commit and no history - it used to keep every
 # report ever published, which took this repository to eight hundred
@@ -49,12 +61,25 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    name: test (${{ matrix.slice }})
     strategy:
-      # One shard failing must not cancel the other three: the report is only
+      # One slice failing must not cancel the others: the report is only
       # worth publishing if it describes the whole suite.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        include:
+          - { slice: desktop-chrome-1, project: Desktop Chrome, shard: 1/2 }
+          - { slice: desktop-chrome-2, project: Desktop Chrome, shard: 2/2 }
+          - { slice: mobile-chrome-1,  project: Mobile Chrome,  shard: 1/2 }
+          - { slice: mobile-chrome-2,  project: Mobile Chrome,  shard: 2/2 }
+          - { slice: desktop-safari-1, project: Desktop Safari, shard: 1/4 }
+          - { slice: desktop-safari-2, project: Desktop Safari, shard: 2/4 }
+          - { slice: desktop-safari-3, project: Desktop Safari, shard: 3/4 }
+          - { slice: desktop-safari-4, project: Desktop Safari, shard: 4/4 }
+          - { slice: mobile-safari-1,  project: Mobile Safari,  shard: 1/4 }
+          - { slice: mobile-safari-2,  project: Mobile Safari,  shard: 2/4 }
+          - { slice: mobile-safari-3,  project: Mobile Safari,  shard: 3/4 }
+          - { slice: mobile-safari-4,  project: Mobile Safari,  shard: 4/4 }
     steps:
       - uses: actions/checkout@v4
 
@@ -73,41 +98,41 @@ jobs:
 
       - run: npm ci
 
-      # Both engines, because the suite runs four projects: two Chromium and
-      # two WebKit. On iOS every browser is WebKit, Chrome included, so the
-      # second one is not a luxury - it is what an iPhone visitor actually
-      # gets. Installing only chromium left every Safari test failing at
-      # launch, which is seventeen hundred failures that say nothing about
-      # the site.
-      - run: npx playwright install --with-deps chromium webkit
+      # The engine this slice runs, and Chromium either way: a WebKit slice
+      # still needs it, because lib/browser-video.ts borrows Chromium to
+      # record the video fixtures WebKit cannot. On iOS every browser is
+      # WebKit, Chrome included, so the WebKit slices are not a luxury - they
+      # are what an iPhone visitor actually gets - but a Chrome slice has no
+      # use for a WebKit download, and each engine is a minute of setup.
+      - run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
 
-      # blob rather than html: four quarter-reports are stitched into one page
-      # by the report job below. github stays so annotations still land on the
+      # blob rather than html: the slices are stitched into one page by the
+      # report job below. github stays so annotations still land on the
       # commit.
-      - name: Run this shard
+      - name: Run this slice
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://abox.tools/' }}
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
-        run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=blob,github
+        run: npx playwright test --project="${{ matrix.project }}" --shard=${{ matrix.shard }} --reporter=blob,github
 
-      # The traces this shard kept for its failures. Out of git and expiring,
+      # The traces this slice kept for its failures. Out of git and expiring,
       # for the reasons in the header.
       - name: Keep the traces where they expire
         if: ${{ !cancelled() && failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: traces-${{ matrix.shard }}
+          name: traces-${{ matrix.slice }}
           path: test-results/
           retention-days: 14
           if-no-files-found: ignore
 
-      # Uploaded whether the shard passed or failed: the merged report has to
-      # describe the failures, not omit the shards that had them.
-      - name: Hand this shard's results to the merge
+      # Uploaded whether the slice passed or failed: the merged report has to
+      # describe the failures, not omit the slices that had them.
+      - name: Hand this slice's results to the merge
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: blob-report-${{ matrix.shard }}
+          name: blob-report-${{ matrix.slice }}
           path: blob-report/
           retention-days: 3
 
@@ -129,12 +154,26 @@ jobs:
       # so none is installed.
       - run: npm ci
 
-      - name: Collect the shard reports
+      # One folder per slice, then one folder of zips named by slice: the blob
+      # reporter names its file by shard index, so two slices of different
+      # projects both write report-1.zip, and merging the artifacts into one
+      # folder would keep only one of them.
+      - name: Collect the slice reports
         uses: actions/download-artifact@v4
         with:
           pattern: blob-report-*
-          path: all-blob-reports
-          merge-multiple: true
+          path: slice-reports
+      - name: Name each report by its slice
+        run: |
+          set -euo pipefail
+          mkdir -p all-blob-reports
+          for dir in slice-reports/blob-report-*/; do
+            slice=$(basename "$dir" | sed 's/^blob-report-//')
+            for zip in "$dir"*.zip; do
+              cp "$zip" "all-blob-reports/${slice}-$(basename "$zip")"
+            done
+          done
+          ls -l all-blob-reports
 
       # Two reporters from the one merge: the HTML page people read, and a
       # JSON copy of the same results for the triage step to act on. The JSON
