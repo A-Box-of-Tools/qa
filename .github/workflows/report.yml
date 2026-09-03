@@ -33,12 +33,32 @@
 # The workflow still fails (red X) when the suite fails, but only after
 # publishing - a failing report is more useful on the page than no page.
 #
+# AGAINST A PREVIEW, AND ON A PULL REQUEST HERE
+#
+# The same run serves two more purposes, told apart in the `announce` job
+# below and nowhere else.
+#
+# The website's Build workflow deploys every pull request to a preview of its
+# own on Cloudflare Pages and dispatches this with `base_url`, `pr` and
+# `sha`. That run tests the preview, keeps its report as an artifact rather
+# than on gh-pages - which holds one report, production's, and would be
+# overwritten - opens no issues, and reports its result as a commit status,
+# `qa/preview`, on the website commit it was asked about, so it shows on the
+# pull request as a check. Report-only for now; branch protection can
+# require it once it has been green a while.
+#
+# A pull request in this repository runs the suite against production the
+# same way - no publish, no issues, no status - which is the first time a
+# change to a test is exercised on the machines the suite actually runs on
+# before it lands on main.
+#
 
 name: Report
 
 on:
   push:
     branches: [main]
+  pull_request:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
@@ -47,19 +67,84 @@ on:
         description: 'Site to test'
         default: 'https://abox.tools/'
         required: false
+      pr:
+        description: 'The website pull request this site is a preview of, if it is one'
+        default: ''
+        required: false
+      sha:
+        description: 'The website commit to report the result on, if there is one'
+        default: ''
+        required: false
 
 permissions:
   contents: write
   # For the failure issues opened and closed after the report is published.
   issues: write
 
-# A second run landing mid-publish should not race it.
+# A second production run landing mid-publish should not race it: it queues.
+# A preview run is its own group per pull request, so it never waits on
+# production, and a newer push to the same pull request cancels the older
+# run - only the newest preview is worth checking.
 concurrency:
-  group: report
-  cancel-in-progress: false
+  group: report-${{ github.event.inputs.pr && format('pr-{0}', github.event.inputs.pr) || (github.event_name == 'pull_request' && format('qa-pr-{0}', github.event.pull_request.number)) || 'production' }}
+  cancel-in-progress: ${{ github.event.inputs.pr != '' || github.event_name == 'pull_request' }}
 
 jobs:
+  # What this run is, decided once. `target` is the site under test and
+  # `production` says whether the result may be published and filed; the
+  # jobs below read these rather than re-deriving them from the event.
+  announce:
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.what.outputs.target }}
+      production: ${{ steps.what.outputs.production }}
+      pr: ${{ steps.what.outputs.pr }}
+      sha: ${{ steps.what.outputs.sha }}
+    steps:
+      - name: What this run is
+        id: what
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_URL: ${{ github.event.inputs.base_url }}
+          PR: ${{ github.event.inputs.pr }}
+          SHA: ${{ github.event.inputs.sha }}
+        run: |
+          set -euo pipefail
+          target="${BASE_URL:-https://abox.tools/}"
+          production=false
+          if [ "$EVENT" != 'pull_request' ] && [ "$target" = 'https://abox.tools/' ] && [ -z "$PR" ]; then
+            production=true
+          fi
+          {
+            echo "target=$target"
+            echo "production=$production"
+            echo "pr=$PR"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "Testing $target (production: $production${PR:+, preview of website#$PR})"
+
+      # Pending on the website commit from the start, so the pull request
+      # shows the check as running rather than absent for the fourteen
+      # minutes the suite takes. Without the token the status is skipped
+      # and the run still happens; the result is then only in this
+      # repository's Actions tab.
+      - name: Mark the website commit as being tested
+        if: steps.what.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_STATUS_TOKEN }}
+          SHA: ${{ steps.what.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::notice::WEBSITE_STATUS_TOKEN is not set; the result will not appear on the website pull request. See cloudflare/README.md in the website repository, "Previews".'
+            exit 0
+          fi
+          gh api --method POST "repos/A-Box-of-Tools/website/statuses/$SHA" \
+            -f state=pending -f context=qa/preview -f target_url="$RUN_URL" \
+            -f description='The browser suite is running against the preview' > /dev/null
+
   test:
+    needs: announce
     runs-on: ubuntu-latest
     name: test (${{ matrix.slice }})
     strategy:
@@ -111,7 +196,7 @@ jobs:
       # commit.
       - name: Run this slice
         env:
-          BASE_URL: ${{ github.event.inputs.base_url || 'https://abox.tools/' }}
+          BASE_URL: ${{ needs.announce.outputs.target }}
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
         run: npx playwright test --project="${{ matrix.project }}" --shard=${{ matrix.shard }} --reporter=blob,github
 
@@ -137,8 +222,8 @@ jobs:
           retention-days: 3
 
   report:
-    needs: test
-    # Runs whether the shards passed or not - see the header - but not if the
+    needs: [announce, test]
+    # Runs whether the slices passed or not - see the header - but not if the
     # whole workflow was cancelled.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -183,7 +268,10 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_NAME: merged.json
         run: npx playwright merge-reports --reporter html,json ./all-blob-reports
 
+      # Production's report only: gh-pages holds one report, and a preview's
+      # would replace it. A preview's report is kept below instead.
       - name: Publish the report to gh-pages
+        if: needs.announce.outputs.production == 'true'
         env:
           SHA: ${{ github.sha }}
         run: |
@@ -234,12 +322,52 @@ jobs:
       # staging URL, or a run from a branch, is somebody trying something -
       # and filing issues about a site nobody has deployed yet would teach
       # everyone to ignore the label.
+      # Not production's report, so it lives with the run: a week, traces
+      # included, which is what a failing pull request needs to be read.
+      - name: Keep this run's report with the run
+        if: needs.announce.outputs.production != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ needs.announce.outputs.pr && format('website-pr-{0}', needs.announce.outputs.pr) || (github.event_name == 'pull_request' && format('qa-pr-{0}', github.event.pull_request.number)) || 'production' }}
+          path: playwright-report/
+          retention-days: 7
+
+      # The result, on the website commit this run was asked about, so the
+      # pull request shows it as a check with the run as its link. The
+      # description carries the counts, because a status line that only says
+      # "failure" sends everyone to the run to find out how badly.
+      - name: Report the result on the website commit
+        if: ${{ !cancelled() && needs.announce.outputs.sha != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_STATUS_TOKEN }}
+          SHA: ${{ needs.announce.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::notice::WEBSITE_STATUS_TOKEN is not set; the result is only here.'
+            exit 0
+          fi
+          if [ "$OUTCOME" = 'success' ]; then state=success; else state=failure; fi
+          counts=$(node -e '
+            const s = require("./merged.json").stats;
+            const parts = [`${s.expected} passed`];
+            if (s.unexpected) parts.push(`${s.unexpected} failed`);
+            if (s.flaky) parts.push(`${s.flaky} flaky`);
+            if (s.skipped) parts.push(`${s.skipped} skipped`);
+            process.stdout.write(parts.join(", "));
+          ' 2>/dev/null || echo "the suite: $OUTCOME")
+          gh api --method POST "repos/A-Box-of-Tools/website/statuses/$SHA" \
+            -f state="$state" -f context=qa/preview -f target_url="$RUN_URL" \
+            -f description="$counts" > /dev/null
+          echo "qa/preview on ${SHA:0:7}: $state - $counts"
+
       - name: Open and close issues for what failed
         if: >-
           ${{ !cancelled()
               && github.ref == 'refs/heads/main'
-              && (github.event.inputs.base_url == ''
-                  || github.event.inputs.base_url == 'https://abox.tools/') }}
+              && needs.announce.outputs.production == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           QA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -253,5 +381,5 @@ jobs:
       - name: Fail the workflow if the suite failed
         if: ${{ needs.test.result != 'success' }}
         run: |
-          echo "::error::the QA suite failed - see the published report for details."
+          echo "::error::the QA suite failed - see the report: published for production, kept with this run for anything else."
           exit 1

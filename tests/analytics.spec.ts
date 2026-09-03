@@ -32,13 +32,25 @@ const MEASUREMENT = /google-analytics\.com|analytics\.google\.com|\/g\/collect/;
 /** The tag's id, read from the site's own config rather than repeated here. */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ETOOLBOX_DIR } from '../lib/site';
+import { BASE_URL, ETOOLBOX_DIR } from '../lib/site';
 
 const analyticsId = (): string => {
   const toml = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
   const id = toml.match(/^analytics_id\s*=\s*"([^"]+)"/m)?.[1];
   if (!id) throw new Error('config/site.toml has no analytics_id');
   return id;
+};
+
+/**
+ * Is the suite pointed at the site's own domain? templates/analytics.js
+ * switches measurement off anywhere else - a pull request's preview, a local
+ * build - so what can be asserted about the tag depends on the answer.
+ */
+const onProductionDomain = (): boolean => {
+  const toml = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
+  const domain = toml.match(/^domain\s*=\s*"([^"]+)"/m)?.[1];
+  if (!domain) throw new Error('config/site.toml has no domain');
+  return new URL(BASE_URL).origin === new URL(domain).origin;
 };
 
 /**
@@ -89,6 +101,12 @@ test.describe('analytics', () => {
   });
 
   test('control: an ordinary browser is still measured', async ({ page }) => {
+    // Away from the production domain - a pull request's preview, a local
+    // build - the tag switches itself off for everyone, by design
+    // (templates/analytics.js), so there is nothing here to control against.
+    test.skip(!onProductionDomain(),
+      'measurement is switched off away from the site\'s own domain, so the control has nothing to measure');
+
     // Without this, the test above would pass just as happily against a tag
     // that had stopped working altogether.
     await page.addInitScript(() => {
