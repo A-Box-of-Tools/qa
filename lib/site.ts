@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -23,3 +24,19 @@ export const PORT = Number(process.env.PORT) || 8080;
  *   BASE_URL=https://abox.tools/ npx playwright test
  */
 export const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+
+/**
+ * Is the suite pointed at the site's own domain, the one config/site.toml
+ * calls `domain`? Anywhere else - a pull request's preview on Cloudflare
+ * Pages, a build served from a laptop - is the same bytes on a different
+ * origin, and a few things on the site know the difference: the analytics
+ * switch themselves off there, and the rendezvous admits only the origins it
+ * has been told about. A test of those behaviours has to know which side it
+ * is on.
+ */
+export function onProductionDomain(): boolean {
+  const toml = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
+  const domain = toml.match(/^domain\s*=\s*"([^"]+)"/m)?.[1];
+  if (!domain) throw new Error('config/site.toml has no domain');
+  return new URL(BASE_URL).origin === new URL(domain).origin;
+}

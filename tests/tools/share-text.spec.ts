@@ -1,4 +1,5 @@
 import { test, expect, type Browser, type Page } from '@playwright/test';
+import { onProductionDomain } from '../../lib/site';
 
 /**
  * Tool-level functional tests for Share Text & Files.
@@ -36,6 +37,8 @@ import { test, expect, type Browser, type Page } from '@playwright/test';
 
 const URL_PATH = '/share-text/';
 const RENDEZVOUS = /rendezvous\.a-box-of-tools\.workers\.dev/;
+/** The same host the page's own constant names, in tools/share-text/src/main.js. */
+const RENDEZVOUS_URL = 'wss://rendezvous.a-box-of-tools.workers.dev';
 
 /** Long, unmistakable, and not a word the page would produce on its own. */
 const SECRET = 'QAcanary-7f3e91d4-the-quick-brown-fox-jumps-over-42-lazy-dogs';
@@ -63,12 +66,45 @@ function captureRendezvous(page: Page): string[] {
   return frames;
 }
 
+/**
+ * Does the rendezvous admit the origin this page is served from?
+ *
+ * The worker takes a socket only from the site's own origin, localhost, and
+ * the pull-request previews it has been told about (workers/rendezvous/
+ * worker.js, `fromOurPage`); anything else is refused before the upgrade,
+ * and a page served from such an origin can publish nothing. On production
+ * that would be a failure of the worker and is reported as one. Off the
+ * production domain it is the environment's shape, not the tool's fault -
+ * a preview whose origin the deployed worker does not know yet - and the
+ * tests that need a share say so and stand down, rather than fail six times
+ * over on every engine for a socket that was never going to open.
+ *
+ * Asked by trying: one socket as a viewer of a room nobody hosts, which the
+ * worker opens and the room then closes. Bounded, because an origin the
+ * worker refuses gets an error at once and one it admits answers in well
+ * under a second.
+ */
+async function rendezvousAdmits(page: Page): Promise<boolean> {
+  return page.evaluate((url) => new Promise<boolean>((resolve) => {
+    const probe = new WebSocket(url);
+    const done = (answer: boolean) => { resolve(answer); try { probe.close(); } catch { /* already closed */ } };
+    probe.onopen = () => done(true);
+    probe.onerror = () => done(false);
+    setTimeout(() => done(false), 5_000);
+  }), `${RENDEZVOUS_URL}/ws/qa-probe-${Date.now().toString(36)}?role=viewer`);
+}
+
 /** Open a sharer, write the text, and publish it. Returns the share link. */
 async function publish(
   page: Page,
   { text, code, priv }: { text: string; code: string; priv: boolean },
 ): Promise<string> {
   await page.goto(URL_PATH);
+  if (!onProductionDomain()) {
+    test.skip(!(await rendezvousAdmits(page)),
+      'the rendezvous does not admit this origin, so nothing can be shared from here; '
+      + 'on a preview that means the deployed worker predates workers/rendezvous admitting previews');
+  }
   await page.locator('#text').fill(text);
   await page.locator('#code').fill(code);
 

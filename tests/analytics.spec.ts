@@ -32,25 +32,13 @@ const MEASUREMENT = /google-analytics\.com|analytics\.google\.com|\/g\/collect/;
 /** The tag's id, read from the site's own config rather than repeated here. */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BASE_URL, ETOOLBOX_DIR } from '../lib/site';
+import { ETOOLBOX_DIR, onProductionDomain } from '../lib/site';
 
 const analyticsId = (): string => {
   const toml = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
   const id = toml.match(/^analytics_id\s*=\s*"([^"]+)"/m)?.[1];
   if (!id) throw new Error('config/site.toml has no analytics_id');
   return id;
-};
-
-/**
- * Is the suite pointed at the site's own domain? templates/analytics.js
- * switches measurement off anywhere else - a pull request's preview, a local
- * build - so what can be asserted about the tag depends on the answer.
- */
-const onProductionDomain = (): boolean => {
-  const toml = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
-  const domain = toml.match(/^domain\s*=\s*"([^"]+)"/m)?.[1];
-  if (!domain) throw new Error('config/site.toml has no domain');
-  return new URL(BASE_URL).origin === new URL(domain).origin;
 };
 
 /**
