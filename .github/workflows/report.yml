@@ -139,9 +139,16 @@ jobs:
             echo '::notice::WEBSITE_STATUS_TOKEN is not set; the result will not appear on the website pull request. See cloudflare/README.md in the website repository, "Previews".'
             exit 0
           fi
-          gh api --method POST "repos/A-Box-of-Tools/website/statuses/$SHA" \
-            -f state=pending -f context=qa/preview -f target_url="$RUN_URL" \
-            -f description='The browser suite is running against the preview' > /dev/null
+          # A status that cannot be written must not stop the suite: the run is
+          # the point, the status is how it is seen. A 403 here means the token
+          # cannot write statuses on the website repository - wrong permission,
+          # wrong repository, or an organisation approval still pending.
+          if ! gh api --method POST "repos/A-Box-of-Tools/website/statuses/$SHA" \
+              -f state=pending -f context=qa/preview -f target_url="$RUN_URL" \
+              -f description='The browser suite is running against the preview' \
+              > /dev/null 2> "$RUNNER_TEMP/status.err"; then
+            echo "::warning::Could not set the qa/preview status on the website commit: $(tr -d '\n' < "$RUNNER_TEMP/status.err"). WEBSITE_STATUS_TOKEN needs Commit statuses: write on A-Box-of-Tools/website, and the organisation's approval if it asks for one. The suite runs regardless."
+          fi
 
   test:
     needs: announce
@@ -224,8 +231,9 @@ jobs:
   report:
     needs: [announce, test]
     # Runs whether the slices passed or not - see the header - but not if the
-    # whole workflow was cancelled.
-    if: ${{ !cancelled() }}
+    # whole workflow was cancelled, and not if the slices never ran: a report
+    # of nothing has nothing to publish, file or say.
+    if: ${{ !cancelled() && needs.test.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -358,10 +366,13 @@ jobs:
             if (s.skipped) parts.push(`${s.skipped} skipped`);
             process.stdout.write(parts.join(", "));
           ' 2>/dev/null || echo "the suite: $OUTCOME")
-          gh api --method POST "repos/A-Box-of-Tools/website/statuses/$SHA" \
-            -f state="$state" -f context=qa/preview -f target_url="$RUN_URL" \
-            -f description="$counts" > /dev/null
-          echo "qa/preview on ${SHA:0:7}: $state - $counts"
+          if gh api --method POST "repos/A-Box-of-Tools/website/statuses/$SHA" \
+              -f state="$state" -f context=qa/preview -f target_url="$RUN_URL" \
+              -f description="$counts" > /dev/null 2> "$RUNNER_TEMP/status.err"; then
+            echo "qa/preview on ${SHA:0:7}: $state - $counts"
+          else
+            echo "::warning::Could not set the qa/preview status on the website commit: $(tr -d '\n' < "$RUNNER_TEMP/status.err"). The result of this run: $state - $counts."
+          fi
 
       - name: Open and close issues for what failed
         if: >-
