@@ -1,5 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { test, expect, type Browser, type Page } from '@playwright/test';
-import { onProductionDomain } from '../../lib/site';
+import { ETOOLBOX_DIR, onProductionDomain } from '../../lib/site';
 
 /**
  * Tool-level functional tests for Share Text & Files.
@@ -36,9 +38,24 @@ import { onProductionDomain } from '../../lib/site';
  */
 
 const URL_PATH = '/share-text/';
-const RENDEZVOUS = /rendezvous\.a-box-of-tools\.workers\.dev/;
-/** The same host the page's own constant names, in tools/share-text/src/main.js. */
-const RENDEZVOUS_URL = 'wss://rendezvous.a-box-of-tools.workers.dev';
+
+/**
+ * The rendezvous the page connects to, read from the page's own source rather
+ * than repeated here. It has moved once already - from workers.dev to a name
+ * under the site's domain (website#361) - and a copy of the old address in
+ * this file meant a probe the page's Content-Security-Policy refused, which
+ * WebKit reports by throwing, and six tests failing for a host nobody was
+ * connecting to any more. tools/share-text/src/main.js names it in one
+ * constant, and the tool's README says that constant is the place it changes.
+ */
+const RENDEZVOUS_URL = ((): string => {
+  const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools', 'share-text', 'src', 'main.js'), 'utf8');
+  const named = source.match(/^const RENDEZVOUS = '(wss:\/\/[^']+)';/m)?.[1];
+  if (!named) throw new Error('tools/share-text/src/main.js no longer names its rendezvous in `const RENDEZVOUS`');
+  return named;
+})();
+/** Matches a socket to that host, whatever path it opens. */
+const RENDEZVOUS = new RegExp(new URL(RENDEZVOUS_URL).host.replace(/[.]/g, '\\.'));
 
 /** Long, unmistakable, and not a word the page would produce on its own. */
 const SECRET = 'QAcanary-7f3e91d4-the-quick-brown-fox-jumps-over-42-lazy-dogs';
@@ -86,7 +103,16 @@ function captureRendezvous(page: Page): string[] {
  */
 async function rendezvousAdmits(page: Page): Promise<boolean> {
   return page.evaluate((url) => new Promise<boolean>((resolve) => {
-    const probe = new WebSocket(url);
+    // A socket the page's Content-Security-Policy refuses is an error event
+    // in Chromium and a SecurityError thrown from the constructor in WebKit;
+    // either way the page cannot reach the rendezvous from here.
+    let probe: WebSocket;
+    try {
+      probe = new WebSocket(url);
+    } catch {
+      resolve(false);
+      return;
+    }
     const done = (answer: boolean) => { resolve(answer); try { probe.close(); } catch { /* already closed */ } };
     probe.onopen = () => done(true);
     probe.onerror = () => done(false);
