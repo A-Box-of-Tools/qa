@@ -356,23 +356,33 @@ export async function canDecodeVideo(
  *
  * AND ON A PAGE NOBODY IS GOING TO USE AFTERWARDS
  *
- * "Still pending" was the wrong reading of it. That build does not leave the
- * promise unsettled - it blocks the page's main thread, and a page that has
- * been asked this is finished. Not only does the answer never come: the next
- * `setInputFiles` on that page never returns either, and nor does the snapshot
- * Playwright takes when the test fails, so what the report shows is a timeout
- * with no bearing on the line it names.
+ * "Still pending" was the wrong reading of it, and so was "blocks the main
+ * thread". Measured on the Linux build CI runs, against a page of this site:
  *
- * A caller that goes on to use its page therefore cannot be the one to ask.
- * The question goes to a page of its own, and the caller's is untouched
- * whatever happens to it. One page per worker, because the answer is cached
- * per engine by ask() and this runs once.
+ *   VideoEncoder      function      MediaRecorder   undefined
+ *   isConfigSupported no answer, then the page is gone: Target crashed
+ *   configure()       no answer, then the page is gone: Target crashed
+ *
+ * The same on Desktop Safari and Mobile Safari; on both Chromium projects all
+ * three answer in milliseconds and a frame encodes. So it is not that one
+ * method hangs. `VideoEncoder` is present on that build and unusable, and
+ * touching it by any route takes the whole WebContent process down with it.
+ *
+ * A dedicated worker is no escape - in WebKit it shares that process, and a
+ * worker given this question dies and takes the page with it, which was
+ * checked before concluding it. There is therefore no arrangement of site
+ * code that both uses WebCodecs and survives here, which is why the tools are
+ * not asked to; see the skip in tests/tools/video-refusal.spec.ts.
+ *
+ * What follows for this probe is only that it must not ask on a page anybody
+ * needs afterwards. It asks on a page of its own, so the caller's survives
+ * whatever happens. One page per worker, because ask() caches per engine.
  *
  * The scratch page is navigated rather than left on about:blank: WebCodecs is
  * secure-context only, and an answer from a page that is not one would be a
  * fact about the wrong place. It is closed on the way out where it can be -
- * where the thread is wedged the evaluate is abandoned mid-flight, so the
- * close never runs and the page goes when its context does.
+ * where the process dies the evaluate is abandoned mid-flight, so the close
+ * never runs and the page goes when its context does.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
   return ask(page, 'encode-video', async () => {

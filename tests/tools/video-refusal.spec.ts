@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { canEncodeVideo, recordVideo } from '../../lib/browser-video';
+import { wasSilent } from '../../lib/engine';
 
 /**
  * What a video tool says in a browser that cannot decode video.
@@ -53,13 +54,13 @@ test.describe('a browser that cannot decode video', () => {
  * And the tools that write a video rather than read one.
  *
  * The mirror of the file above, and the assertion that keeps video-more.spec's
- * skip honest. That file now steps aside wherever the engine can encode
- * nothing, which is right - there is no result to inspect - but a skip alone
- * would hide the difference between a tool that says so and a tool that sits
- * there. CI saw the second: a Create video button whose click had not returned
- * five minutes later.
+ * skip honest. That file steps aside wherever the engine can encode nothing,
+ * which is right - there is no result to inspect - but a skip alone would
+ * hide the difference between a tool that says so and a tool that sits there.
  *
- * This is the sentence that must be there instead.
+ * This is the sentence that must be there instead, on every engine that is
+ * still able to produce one. The engine CI runs is not, and says so through
+ * the probe rather than through this test; see the skip below.
  */
 test.describe('a browser that cannot write video', () => {
   test('images-to-video says so instead of trying', async ({ page }) => {
@@ -72,29 +73,35 @@ test.describe('a browser that cannot write video', () => {
       'this engine can encode video, so there is no refusal to check');
 
     /*
-     * THIS WAS MARKED EXPECTED-TO-FAIL, AND THE MARKING DID NOT WORK.
+     * THE OTHER WAY TO HAVE NO ENCODER, WHICH IS NOT THE SITE'S TO ANSWER.
      *
-     * There are two ways for an engine to have no encoder. Where VideoEncoder
-     * is absent the tool says "This browser supports neither WebCodecs nor
-     * canvas recording" at once. Where it exists and `isConfigSupported`
-     * blocks the main thread - the WebKit build CI runs - the page used to
-     * stop dead instead, so this was wrapped in `test.fail()` and left to go
-     * green the day the site could speak up there.
+     * Where VideoEncoder is absent the tool says "This browser supports
+     * neither WebCodecs nor canvas recording" at once, and that sentence is
+     * what this test exists for.
      *
-     * `test.fail()` cannot express that. It expects a status of `failed`, and
-     * a wedged page ends a test in `timedOut`, which Playwright counts as an
-     * unexpected failure whatever the marking says. Worse, which of the two a
-     * run got was luck: an engine that crashed the renderer produced an error
-     * and counted as expected, one that merely froze produced a timeout and
-     * turned the suite red. Same site, same test, opposite results - qa#83,
-     * #90, #91 and #92 are all this one case, opened and closed on alternate
+     * Where VideoEncoder is present and unusable there is no sentence to be
+     * had. On the WebKit build CI runs, touching it by any route - asking
+     * isConfigSupported, calling configure, from the page or from a worker -
+     * ends the WebContent process, and a page that no longer exists cannot
+     * say anything about anything. The measurements are in the canEncodeVideo
+     * note in lib/browser-video.ts; both Chromium projects do all three in
+     * milliseconds, so it is the engine and not the site.
+     *
+     * This was previously wrapped in `test.fail()`, which cannot express even
+     * that much: `test.fail()` expects a status of `failed`, and a page that
+     * dies ends a test in `timedOut`. Which one a run got was luck - a
+     * renderer that crashed produced an error and counted as expected, one
+     * that only froze produced a timeout and turned the suite red. qa#83,
+     * #90, #91 and #92 are all this one case, filed and closed on alternate
      * nights.
      *
-     * So there is no marking any more. website#370 moved the question to a
-     * worker, which is the only place a deadline on it can be kept, and the
-     * page now refuses on every engine that cannot encode. This asserts that,
-     * and a page that wedges again is a real failure and should be red.
+     * A skip is the honest answer. There is nothing here to hold the site to,
+     * and the day that build can keep a page alive this runs again with no
+     * edit - which is what the probe answering rather than dying would mean.
      */
+    test.skip(wasSilent(page, 'encode-video'),
+      'this engine has VideoEncoder and cannot use it: touching it at all ends '
+      + 'the page\'s process, so no tool can be asked to say anything here');
 
     const { encodePng } = await import('../../lib/image-fixtures');
     await page.locator('#file-input').setInputFiles([0, 1].map((index) => ({
@@ -140,11 +147,9 @@ test.describe('a browser that cannot write video', () => {
     // of its own and that reason is worth reading as it was raised.
     if (clicked !== null) throw clicked;
 
-    // Twenty seconds, not sixty. The tool answers in about two where it can
-    // answer at all - one worker deadline, and pickH264Codec stops at the
-    // first silence rather than paying it nine times - and where it cannot,
-    // waiting longer only spends the budget of a suite with four browser
-    // projects to get through.
+    // Twenty seconds, not sixty. Where the tool can answer at all it answers
+    // in about three, and waiting longer only spends the budget of a suite
+    // with four browser projects to get through.
     const said = page.locator('#error');
     await expect(
       said,

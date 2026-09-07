@@ -46,6 +46,28 @@ import type { Page } from '@playwright/test';
 const answers = new Map<string, unknown>();
 
 /**
+ * The questions this engine did not answer at all, as opposed to answered no.
+ *
+ * Both come back as the cautious value, and for choosing whether to run a test
+ * that is right: an engine that will not say whether it can encode is not one
+ * to hand a video to. But they are different facts about the browser, and the
+ * difference decides whether a tool can be held to anything.
+ *
+ * A browser that lacks a class refuses in words, and that refusal is the
+ * site's job and worth testing. A browser that stops when the class is touched
+ * cannot be made to say anything at all - see the WebKit note on
+ * canEncodeVideo in lib/browser-video.ts - so a test that demanded a sentence
+ * there would be reporting the engine's defect as the site's bug.
+ */
+const silences = new Set<string>();
+
+/** Did this engine simply fail to answer, rather than answering no? */
+export function wasSilent(page: Page, question: string): boolean {
+  const engine = page.context().browser()?.browserType().name() ?? 'unknown';
+  return silences.has(`${engine}:${question}`);
+}
+
+/**
  * Put a question to the page, and take silence for an answer.
  *
  * THE PART THAT MATTERS: the deadline is out here, in Node, and not inside
@@ -85,9 +107,7 @@ export async function ask<T>(
   ]);
   clearTimeout(timer);
 
-  // No answer and a plain no come back the same, and for choosing whether to
-  // run a test that is right: an engine that will not say whether it can
-  // encode is not one to hand a video to.
+  if (answer === QUIET) silences.add(key);
   const settled = (answer === QUIET ? cautious : answer) as T;
 
   answers.set(key, settled);
