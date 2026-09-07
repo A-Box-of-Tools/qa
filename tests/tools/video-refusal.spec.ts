@@ -109,15 +109,19 @@ test.describe('a browser that cannot write video', () => {
     // and a permanently greyed button explains nothing.
     await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
     // A click on a page whose main thread has stopped never reports back, so
-    // this one is bounded too. Where the page is alive it lands instantly.
-    await page.locator('#export').click({ timeout: 20_000 });
+    // this one is bounded - and its failure is caught rather than thrown,
+    // because on the engine this test exists for the click is the thing that
+    // wedges, and a timeout raised here would end the test before the line
+    // that can say why. Where the page is alive it lands instantly.
+    const clicked = await page.locator('#export').click({ timeout: 20_000 })
+      .then(() => null, (error: unknown) => error);
 
     // Is the page still running at all? Asked in words, because it is the
     // question this whole test is about and because everything after a wedge
-    // fails for the same reason without naming it - the refusal, the snapshot
-    // the reporter takes afterwards, the fixture teardown. A report that
-    // blames whichever of those ran out of time first sends the reader to the
-    // wrong line.
+    // fails for the same reason without naming it - the click, the refusal,
+    // the snapshot the reporter takes afterwards, the fixture teardown. A
+    // report that blames whichever of those ran out of time first sends the
+    // reader to the wrong line.
     //
     // Bounded from out here rather than by a timeout on the call, like every
     // probe in lib/engine.ts: a page that has stopped will not honour one, and
@@ -131,6 +135,10 @@ test.describe('a browser that cannot write video', () => {
       'pressing Create video stopped the page: its main thread never came back, '
       + 'so the tool could not have said anything whatever it meant to say',
     ).toBe(true);
+
+    // The page is alive, so a click that still failed did so for some reason
+    // of its own and that reason is worth reading as it was raised.
+    if (clicked !== null) throw clicked;
 
     // Twenty seconds, not sixty. The tool answers in about two where it can
     // answer at all - one worker deadline, and pickH264Codec stops at the
