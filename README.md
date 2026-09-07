@@ -44,9 +44,18 @@ npm test                 # both projects
 npm run test:desktop     # Desktop Chrome only
 npm run test:mobile      # Mobile Chrome only
 npm run test:headed      # watch it click through the site
+npm run test:failed      # only what failed last time
 npm run test:ui          # Playwright's interactive UI mode
 npm run report           # open the last HTML report
 ```
+
+`test:failed` is Playwright's `--last-failed`, reading the `.last-run.json`
+the previous run left in `test-results/`. In CI there is no such file to
+read — twelve runners each threw their machine away — so the Report workflow
+takes a `rerun` input instead: give it the id of a run that went red and it
+re-runs that run's failures and nothing else, in about three minutes rather
+than fourteen. `scripts/failed-cases.mjs` is the part that turns one into the
+other.
 
 ### Pointing at something else
 

@@ -8,6 +8,7 @@
     "test:desktop": "playwright test --project=\"Desktop Chrome\"",
     "test:mobile": "playwright test --project=\"Mobile Chrome\"",
     "test:headed": "playwright test --headed",
+    "test:failed": "playwright test --last-failed",
     "test:ui": "playwright test --ui",
     "report": "playwright show-report",
     "install:browsers": "playwright install chromium"

@@ -52,6 +52,25 @@
 # change to a test is exercised on the machines the suite actually runs on
 # before it lands on main.
 #
+# AND RE-RUNNING ONLY WHAT FAILED
+#
+# Dispatch with `rerun` set to the id of a run that went red, and this runs
+# that run's failures and nothing else. Fourteen minutes becomes about three,
+# most of which is installing browsers, because the projects that had no
+# failures are skipped outright and the ones that did carry a filter.
+#
+# The filter is Playwright's own `--last-failed`, fed a `.last-run.json` that
+# `scripts/failed-cases.mjs` writes out of the earlier run's blob reports. It
+# selects by test id, so it still finds a test that has since moved down its
+# file. `unexpected` only: a flaky test passed on a retry and is not what
+# somebody dispatching this is looking at.
+#
+# A rerun publishes nothing, files no issues and sets no status. It is for
+# looking at a failure, not for deciding anything. Two things it cannot do:
+# the blob reports it reads expire after three days, and the ids it reads
+# belong to the tests as they were named then - a rerun of a run from before a
+# rename finds nothing and says so rather than passing quietly.
+#
 
 name: Report
 
@@ -75,6 +94,10 @@ on:
         description: 'The website commit to report the result on, if there is one'
         default: ''
         required: false
+      rerun:
+        description: 'Run only the cases that failed in this run id, for a closer look at them'
+        default: ''
+        required: false
 
 permissions:
   contents: write
@@ -84,9 +107,10 @@ permissions:
 # A second production run landing mid-publish should not race it: it queues.
 # A preview run is its own group per pull request, so it never waits on
 # production, and a newer push to the same pull request cancels the older
-# run - only the newest preview is worth checking.
+# run - only the newest preview is worth checking. A rerun is its own group
+# too: somebody looking at a failure should not be behind tonight's schedule.
 concurrency:
-  group: report-${{ github.event.inputs.pr && format('pr-{0}', github.event.inputs.pr) || (github.event_name == 'pull_request' && format('qa-pr-{0}', github.event.pull_request.number)) || 'production' }}
+  group: report-${{ github.event.inputs.rerun && format('rerun-{0}', github.event.inputs.rerun) || github.event.inputs.pr && format('pr-{0}', github.event.inputs.pr) || (github.event_name == 'pull_request' && format('qa-pr-{0}', github.event.pull_request.number)) || 'production' }}
   cancel-in-progress: ${{ github.event.inputs.pr != '' || github.event_name == 'pull_request' }}
 
 jobs:
@@ -100,6 +124,13 @@ jobs:
       production: ${{ steps.what.outputs.production }}
       pr: ${{ steps.what.outputs.pr }}
       sha: ${{ steps.what.outputs.sha }}
+      rerun: ${{ steps.what.outputs.rerun }}
+      label: ${{ steps.what.outputs.label }}
+      # Always a JSON array, so the matrix's `if` can read it whether or not
+      # the step that fills it in ran. Empty on a normal run, where the `if`
+      # never looks past `rerun == ''` - but a fromJSON on an empty string is
+      # not a chance worth taking on every scheduled run.
+      projects: ${{ steps.cases.outputs.projects || '[]' }}
     steps:
       - name: What this run is
         id: what
@@ -108,20 +139,105 @@ jobs:
           BASE_URL: ${{ github.event.inputs.base_url }}
           PR: ${{ github.event.inputs.pr }}
           SHA: ${{ github.event.inputs.sha }}
+          RERUN: ${{ github.event.inputs.rerun }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           target="${BASE_URL:-https://abox.tools/}"
           production=false
-          if [ "$EVENT" != 'pull_request' ] && [ "$target" = 'https://abox.tools/' ] && [ -z "$PR" ]; then
+          # A rerun is somebody looking at a failure. It publishes nothing,
+          # files nothing and decides nothing, so it is never production
+          # however it was aimed.
+          if [ "$EVENT" != 'pull_request' ] && [ "$target" = 'https://abox.tools/' ] \
+              && [ -z "$PR" ] && [ -z "$RERUN" ]; then
             production=true
+          fi
+          # What to call this run's kept report. One place, in a shell, rather
+          # than a chain of ternaries in an artifact name.
+          if   [ -n "$PR" ];                 then label="website-pr-$PR"
+          elif [ "$EVENT" = 'pull_request' ]; then label="qa-pr-$PR_NUMBER"
+          elif [ -n "$RERUN" ];               then label="rerun-$RERUN"
+          else                                     label=production
           fi
           {
             echo "target=$target"
             echo "production=$production"
             echo "pr=$PR"
             echo "sha=$SHA"
+            echo "rerun=$RERUN"
+            echo "label=$label"
           } >> "$GITHUB_OUTPUT"
-          echo "Testing $target (production: $production${PR:+, preview of website#$PR})"
+          echo "Testing $target (production: $production${PR:+, preview of website#$PR}${RERUN:+, re-running the failures of $RERUN})"
+
+      # Only for a rerun, and only the steps below: a scheduled run must not
+      # pay a checkout and an npm install before the twelve test jobs start.
+      - uses: actions/checkout@v4
+        if: steps.what.outputs.rerun != ''
+      - uses: actions/setup-node@v4
+        if: steps.what.outputs.rerun != ''
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+        if: steps.what.outputs.rerun != ''
+
+      # The earlier run's blob reports, merged and read for what went wrong.
+      # Its own artifact rather than a job output, because a bad night can
+      # fail hundreds of cases and an output has a size limit a list of ids
+      # would eventually meet.
+      - name: Work out which cases to re-run
+        id: cases
+        if: steps.what.outputs.rerun != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RERUN: ${{ steps.what.outputs.rerun }}
+        run: |
+          set -euo pipefail
+          if ! gh run download "$RERUN" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'blob-report-*' --dir blobs; then
+            echo "::error::Could not read run $RERUN. Its blob reports are kept for three days; after that there is nothing left to re-run from."
+            exit 1
+          fi
+
+          # Named by slice on the way in, as the report job does: the blob
+          # reporter names its file by shard index, so two slices of different
+          # projects both write report-1.zip.
+          mkdir -p all-blob-reports
+          for dir in blobs/blob-report-*/; do
+            slice=$(basename "$dir" | sed 's/^blob-report-//')
+            for zip in "$dir"*.zip; do
+              cp "$zip" "all-blob-reports/${slice}-$(basename "$zip")"
+            done
+          done
+
+          PLAYWRIGHT_JSON_OUTPUT_NAME=merged.json \
+            npx playwright merge-reports --reporter json ./all-blob-reports > /dev/null
+          node scripts/failed-cases.mjs merged.json --out last-failed.json \
+            > projects.json 2> cases.txt
+
+          {
+            echo "### Re-running what failed in [run $RERUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RERUN)"
+            echo
+            echo '```'
+            cat cases.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat cases.txt
+
+          projects=$(cat projects.json)
+          if [ -z "$projects" ] || [ "$projects" = '[]' ]; then
+            echo "::error::Run $RERUN has no unexpected failures, so there is nothing to re-run. (Flaky and skipped cases are deliberately not counted.)"
+            exit 1
+          fi
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+
+      - name: Hand the list to the test jobs
+        if: steps.what.outputs.rerun != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-failed
+          path: last-failed.json
+          retention-days: 1
 
       # Pending on the website commit from the start, so the pull request
       # shows the check as running rather than absent for the fourteen
@@ -173,22 +289,50 @@ jobs:
           - { slice: mobile-safari-3,  project: Mobile Safari,  shard: 3/4 }
           - { slice: mobile-safari-4,  project: Mobile Safari,  shard: 4/4 }
     steps:
+      # A rerun does no work in the projects that had no failure - eight or ten
+      # of these twelve, each of which would otherwise spend a minute checking
+      # out two repositories and installing a browser to run nothing.
+      #
+      # Decided here and not in a job-level `if`, which is where it belongs and
+      # where it cannot go: GitHub offers a job's own `if` the github, needs,
+      # vars and inputs contexts and not `matrix`, so a condition naming
+      # matrix.project there is a workflow file the runner refuses to load at
+      # all. Every step below is gated on the answer instead.
+      - name: Is this slice wanted?
+        id: slice
+        env:
+          RERUN: ${{ needs.announce.outputs.rerun }}
+          PROJECTS: ${{ needs.announce.outputs.projects }}
+          PROJECT: ${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          wanted=yes
+          if [ -n "$RERUN" ] && ! printf '%s' "$PROJECTS" | grep -qF "\"$PROJECT\""; then
+            wanted=no
+            echo "::notice::Nothing failed in $PROJECT in run $RERUN, so this slice has nothing to re-run."
+          fi
+          echo "wanted=$wanted" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.slice.outputs.wanted == 'yes'
 
       # lib/tools.ts, lib/csp.ts and hasFilePicker() all read etoolbox's own
       # source at test time rather than duplicating it here - see lib/site.ts.
       - name: Check out etoolbox (source of truth for tool/CSP metadata)
+        if: steps.slice.outputs.wanted == 'yes'
         uses: actions/checkout@v4
         with:
           repository: A-Box-of-Tools/website
           path: etoolbox-src
 
       - uses: actions/setup-node@v4
+        if: steps.slice.outputs.wanted == 'yes'
         with:
           node-version: '22'
           cache: npm
 
       - run: npm ci
+        if: steps.slice.outputs.wanted == 'yes'
 
       # The engine this slice runs, and Chromium either way: a WebKit slice
       # still needs it, because lib/browser-video.ts borrows Chromium to
@@ -196,21 +340,43 @@ jobs:
       # WebKit, Chrome included, so the WebKit slices are not a luxury - they
       # are what an iPhone visitor actually gets - but a Chrome slice has no
       # use for a WebKit download, and each engine is a minute of setup.
-      - run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
+      - if: steps.slice.outputs.wanted == 'yes'
+        run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
+
+      - name: Fetch the cases this run is limited to
+        if: steps.slice.outputs.wanted == 'yes' && needs.announce.outputs.rerun != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: last-failed
 
       # blob rather than html: the slices are stitched into one page by the
       # report job below. github stays so annotations still land on the
       # commit.
+      #
+      # A rerun adds the filter and --pass-with-no-tests. The filter is by
+      # project as well as by test - an id is hashed with the project's own -
+      # so a case that failed only on Mobile Safari leaves the other Safari
+      # slices with nothing to do, and a slice that runs nothing is a normal
+      # outcome here rather than a mistake.
       - name: Run this slice
+        if: steps.slice.outputs.wanted == 'yes'
         env:
           BASE_URL: ${{ needs.announce.outputs.target }}
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
-        run: npx playwright test --project="${{ matrix.project }}" --shard=${{ matrix.shard }} --reporter=blob,github
+          RERUN: ${{ needs.announce.outputs.rerun }}
+        run: |
+          set -euo pipefail
+          only=''
+          if [ -n "$RERUN" ]; then
+            only='--last-failed --last-failed-file last-failed.json --pass-with-no-tests'
+          fi
+          npx playwright test --project="${{ matrix.project }}" \
+            --shard=${{ matrix.shard }} $only --reporter=blob,github
 
       # The traces this slice kept for its failures. Out of git and expiring,
       # for the reasons in the header.
       - name: Keep the traces where they expire
-        if: ${{ !cancelled() && failure() }}
+        if: ${{ !cancelled() && failure() && steps.slice.outputs.wanted == 'yes' }}
         uses: actions/upload-artifact@v4
         with:
           name: traces-${{ matrix.slice }}
@@ -221,7 +387,7 @@ jobs:
       # Uploaded whether the slice passed or failed: the merged report has to
       # describe the failures, not omit the slices that had them.
       - name: Hand this slice's results to the merge
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.slice.outputs.wanted == 'yes' }}
         uses: actions/upload-artifact@v4
         with:
           name: blob-report-${{ matrix.slice }}
@@ -336,7 +502,7 @@ jobs:
         if: needs.announce.outputs.production != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: report-${{ needs.announce.outputs.pr && format('website-pr-{0}', needs.announce.outputs.pr) || (github.event_name == 'pull_request' && format('qa-pr-{0}', github.event.pull_request.number)) || 'production' }}
+          name: report-${{ needs.announce.outputs.label }}
           path: playwright-report/
           retention-days: 7
 

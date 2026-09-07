@@ -353,9 +353,52 @@ export async function canDecodeVideo(
  * right reading whatever the cause - a browser that cannot say within two
  * seconds whether it supports H.264 is not a browser that is about to encode
  * any.
+ *
+ * AND ON A PAGE NOBODY IS GOING TO USE AFTERWARDS
+ *
+ * "Still pending" was the wrong reading of it, and so was "blocks the main
+ * thread". Measured on the Linux build CI runs, against a page of this site:
+ *
+ *   VideoEncoder      function      MediaRecorder   undefined
+ *   isConfigSupported no answer, then the page is gone: Target crashed
+ *   configure()       no answer, then the page is gone: Target crashed
+ *
+ * The same on Desktop Safari and Mobile Safari; on both Chromium projects all
+ * three answer in milliseconds and a frame encodes. So it is not that one
+ * method hangs. `VideoEncoder` is present on that build and unusable, and
+ * touching it by any route takes the whole WebContent process down with it.
+ *
+ * A dedicated worker is no escape - in WebKit it shares that process, and a
+ * worker given this question dies and takes the page with it, which was
+ * checked before concluding it. There is therefore no arrangement of site
+ * code that both uses WebCodecs and survives here, which is why the tools are
+ * not asked to; see the skip in tests/tools/video-refusal.spec.ts.
+ *
+ * What follows for this probe is only that it must not ask on a page anybody
+ * needs afterwards. It asks on a page of its own, so the caller's survives
+ * whatever happens. One page per worker, because ask() caches per engine.
+ *
+ * The scratch page is navigated rather than left on about:blank: WebCodecs is
+ * secure-context only, and an answer from a page that is not one would be a
+ * fact about the wrong place. It is closed on the way out where it can be -
+ * where the process dies the evaluate is abandoned mid-flight, so the close
+ * never runs and the page goes when its context does.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
-  return ask(page, 'encode-video', () => page.evaluate(async () => {
+  return ask(page, 'encode-video', async () => {
+    const scratch = await page.context().newPage();
+    try {
+      await scratch.goto(page.url());
+      return await askThePage(scratch);
+    } finally {
+      void scratch.close().catch(() => {});
+    }
+  }, false);
+}
+
+/** The question itself, wherever it is being put. */
+function askThePage(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
     const global = globalThis as {
       VideoEncoder?: {
         isConfigSupported?: (config: unknown) => Promise<{ supported?: boolean }>;
@@ -384,5 +427,5 @@ export async function canEncodeVideo(page: Page): Promise<boolean> {
     if (!recorder?.isTypeSupported) return false;
     return ['video/mp4;codecs=avc1', 'video/webm;codecs=vp8', 'video/webm']
       .some((type) => recorder.isTypeSupported!(type));
-  }), false);
+  });
 }

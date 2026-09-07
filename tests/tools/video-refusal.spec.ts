@@ -54,52 +54,54 @@ test.describe('a browser that cannot decode video', () => {
  * And the tools that write a video rather than read one.
  *
  * The mirror of the file above, and the assertion that keeps video-more.spec's
- * skip honest. That file now steps aside wherever the engine can encode
- * nothing, which is right - there is no result to inspect - but a skip alone
- * would hide the difference between a tool that says so and a tool that sits
- * there. CI saw the second: a Create video button whose click had not returned
- * five minutes later.
+ * skip honest. That file steps aside wherever the engine can encode nothing,
+ * which is right - there is no result to inspect - but a skip alone would
+ * hide the difference between a tool that says so and a tool that sits there.
  *
- * This is the sentence that must be there instead.
+ * This is the sentence that must be there instead, on every engine that is
+ * still able to produce one. The engine CI runs is not, and says so through
+ * the probe rather than through this test; see the skip below.
  */
 test.describe('a browser that cannot write video', () => {
   test('images-to-video says so instead of trying', async ({ page }) => {
-    test.setTimeout(60_000);
+    // Room for the capability probe's own page and deadline as well as this
+    // one's waits. A failure here should be an assertion that says what went
+    // wrong, not a budget that ran out while one was being evaluated.
+    test.setTimeout(90_000);
     await page.goto('/images-to-video/');
     test.skip(await canEncodeVideo(page),
       'this engine can encode video, so there is no refusal to check');
 
     /*
-     * KNOWN FAILING, AND THE BUG IS THE SITE'S: A-Box-of-Tools/qa#58.
+     * THE OTHER WAY TO HAVE NO ENCODER, WHICH IS NOT THE SITE'S TO ANSWER.
      *
-     * There are two ways for an engine to have no encoder, and the tool can
-     * only speak up in one of them.
+     * Where VideoEncoder is absent the tool says "This browser supports
+     * neither WebCodecs nor canvas recording" at once, and that sentence is
+     * what this test exists for.
      *
-     * Where VideoEncoder is simply absent, `pickH264Codec` returns at once and
-     * the page says "This browser supports neither WebCodecs nor canvas
-     * recording". That is the behaviour under test, and it passes.
+     * Where VideoEncoder is present and unusable there is no sentence to be
+     * had. On the WebKit build CI runs, touching it by any route - asking
+     * isConfigSupported, calling configure, from the page or from a worker -
+     * ends the WebContent process, and a page that no longer exists cannot
+     * say anything about anything. The measurements are in the canEncodeVideo
+     * note in lib/browser-video.ts; both Chromium projects do all three in
+     * milliseconds, so it is the engine and not the site.
      *
-     * Where VideoEncoder exists and `isConfigSupported` never returns - the
-     * WebKit build CI runs - it does not merely fail to resolve, it blocks the
-     * main thread. Nothing in the page runs after that: not the refusal, not
-     * the error handler, not the timeout website#295 added, which is a
-     * setTimeout and therefore cannot fire either. The tab is finished. QA saw
-     * a Create video click that had not returned five minutes later.
+     * This was previously wrapped in `test.fail()`, which cannot express even
+     * that much: `test.fail()` expects a status of `failed`, and a page that
+     * dies ends a test in `timedOut`. Which one a run got was luck - a
+     * renderer that crashed produced an error and counted as expected, one
+     * that only froze produced a timeout and turned the suite red. qa#83,
+     * #90, #91 and #92 are all this one case, filed and closed on alternate
+     * nights.
      *
-     * The fix has to move that query off the main thread, and four of the five
-     * tools that make one would need `worker-src blob:` added to their
-     * Content-Security-Policy to allow it - which is the site's call to make
-     * and not a test's to force.
-     *
-     * So this is marked as expected to fail on exactly the engines where the
-     * page cannot answer, and left as a real test everywhere else. The day the
-     * site can speak up there, this goes green and the marking turns the suite
-     * red until somebody deletes these lines. That is the point of the marking.
+     * A skip is the honest answer. There is nothing here to hold the site to,
+     * and the day that build can keep a page alive this runs again with no
+     * edit - which is what the probe answering rather than dying would mean.
      */
-    if (wasSilent(page, 'encode-video')) {
-      test.fail(true, 'qa#58: this engine wedges its own main thread on '
-        + 'VideoEncoder.isConfigSupported, so the page cannot say anything');
-    }
+    test.skip(wasSilent(page, 'encode-video'),
+      'this engine has VideoEncoder and cannot use it: touching it at all ends '
+      + 'the page\'s process, so no tool can be asked to say anything here');
 
     const { encodePng } = await import('../../lib/image-fixtures');
     await page.locator('#file-input').setInputFiles([0, 1].map((index) => ({
@@ -114,13 +116,40 @@ test.describe('a browser that cannot write video', () => {
     // and a permanently greyed button explains nothing.
     await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
     // A click on a page whose main thread has stopped never reports back, so
-    // this one is bounded too. Where the page is alive it lands instantly.
-    await page.locator('#export').click({ timeout: 20_000 });
+    // this one is bounded - and its failure is caught rather than thrown,
+    // because on the engine this test exists for the click is the thing that
+    // wedges, and a timeout raised here would end the test before the line
+    // that can say why. Where the page is alive it lands instantly.
+    const clicked = await page.locator('#export').click({ timeout: 20_000 })
+      .then(() => null, (error: unknown) => error);
 
-    // Twenty seconds, not sixty. The tool answers in three where it can
-    // answer at all, and where it cannot the page is wedged and no amount of
-    // waiting changes that - it only spends the budget of a suite that has
-    // four browser projects to get through.
+    // Is the page still running at all? Asked in words, because it is the
+    // question this whole test is about and because everything after a wedge
+    // fails for the same reason without naming it - the click, the refusal,
+    // the snapshot the reporter takes afterwards, the fixture teardown. A
+    // report that blames whichever of those ran out of time first sends the
+    // reader to the wrong line.
+    //
+    // Bounded from out here rather than by a timeout on the call, like every
+    // probe in lib/engine.ts: a page that has stopped will not honour one, and
+    // a timer in this process is not on the thread that stopped.
+    const alive = await Promise.race([
+      page.evaluate(() => true).catch(() => false),
+      new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 10_000); }),
+    ]);
+    expect(
+      alive,
+      'pressing Create video stopped the page: its main thread never came back, '
+      + 'so the tool could not have said anything whatever it meant to say',
+    ).toBe(true);
+
+    // The page is alive, so a click that still failed did so for some reason
+    // of its own and that reason is worth reading as it was raised.
+    if (clicked !== null) throw clicked;
+
+    // Twenty seconds, not sixty. Where the tool can answer at all it answers
+    // in about three, and waiting longer only spends the budget of a suite
+    // with four browser projects to get through.
     const said = page.locator('#error');
     await expect(
       said,

@@ -50,10 +50,14 @@ const answers = new Map<string, unknown>();
  *
  * Both come back as the cautious value, and for choosing whether to run a test
  * that is right: an engine that will not say whether it can encode is not one
- * to hand a video to. But they are different facts about the browser, and one
- * caller needs the difference. A page whose main thread wedges on a capability
- * query is a page that will wedge again when a button asks the same question,
- * and a test can only demand a tool speak up if the tool is able to.
+ * to hand a video to. But they are different facts about the browser, and the
+ * difference decides whether a tool can be held to anything.
+ *
+ * A browser that lacks a class refuses in words, and that refusal is the
+ * site's job and worth testing. A browser that stops when the class is touched
+ * cannot be made to say anything at all - see the WebKit note on
+ * canEncodeVideo in lib/browser-video.ts - so a test that demanded a sentence
+ * there would be reporting the engine's defect as the site's bug.
  */
 const silences = new Set<string>();
 
