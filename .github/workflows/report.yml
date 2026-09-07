@@ -318,11 +318,27 @@ jobs:
 
       # lib/tools.ts, lib/csp.ts and hasFilePicker() all read etoolbox's own
       # source at test time rather than duplicating it here - see lib/site.ts.
+      #
+      # At the commit the site under test was built from, and not at whatever
+      # main happens to be. Without the ref this checked out the default
+      # branch, so a preview of a website PR was tested against a source tree
+      # that did not contain the PR - and any PR adding a tool failed four
+      # assertions on the hub and the 404 for the whole time it was open,
+      # counting the tools of one tree against the cards of another. It is the
+      # one kind of failure this suite must not produce: a red check that is
+      # right about the numbers and wrong about which site they came from.
+      #
+      # Empty on a production or scheduled run, where `sha` is never set and
+      # the site under test IS whatever main deployed - and checkout falls back
+      # to the default branch on an empty ref, which is exactly what those runs
+      # want. A rerun re-dispatched without a `sha` falls back the same way and
+      # is no worse off than it is today.
       - name: Check out etoolbox (source of truth for tool/CSP metadata)
         if: steps.slice.outputs.wanted == 'yes'
         uses: actions/checkout@v4
         with:
           repository: A-Box-of-Tools/website
+          ref: ${{ needs.announce.outputs.sha }}
           path: etoolbox-src
 
       - uses: actions/setup-node@v4
