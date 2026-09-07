@@ -169,7 +169,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Testing $target (production: $production${PR:+, preview of website#$PR}${RERUN:+, re-running the failures of $RERUN})"
 
-      # Only for a rerun, and only these four steps: the normal path must not
+      # Only for a rerun, and only the steps below: a scheduled run must not
       # pay a checkout and an npm install before the twelve test jobs start.
       - uses: actions/checkout@v4
         if: steps.what.outputs.rerun != ''
@@ -225,7 +225,7 @@ jobs:
           cat cases.txt
 
           projects=$(cat projects.json)
-          if [ "$projects" = '[]' ]; then
+          if [ -z "$projects" ] || [ "$projects" = '[]' ]; then
             echo "::error::Run $RERUN has no unexpected failures, so there is nothing to re-run. (Flaky and skipped cases are deliberately not counted.)"
             exit 1
           fi
