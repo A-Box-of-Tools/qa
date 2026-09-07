@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { canEncodeVideo, recordVideo } from '../../lib/browser-video';
-import { wasSilent } from '../../lib/engine';
 
 /**
  * What a video tool says in a browser that cannot decode video.
@@ -64,42 +63,38 @@ test.describe('a browser that cannot decode video', () => {
  */
 test.describe('a browser that cannot write video', () => {
   test('images-to-video says so instead of trying', async ({ page }) => {
-    test.setTimeout(60_000);
+    // Room for the capability probe's own page and deadline as well as this
+    // one's waits. A failure here should be an assertion that says what went
+    // wrong, not a budget that ran out while one was being evaluated.
+    test.setTimeout(90_000);
     await page.goto('/images-to-video/');
     test.skip(await canEncodeVideo(page),
       'this engine can encode video, so there is no refusal to check');
 
     /*
-     * KNOWN FAILING, AND THE BUG IS THE SITE'S: A-Box-of-Tools/qa#58.
+     * THIS WAS MARKED EXPECTED-TO-FAIL, AND THE MARKING DID NOT WORK.
      *
-     * There are two ways for an engine to have no encoder, and the tool can
-     * only speak up in one of them.
+     * There are two ways for an engine to have no encoder. Where VideoEncoder
+     * is absent the tool says "This browser supports neither WebCodecs nor
+     * canvas recording" at once. Where it exists and `isConfigSupported`
+     * blocks the main thread - the WebKit build CI runs - the page used to
+     * stop dead instead, so this was wrapped in `test.fail()` and left to go
+     * green the day the site could speak up there.
      *
-     * Where VideoEncoder is simply absent, `pickH264Codec` returns at once and
-     * the page says "This browser supports neither WebCodecs nor canvas
-     * recording". That is the behaviour under test, and it passes.
+     * `test.fail()` cannot express that. It expects a status of `failed`, and
+     * a wedged page ends a test in `timedOut`, which Playwright counts as an
+     * unexpected failure whatever the marking says. Worse, which of the two a
+     * run got was luck: an engine that crashed the renderer produced an error
+     * and counted as expected, one that merely froze produced a timeout and
+     * turned the suite red. Same site, same test, opposite results - qa#83,
+     * #90, #91 and #92 are all this one case, opened and closed on alternate
+     * nights.
      *
-     * Where VideoEncoder exists and `isConfigSupported` never returns - the
-     * WebKit build CI runs - it does not merely fail to resolve, it blocks the
-     * main thread. Nothing in the page runs after that: not the refusal, not
-     * the error handler, not the timeout website#295 added, which is a
-     * setTimeout and therefore cannot fire either. The tab is finished. QA saw
-     * a Create video click that had not returned five minutes later.
-     *
-     * The fix has to move that query off the main thread, and four of the five
-     * tools that make one would need `worker-src blob:` added to their
-     * Content-Security-Policy to allow it - which is the site's call to make
-     * and not a test's to force.
-     *
-     * So this is marked as expected to fail on exactly the engines where the
-     * page cannot answer, and left as a real test everywhere else. The day the
-     * site can speak up there, this goes green and the marking turns the suite
-     * red until somebody deletes these lines. That is the point of the marking.
+     * So there is no marking any more. website#370 moved the question to a
+     * worker, which is the only place a deadline on it can be kept, and the
+     * page now refuses on every engine that cannot encode. This asserts that,
+     * and a page that wedges again is a real failure and should be red.
      */
-    if (wasSilent(page, 'encode-video')) {
-      test.fail(true, 'qa#58: this engine wedges its own main thread on '
-        + 'VideoEncoder.isConfigSupported, so the page cannot say anything');
-    }
 
     const { encodePng } = await import('../../lib/image-fixtures');
     await page.locator('#file-input').setInputFiles([0, 1].map((index) => ({
@@ -117,10 +112,31 @@ test.describe('a browser that cannot write video', () => {
     // this one is bounded too. Where the page is alive it lands instantly.
     await page.locator('#export').click({ timeout: 20_000 });
 
-    // Twenty seconds, not sixty. The tool answers in three where it can
-    // answer at all, and where it cannot the page is wedged and no amount of
-    // waiting changes that - it only spends the budget of a suite that has
-    // four browser projects to get through.
+    // Is the page still running at all? Asked in words, because it is the
+    // question this whole test is about and because everything after a wedge
+    // fails for the same reason without naming it - the refusal, the snapshot
+    // the reporter takes afterwards, the fixture teardown. A report that
+    // blames whichever of those ran out of time first sends the reader to the
+    // wrong line.
+    //
+    // Bounded from out here rather than by a timeout on the call, like every
+    // probe in lib/engine.ts: a page that has stopped will not honour one, and
+    // a timer in this process is not on the thread that stopped.
+    const alive = await Promise.race([
+      page.evaluate(() => true).catch(() => false),
+      new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 10_000); }),
+    ]);
+    expect(
+      alive,
+      'pressing Create video stopped the page: its main thread never came back, '
+      + 'so the tool could not have said anything whatever it meant to say',
+    ).toBe(true);
+
+    // Twenty seconds, not sixty. The tool answers in about two where it can
+    // answer at all - one worker deadline, and pickH264Codec stops at the
+    // first silence rather than paying it nine times - and where it cannot,
+    // waiting longer only spends the budget of a suite with four browser
+    // projects to get through.
     const said = page.locator('#error');
     await expect(
       said,

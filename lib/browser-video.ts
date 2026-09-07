@@ -353,9 +353,42 @@ export async function canDecodeVideo(
  * right reading whatever the cause - a browser that cannot say within two
  * seconds whether it supports H.264 is not a browser that is about to encode
  * any.
+ *
+ * AND ON A PAGE NOBODY IS GOING TO USE AFTERWARDS
+ *
+ * "Still pending" was the wrong reading of it. That build does not leave the
+ * promise unsettled - it blocks the page's main thread, and a page that has
+ * been asked this is finished. Not only does the answer never come: the next
+ * `setInputFiles` on that page never returns either, and nor does the snapshot
+ * Playwright takes when the test fails, so what the report shows is a timeout
+ * with no bearing on the line it names.
+ *
+ * A caller that goes on to use its page therefore cannot be the one to ask.
+ * The question goes to a page of its own, and the caller's is untouched
+ * whatever happens to it. One page per worker, because the answer is cached
+ * per engine by ask() and this runs once.
+ *
+ * The scratch page is navigated rather than left on about:blank: WebCodecs is
+ * secure-context only, and an answer from a page that is not one would be a
+ * fact about the wrong place. It is closed on the way out where it can be -
+ * where the thread is wedged the evaluate is abandoned mid-flight, so the
+ * close never runs and the page goes when its context does.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
-  return ask(page, 'encode-video', () => page.evaluate(async () => {
+  return ask(page, 'encode-video', async () => {
+    const scratch = await page.context().newPage();
+    try {
+      await scratch.goto(page.url());
+      return await askThePage(scratch);
+    } finally {
+      void scratch.close().catch(() => {});
+    }
+  }, false);
+}
+
+/** The question itself, wherever it is being put. */
+function askThePage(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
     const global = globalThis as {
       VideoEncoder?: {
         isConfigSupported?: (config: unknown) => Promise<{ supported?: boolean }>;
@@ -384,5 +417,5 @@ export async function canEncodeVideo(page: Page): Promise<boolean> {
     if (!recorder?.isTypeSupported) return false;
     return ['video/mp4;codecs=avc1', 'video/webm;codecs=vp8', 'video/webm']
       .some((type) => recorder.isTypeSupported!(type));
-  }), false);
+  });
 }
