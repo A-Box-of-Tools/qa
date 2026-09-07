@@ -270,12 +270,6 @@ jobs:
     needs: announce
     runs-on: ubuntu-latest
     name: test (${{ matrix.slice }})
-    # A rerun only starts the projects that had a failure. The other eight or
-    # ten slices would each spend a minute installing a browser to run nothing,
-    # which is most of what a rerun would otherwise cost.
-    if: >-
-      ${{ needs.announce.outputs.rerun == ''
-          || contains(fromJSON(needs.announce.outputs.projects), matrix.project) }}
     strategy:
       # One slice failing must not cancel the others: the report is only
       # worth publishing if it describes the whole suite.
@@ -295,22 +289,50 @@ jobs:
           - { slice: mobile-safari-3,  project: Mobile Safari,  shard: 3/4 }
           - { slice: mobile-safari-4,  project: Mobile Safari,  shard: 4/4 }
     steps:
+      # A rerun does no work in the projects that had no failure - eight or ten
+      # of these twelve, each of which would otherwise spend a minute checking
+      # out two repositories and installing a browser to run nothing.
+      #
+      # Decided here and not in a job-level `if`, which is where it belongs and
+      # where it cannot go: GitHub offers a job's own `if` the github, needs,
+      # vars and inputs contexts and not `matrix`, so a condition naming
+      # matrix.project there is a workflow file the runner refuses to load at
+      # all. Every step below is gated on the answer instead.
+      - name: Is this slice wanted?
+        id: slice
+        env:
+          RERUN: ${{ needs.announce.outputs.rerun }}
+          PROJECTS: ${{ needs.announce.outputs.projects }}
+          PROJECT: ${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          wanted=yes
+          if [ -n "$RERUN" ] && ! printf '%s' "$PROJECTS" | grep -qF "\"$PROJECT\""; then
+            wanted=no
+            echo "::notice::Nothing failed in $PROJECT in run $RERUN, so this slice has nothing to re-run."
+          fi
+          echo "wanted=$wanted" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.slice.outputs.wanted == 'yes'
 
       # lib/tools.ts, lib/csp.ts and hasFilePicker() all read etoolbox's own
       # source at test time rather than duplicating it here - see lib/site.ts.
       - name: Check out etoolbox (source of truth for tool/CSP metadata)
+        if: steps.slice.outputs.wanted == 'yes'
         uses: actions/checkout@v4
         with:
           repository: A-Box-of-Tools/website
           path: etoolbox-src
 
       - uses: actions/setup-node@v4
+        if: steps.slice.outputs.wanted == 'yes'
         with:
           node-version: '22'
           cache: npm
 
       - run: npm ci
+        if: steps.slice.outputs.wanted == 'yes'
 
       # The engine this slice runs, and Chromium either way: a WebKit slice
       # still needs it, because lib/browser-video.ts borrows Chromium to
@@ -318,10 +340,11 @@ jobs:
       # WebKit, Chrome included, so the WebKit slices are not a luxury - they
       # are what an iPhone visitor actually gets - but a Chrome slice has no
       # use for a WebKit download, and each engine is a minute of setup.
-      - run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
+      - if: steps.slice.outputs.wanted == 'yes'
+        run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
 
       - name: Fetch the cases this run is limited to
-        if: needs.announce.outputs.rerun != ''
+        if: steps.slice.outputs.wanted == 'yes' && needs.announce.outputs.rerun != ''
         uses: actions/download-artifact@v4
         with:
           name: last-failed
@@ -336,6 +359,7 @@ jobs:
       # slices with nothing to do, and a slice that runs nothing is a normal
       # outcome here rather than a mistake.
       - name: Run this slice
+        if: steps.slice.outputs.wanted == 'yes'
         env:
           BASE_URL: ${{ needs.announce.outputs.target }}
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
@@ -352,7 +376,7 @@ jobs:
       # The traces this slice kept for its failures. Out of git and expiring,
       # for the reasons in the header.
       - name: Keep the traces where they expire
-        if: ${{ !cancelled() && failure() }}
+        if: ${{ !cancelled() && failure() && steps.slice.outputs.wanted == 'yes' }}
         uses: actions/upload-artifact@v4
         with:
           name: traces-${{ matrix.slice }}
@@ -363,7 +387,7 @@ jobs:
       # Uploaded whether the slice passed or failed: the merged report has to
       # describe the failures, not omit the slices that had them.
       - name: Hand this slice's results to the merge
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.slice.outputs.wanted == 'yes' }}
         uses: actions/upload-artifact@v4
         with:
           name: blob-report-${{ matrix.slice }}
