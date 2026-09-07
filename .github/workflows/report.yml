@@ -126,7 +126,11 @@ jobs:
       sha: ${{ steps.what.outputs.sha }}
       rerun: ${{ steps.what.outputs.rerun }}
       label: ${{ steps.what.outputs.label }}
-      projects: ${{ steps.cases.outputs.projects }}
+      # Always a JSON array, so the matrix's `if` can read it whether or not
+      # the step that fills it in ran. Empty on a normal run, where the `if`
+      # never looks past `rerun == ''` - but a fromJSON on an empty string is
+      # not a chance worth taking on every scheduled run.
+      projects: ${{ steps.cases.outputs.projects || '[]' }}
     steps:
       - name: What this run is
         id: what
