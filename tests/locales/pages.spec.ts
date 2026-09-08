@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools, hasFilePicker } from '../../lib/tools';
-import { declaredLang, isRtl, localeUrl, locales } from '../../lib/locales';
+import {
+  declaredLang, isRtl, localeUrl, locales, offeredLocales, unadvertisedLocales,
+} from '../../lib/locales';
 
 /**
  * Every tool page, in every language, fetched from the site as served.
@@ -88,24 +90,41 @@ test.describe('every tool, in every language, as served', () => {
 });
 
 test.describe('the language switcher goes where it says', () => {
-  // One page is enough to test the switcher itself, but every language has to
-  // be in it: a language missing from the set is one nobody can reach except
-  // by typing the URL, which is the same as not shipping it.
-  test('every language is offered, and every offer resolves', async ({ request }) => {
+  // One page is enough to test the switcher itself, but the whole set has to
+  // be right in it, and the set has two halves now. A language the site
+  // offers and does not link to is one nobody can reach except by typing the
+  // URL, which is the same as not shipping it. A language the site has
+  // stopped offering and links to anyway is the change half-made: it would
+  // still be inviting a crawler into a page that says `noindex`, and still
+  // be pointing at a page that does not point back.
+  //
+  // Which half a language is in is read from the site's own
+  // `unadvertised_languages` rather than listed here, so this is right on
+  // both sides of that change and needs nothing done to it when the list
+  // moves. See offeredLocales() in lib/locales.ts.
+  test('every offered language is linked, and no hidden one is', async ({ request }) => {
     test.setTimeout(180_000);
     const response = await request.get('/');
     expect(response.ok()).toBe(true);
     const html = await response.text();
 
-    const offered = new Set(
+    const linked = new Set(
       [...html.matchAll(/hreflang="([^"]+)"/g)].map((m) => m[1]),
     );
 
-    const missing = LANGS.filter((lang) => !offered.has(declaredLang(lang)));
+    const missing = offeredLocales().filter((lang) => !linked.has(declaredLang(lang)));
     expect(
       missing,
       `the front page offers no alternate for: ${missing.join(', ')} - those languages `
       + 'exist but nothing links to them',
+    ).toEqual([]);
+
+    const hidden = [...unadvertisedLocales()];
+    const leaked = hidden.filter((lang) => linked.has(declaredLang(lang)));
+    expect(
+      leaked,
+      `the front page still points at: ${leaked.join(', ')} - those languages are not `
+      + 'offered any more, and a page they do not point back from should not be linked',
     ).toEqual([]);
   });
 });

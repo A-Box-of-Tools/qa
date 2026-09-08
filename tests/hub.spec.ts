@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../lib/tools';
 import { quiet, withoutThirdParties } from '../lib/engine';
+import { declaredLang, isRtl, locales, offeredLocales } from '../lib/locales';
 
 const tools = discoverTools();
 
@@ -28,26 +29,54 @@ test.describe('hub page', () => {
     await expect(picker.locator('.lang-pick-menu a').first()).toBeVisible();
   });
 
+  // This used to switch to Arabic, for the good reason that Arabic also flips
+  // text direction and so proved the switch did more than change the URL. It
+  // cannot any more: Arabic is one of the thirteen languages the site no longer
+  // offers, so it is not in the picker to be clicked. The two things that test
+  // was doing have been separated rather than one of them dropped - the switch
+  // is exercised here on a language that IS offered, and the direction flip in
+  // the test below, on the page itself, which is still built and still served.
   test('switching language navigates there and updates the page', async ({ page }) => {
-    // Arabic exercises the one locale that also flips text direction, which
-    // is the strongest single check that this does more than change the URL.
+    // Whichever language the site offers first, so this follows the site's own
+    // list rather than naming one that may stop being offered.
+    const [lang] = offeredLocales();
+    expect(lang, 'the site offers no translation at all').toBeTruthy();
+    const tag = declaredLang(lang);
+
     const picker = page.locator('details.lang-pick').first();
     await picker.locator('summary').click();
 
-    const arabic = picker.locator('a[hreflang="ar"]');
-    const href = await arabic.getAttribute('href');
-    await arabic.click();
+    const offer = picker.locator(`a[hreflang="${tag}"]`);
+    const href = await offer.getAttribute('href');
+    await offer.click();
 
     await expect(page).toHaveURL(new RegExp(`${href}$`));
-    await expect(page.locator('html')).toHaveAttribute('lang', 'ar');
-    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    await expect(page.locator('html')).toHaveAttribute('lang', tag);
 
-    // The switcher on the Arabic page should mark Arabic itself as current
+    // The switcher on that page should mark the language itself as current
     // (not a link) and offer a plain link back to English.
     const backPicker = page.locator('details.lang-pick').first();
     await backPicker.locator('summary').click();
-    await expect(backPicker.locator('.lang-current[lang="ar"]')).toBeVisible();
+    await expect(backPicker.locator(`.lang-current[lang="${tag}"]`)).toBeVisible();
     await expect(backPicker.locator('a[hreflang="en"]')).toBeVisible();
+  });
+
+  // The direction flip, kept. A language being unadvertised means the site
+  // stops offering it, not that it stops serving it: the page is built, it
+  // answers at the address it always had, and a reader holding a bookmark gets
+  // it. So the layout it gets has to keep working, and nothing else here would
+  // notice if it did not - the switcher can no longer reach a right-to-left
+  // page to prove it.
+  test('a right-to-left page still lays out right to left', async ({ page }) => {
+    // Whichever right-to-left language the site actually ships, asked of the
+    // locale directories rather than named here - and skipped rather than
+    // failed if it ships none, because then there is nothing to lay out.
+    const rtl = locales().find(isRtl);
+    test.skip(rtl === undefined, 'the site ships no right-to-left language');
+
+    await page.goto(`/${rtl}/`);
+    await expect(page.locator('html')).toHaveAttribute('lang', declaredLang(rtl as string));
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   });
 
   test('footer carries the source link and a full tool list', async ({ page }) => {
