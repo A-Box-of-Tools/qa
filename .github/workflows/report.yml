@@ -102,6 +102,10 @@ on:
         description: 'Run only the cases that name these tools, space separated. Empty runs everything'
         default: ''
         required: false
+      pr_base:
+        description: 'The branch the website pull request is against, if it is one. `dev` lets a tool arrive before its spec'
+        default: ''
+        required: false
 
 permissions:
   contents: write
@@ -130,6 +134,7 @@ jobs:
       sha: ${{ steps.what.outputs.sha }}
       rerun: ${{ steps.what.outputs.rerun }}
       tools: ${{ steps.what.outputs.tools }}
+      pr_base: ${{ steps.what.outputs.pr_base }}
       label: ${{ steps.what.outputs.label }}
       # Always a JSON array, so the matrix's `if` can read it whether or not
       # the step that fills it in ran. Empty on a normal run, where the `if`
@@ -146,6 +151,7 @@ jobs:
           SHA: ${{ github.event.inputs.sha }}
           RERUN: ${{ github.event.inputs.rerun }}
           TOOLS: ${{ github.event.inputs.tools }}
+          PR_BASE: ${{ github.event.inputs.pr_base }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
@@ -179,6 +185,7 @@ jobs:
             echo "sha=$SHA"
             echo "rerun=$RERUN"
             echo "tools=$TOOLS"
+            echo "pr_base=$PR_BASE"
             echo "label=$label"
           } >> "$GITHUB_OUTPUT"
           echo "Testing $target (production: $production${PR:+, preview of website#$PR}${RERUN:+, re-running the failures of $RERUN}${TOOLS:+, only: $TOOLS})"
@@ -426,6 +433,9 @@ jobs:
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
           RERUN: ${{ needs.announce.outputs.rerun }}
           TOOLS: ${{ needs.announce.outputs.tools }}
+          # Read by tests/coverage.spec.ts, and by nothing else. Empty on a
+          # production or scheduled run, which is the strict answer.
+          QA_PR_BASE: ${{ needs.announce.outputs.pr_base }}
         run: |
           set -euo pipefail
           only=''
