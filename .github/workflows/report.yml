@@ -98,6 +98,10 @@ on:
         description: 'Run only the cases that failed in this run id, for a closer look at them'
         default: ''
         required: false
+      tools:
+        description: 'Run only the cases that name these tools, space separated. Empty runs everything'
+        default: ''
+        required: false
 
 permissions:
   contents: write
@@ -125,6 +129,7 @@ jobs:
       pr: ${{ steps.what.outputs.pr }}
       sha: ${{ steps.what.outputs.sha }}
       rerun: ${{ steps.what.outputs.rerun }}
+      tools: ${{ steps.what.outputs.tools }}
       label: ${{ steps.what.outputs.label }}
       # Always a JSON array, so the matrix's `if` can read it whether or not
       # the step that fills it in ran. Empty on a normal run, where the `if`
@@ -140,6 +145,7 @@ jobs:
           PR: ${{ github.event.inputs.pr }}
           SHA: ${{ github.event.inputs.sha }}
           RERUN: ${{ github.event.inputs.rerun }}
+          TOOLS: ${{ github.event.inputs.tools }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
@@ -147,9 +153,16 @@ jobs:
           production=false
           # A rerun is somebody looking at a failure. It publishes nothing,
           # files nothing and decides nothing, so it is never production
-          # however it was aimed.
+          # however it was aimed. Nor is a run scoped to a few tools: it has
+          # seen a fraction of the site, so it must not publish the report,
+          # open an issue or close one - absence of a failure proves nothing
+          # when most of the suite never ran. That cannot arise today, since a
+          # scoped run always carries a preview `base_url` and a `pr` and
+          # either already answers no; the test names it anyway, because what
+          # that expression states is "this run saw the whole of production",
+          # and a filter belongs in the sentence.
           if [ "$EVENT" != 'pull_request' ] && [ "$target" = 'https://abox.tools/' ] \
-              && [ -z "$PR" ] && [ -z "$RERUN" ]; then
+              && [ -z "$PR" ] && [ -z "$RERUN" ] && [ -z "$TOOLS" ]; then
             production=true
           fi
           # What to call this run's kept report. One place, in a shell, rather
@@ -165,9 +178,10 @@ jobs:
             echo "pr=$PR"
             echo "sha=$SHA"
             echo "rerun=$RERUN"
+            echo "tools=$TOOLS"
             echo "label=$label"
           } >> "$GITHUB_OUTPUT"
-          echo "Testing $target (production: $production${PR:+, preview of website#$PR}${RERUN:+, re-running the failures of $RERUN})"
+          echo "Testing $target (production: $production${PR:+, preview of website#$PR}${RERUN:+, re-running the failures of $RERUN}${TOOLS:+, only: $TOOLS})"
 
       # Only for a rerun, and only the steps below: a scheduled run must not
       # pay a checkout and an npm install before the twelve test jobs start.
@@ -374,17 +388,59 @@ jobs:
       # so a case that failed only on Mobile Safari leaves the other Safari
       # slices with nothing to do, and a slice that runs nothing is a normal
       # outcome here rather than a mistake.
+      #
+      # A SCOPED RUN, AND WHY A SLUG IS ENOUGH TO FIND ITS CASES
+      #
+      # `tools` names the tools a website pull request actually touched, and
+      # the run is limited to the cases about them. What makes that a one-line
+      # filter rather than a map of specs is a convention this suite already
+      # kept everywhere: a case about a tool has the tool's slug in its title.
+      # The functional specs open `test.describe('<slug>: ...')`; tool-pages
+      # says `tool: <slug>`; accessibility says `clean: /<slug>/`; folds,
+      # phrases and tool-links title the case with the slug alone. So one
+      # --grep over the slug collects a tool's cases out of every file that
+      # has any, and there is no list here to fall behind the suite.
+      #
+      # Measured before it was written: over the 41 tools the site ships, a
+      # slug selects between 29 and 71 cases of the 1573 a project runs, 37 on
+      # average, and every slug selects its own functional spec. `qr-barcode`
+      # is the widest because it is also a prefix of `qr-barcode-reader`, and
+      # over-selecting is the direction that costs minutes rather than cover.
+      #
+      # WHAT THE CALLER MUST NOT SEND. A scope is only honest while the change
+      # cannot reach a page outside it, so the decision is made where the diff
+      # is - see the `preview` job in the website's build.yml, which sends
+      # nothing at all, meaning run everything, for a change to `shared/`,
+      # `templates/`, `config/`, `build.py`, `buildlib/`, `locales/`, for a
+      # tool added or removed, and for the `dev` -> `main` pull request that
+      # releases. This end trusts what it is told and filters; the judgement
+      # lives at the end that can see what changed.
+      #
+      # --pass-with-no-tests for the same reason a rerun needs it: a slice of
+      # a project that holds none of the scoped cases has nothing to run, and
+      # that is the filter working rather than a mistake.
       - name: Run this slice
         if: steps.slice.outputs.wanted == 'yes'
         env:
           BASE_URL: ${{ needs.announce.outputs.target }}
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
           RERUN: ${{ needs.announce.outputs.rerun }}
+          TOOLS: ${{ needs.announce.outputs.tools }}
         run: |
           set -euo pipefail
           only=''
           if [ -n "$RERUN" ]; then
+            # A rerun already carries the narrowest filter there is - the exact
+            # cases that failed - so a scope on top of it could only take cases
+            # away from a list somebody asked to see. Rerun wins, and says so.
             only='--last-failed --last-failed-file last-failed.json --pass-with-no-tests'
+            if [ -n "$TOOLS" ]; then
+              echo "::notice::Re-running the failures of $RERUN, so the tool scope ($TOOLS) is ignored."
+            fi
+          elif [ -n "$TOOLS" ]; then
+            pattern=$(printf '%s' "$TOOLS" | sed 's/^[ ,]*//; s/[ ,]*$//; s/[ ,][ ,]*/|/g')
+            only="--grep=($pattern) --pass-with-no-tests"
+            echo "Only the cases naming: $TOOLS"
           fi
           npx playwright test --project="${{ matrix.project }}" \
             --shard=${{ matrix.shard }} $only --reporter=blob,github
