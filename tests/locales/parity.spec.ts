@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import {
-  englishBody, idsIn, localeBody, locales, missingFrom, phraseKeysIn, slugMap,
+  englishBody, idsIn, localeBody, locales, missingFrom, offeredLocales,
+  phraseKeysIn, slugMap,
 } from '../../lib/locales';
 
 /**
@@ -37,10 +38,31 @@ import {
 const TOOLS = discoverTools();
 const LANGS = locales();
 
+/**
+ * The languages the site OFFERS, which is not the languages it ships - see
+ * offeredLocales() in lib/locales.ts and `unadvertised_languages` in the
+ * site's own config.
+ *
+ * The two checks that measure how COMPLETE a translation is are asked only of
+ * these. The site withdrew thirteen languages from offer because 0.95% of
+ * arrivals over 28 days were reading them, and holding a language nobody is
+ * offered to the standard of one that is means a permanently red check about
+ * pages no reader is being sent to. A check nobody believes is worse than no
+ * check at all.
+ *
+ * What is deliberately NOT narrowed: everything that reads a translation which
+ * exists. An unadvertised language is still served - a reader with a bookmark
+ * still gets their page - so a page whose machinery broke in translation, or
+ * two tools sharing a URL, is a fault whether or not the site advertises the
+ * language. Coverage is a question about ambition; those are questions about
+ * correctness, and only the first one moved.
+ */
+const OFFERED = offeredLocales();
+
 test.describe('every tool exists in every language', () => {
   for (const slug of TOOLS) {
     test(`translated everywhere: ${slug}`, async () => {
-      const missing = LANGS.filter((lang) => localeBody(lang, slug) === null);
+      const missing = OFFERED.filter((lang) => localeBody(lang, slug) === null);
       expect(
         missing,
         `${slug} has no translated copy in: ${missing.join(', ')} - those languages `
@@ -88,6 +110,12 @@ test.describe('the translated URLs', () => {
   // site and bare English ones wherever the table ran out.
   for (const lang of LANGS) {
     test(`${lang} translates all its slugs or none of them`, async () => {
+      test.skip(
+        !OFFERED.includes(lang),
+        `${lang} is not a language the site offers, so an incomplete slug `
+        + 'table is not a promise being broken. Skipped rather than dropped, '
+        + 'so the report still says which languages were not measured.',
+      );
       const table = slugMap(lang);
       const translated = TOOLS.filter((slug) => table.has(slug));
 
