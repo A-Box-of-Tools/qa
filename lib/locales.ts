@@ -129,3 +129,37 @@ export function missingFrom(english: string[], translated: string[]): string[] {
   const have = new Set(translated);
   return english.filter((item) => !have.has(item));
 }
+
+/**
+ * The languages the site OFFERS, as against the ones it merely still serves.
+ *
+ * These are not the same thing since the site stopped advertising thirteen of
+ * its fourteen translations. Nothing was deleted and no address moved: every
+ * page is still built and still answers at the URL it always had. What changed
+ * is that those languages are out of the sitemap, carry `noindex, follow`,
+ * claim no hreflang alternates, and are gone from the switcher - so a reader
+ * with a bookmark still gets their page, and a reader on the front page is no
+ * longer offered thirteen languages that 0.95% of arrivals were reading.
+ *
+ * Read from the site's own `unadvertised_languages`, which is the list that
+ * decides it, rather than kept here. A locale added to or removed from that
+ * list needs nothing changed in this repository - and the specs that use this
+ * are correct against a deployment from either side of the change, because a
+ * checkout without the key answers "none are hidden", which is what was true
+ * then.
+ *
+ * No TOML parser, the same way slugMap() has none: the array is read for the
+ * one thing a test needs rather than the file being modelled.
+ */
+export function unadvertisedLocales(): Set<string> {
+  const toml = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
+  const list = toml.match(/\r?\nunadvertised_languages\s*=\s*\[([\s\S]*?)\]/);
+  if (!list) return new Set();
+  return new Set([...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+}
+
+/** Every language the switcher and the hreflang set are expected to carry. */
+export function offeredLocales(): string[] {
+  const hidden = unadvertisedLocales();
+  return locales().filter((locale) => !hidden.has(locale));
+}
