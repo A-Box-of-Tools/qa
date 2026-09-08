@@ -24,11 +24,47 @@ import { orphanedSpecs, uncoveredTools } from '../lib/coverage';
  * The same answer is used by .github/workflows/coverage.yml, which turns it
  * into a GitHub issue - a report has to be looked at, and an issue arrives.
  * Both read lib/coverage.ts, so they cannot disagree.
+ *
+ * A SPEC MAY ARRIVE AFTER ITS TOOL, BUT NOT AFTER THE RELEASE
+ *
+ * The tool and the spec live in different repositories, so they cannot land in
+ * one change. Since the website's suite began reading the tree its preview was
+ * built from rather than main (#94), a pull request that adds a tool sees the
+ * tool - and this test then failed every such pull request until somebody had
+ * merged a spec over here first. Two pull requests in two repositories, in a
+ * fixed order, and the first of them red the whole time: that is a check
+ * telling an author to do something they cannot do yet.
+ *
+ * So on a pull request into the website's `dev` branch this reports instead of
+ * failing. `dev` is where changes are bundled; the pull request from `dev` to
+ * `main` is the release, and it is NOT relaxed - a tool cannot reach
+ * production without a spec, which is the promise this file exists to keep.
+ * Nothing else changes: production and scheduled runs are strict, and
+ * coverage.yml still opens the issue daily whatever any preview run said.
+ *
+ * QA_PR_BASE is set by report.yml from the branch the website pull request is
+ * against. Empty - a production run, a scheduled run, a run somebody started
+ * by hand - is the strict answer, because not knowing is not a reason to
+ * excuse anything.
  */
+
+const A_SPEC_MAY_FOLLOW = process.env.QA_PR_BASE === 'dev';
 
 test.describe('the suite covers what the site ships', () => {
   test('every tool has a functional spec of its own', async () => {
     const uncovered = uncoveredTools();
+
+    test.skip(
+      A_SPEC_MAY_FOLLOW && uncovered.length > 0,
+      [
+        `${uncovered.length} tool(s) have no functional spec yet:`,
+        `  ${uncovered.join(', ')}`,
+        'This pull request is against `dev`, where a tool is allowed to arrive',
+        'before the spec that tests it - they live in different repositories and',
+        'cannot land in one change. Write it in tests/tools/ before the `dev` ->',
+        '`main` pull request, which is the release and is not excused this.',
+      ].join('\n'),
+    );
 
     expect(
       uncovered,
