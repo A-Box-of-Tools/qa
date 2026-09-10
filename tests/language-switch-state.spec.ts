@@ -150,7 +150,11 @@ async function visible(page: Page): Promise<string[]> {
  * coming and reported the tool as broken.
  */
 async function hasSomewhereToGo(page: Page): Promise<boolean> {
-  await page.locator('details.lang-pick summary').first().click();
+  // Counted rather than opened. The links are in the markup whether or not
+  // the details is expanded, and the first version of this clicked the
+  // summary to look - which left it open, so switchLanguage's own click shut
+  // it again and every tool on the site failed to find a link it had just
+  // been shown.
   return (await page.locator('.lang-pick-menu a').count()) > 0;
 }
 

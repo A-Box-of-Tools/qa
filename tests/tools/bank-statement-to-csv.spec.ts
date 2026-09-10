@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { test, expect, type Page } from '@playwright/test';
+import { discoverTools } from '../../lib/tools';
 
 /**
  * Tool-level functional tests for the bank statement converter.
@@ -35,6 +36,19 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 const URL_PATH = '/bank-statement-to-csv/';
+
+/**
+ * Whether the site under test has this tool at all.
+ *
+ * The tool and its spec live in different repositories, so they cannot land
+ * in one change: this file is written against a tool that is on the website's
+ * `dev` and not yet in a release. Run against production before that release
+ * lands, every case below would fail on a 404 that says nothing about the
+ * tool. Asked of the checkout the run was given, the same way the rest of the
+ * suite discovers what to test.
+ */
+const SHIPPED = discoverTools().includes('bank-statement-to-csv');
+const NOT_YET = 'this site does not ship bank-statement-to-csv yet';
 
 /** One row of the CSV, as far as this file cares about it. */
 interface Row {
@@ -121,6 +135,8 @@ function rowsOf(csv: string): { header: string[]; rows: Row[] } {
 }
 
 test.describe('bank-statement-to-csv: the statement it ships with', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
   });
@@ -196,6 +212,8 @@ test.describe('bank-statement-to-csv: the statement it ships with', () => {
 });
 
 test.describe('bank-statement-to-csv: what it refuses', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
   test('something that is not a PDF is refused, and said so', async ({ page }) => {
     await page.goto(URL_PATH);
 

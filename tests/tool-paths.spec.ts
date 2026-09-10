@@ -67,6 +67,18 @@ test.describe('the tool specs point at addresses that exist', () => {
       .filter((one) => !shipped.has(one.slug))
       .map((one) => `${one.file} points at /${one.slug}/`);
 
+    // A spec may also arrive before its tool. The tool and the spec live in
+    // different repositories and cannot land in one change, so a pull request
+    // here can carry a spec for a tool that is still on the website's `dev`,
+    // against a checkout of `main` where it does not exist yet. Reported
+    // rather than failed on a pull request in this repository, and strict
+    // everywhere else - see the same allowance in tests/coverage.spec.ts.
+    test.skip(
+      process.env.QA_SELF_PR === 'yes' && stale.length > 0,
+      `${stale.join('; ')} - not in this checkout. On a pull request here that `
+      + 'is a spec waiting for a tool still on `dev`.',
+    );
+
     expect(
       stale,
       `${stale.join('; ')} - no tool of that name is shipped. If it was renamed, `
