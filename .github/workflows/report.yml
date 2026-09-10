@@ -436,6 +436,11 @@ jobs:
           # Read by tests/coverage.spec.ts, and by nothing else. Empty on a
           # production or scheduled run, which is the strict answer.
           QA_PR_BASE: ${{ needs.announce.outputs.pr_base }}
+          # The mirror of it, read by the two orphan checks. A pull request in
+          # THIS repository may carry a spec for a tool that is still on the
+          # website's dev branch, because the tool and its spec cannot land in
+          # one change. Empty everywhere else, which is the strict answer.
+          QA_SELF_PR: ${{ github.event_name == 'pull_request' && 'yes' || '' }}
         run: |
           set -euo pipefail
           only=''

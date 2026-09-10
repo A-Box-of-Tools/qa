@@ -50,6 +50,22 @@ import { orphanedSpecs, uncoveredTools } from '../lib/coverage';
 
 const A_SPEC_MAY_FOLLOW = process.env.QA_PR_BASE === 'dev';
 
+/**
+ * A SPEC MAY ALSO ARRIVE BEFORE ITS TOOL.
+ *
+ * The mirror of the allowance above, and the same reason for it: the tool and
+ * the spec live in different repositories and cannot land in one change. A
+ * pull request here that adds a spec for a tool still on the website's `dev`
+ * sees a checkout of `main`, where no such tool exists, and both orphan checks
+ * report it as a spec left behind by a retirement that never happened.
+ *
+ * So on a pull request in THIS repository they report instead of failing.
+ * Everywhere else they are strict, which is what keeps them worth having: a
+ * spec genuinely left behind after a tool is retired still fails the
+ * production run, the scheduled run, and the release preview.
+ */
+const A_TOOL_MAY_FOLLOW = process.env.QA_SELF_PR === 'yes';
+
 test.describe('the suite covers what the site ships', () => {
   test('every tool has a functional spec of its own', async () => {
     const uncovered = uncoveredTools();
@@ -90,8 +106,17 @@ test.describe('the suite covers what the site ships', () => {
   test('no spec points at a tool that has been removed', async () => {
     // The other direction: a spec left behind after a tool is retired would
     // sit there failing for a reason nobody can act on.
+    const orphans = orphanedSpecs();
+
+    test.skip(
+      A_TOOL_MAY_FOLLOW && orphans.length > 0,
+      `${orphans.join(', ')} - no tool of that name is in this checkout. On a `
+      + 'pull request here that is a spec waiting for a tool still on `dev`, '
+      + 'not a spec left behind; the release preview and production are strict.',
+    );
+
     expect(
-      orphanedSpecs(),
+      orphans,
       'a spec navigates to a page that no tool provides any more',
     ).toEqual([]);
   });

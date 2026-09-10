@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { APIRequestContext } from '@playwright/test';
 import { ETOOLBOX_DIR } from './site';
 
 /**
@@ -162,4 +163,68 @@ export function unadvertisedLocales(): Set<string> {
 export function offeredLocales(): string[] {
   const hidden = unadvertisedLocales();
   return locales().filter((locale) => !hidden.has(locale));
+}
+
+/**
+ * The languages this HOST carries, as against the ones the checkout has.
+ *
+ * They stopped being the same thing when previews were cut down to fit.
+ * Cloudflare Pages refuses a deployment over 20,000 files and a full build is
+ * 19,672, so website#407 gives every preview English, Chinese and Arabic and
+ * leaves the other twelve out. Nothing is wrong with those twelve; they are
+ * simply not on that host. A suite that reads `locales/` and asks a preview
+ * for all fifteen reports the twelve absences as forty-three broken tools,
+ * which is what `qa/preview` was red with.
+ *
+ * So this asks the host instead, the same way lib/engine.ts asks the browser
+ * rather than naming it. Production answers for all fourteen and nothing is
+ * narrowed there; a preview answers for the three it has; and a preview built
+ * differently tomorrow needs nothing changed here.
+ *
+ * WHY THE FRONT PAGE IS THE QUESTION
+ *
+ * `/<lang>/` is the one address every language has whatever its slugs are
+ * translated to, so it needs no [slugs] lookup and cannot be confused by one.
+ * A language whose front page answers has its tool pages too: that was checked
+ * against this preview, where /zh/ and /zh/<tool>/ both answer and /de/ and
+ * /de/<tool>/ are both absent.
+ *
+ * ASKED TWICE, AND ONCE PER PROCESS
+ *
+ * Twice because a CDN that briefly refuses one request is not a language that
+ * is missing, and here an unbelieved absence does not fail a test - it removes
+ * one, which is the quieter and worse mistake. Once per process because a host
+ * does not gain a language mid-run, and the alternative is fifteen requests
+ * per tool.
+ */
+let carried: Promise<Set<string>> | undefined;
+
+export function servedLocales(request: APIRequestContext): Promise<Set<string>> {
+  if (!carried) carried = askTheHost(request);
+  return carried;
+}
+
+async function askTheHost(request: APIRequestContext): Promise<Set<string>> {
+  const here = new Set<string>();
+  await Promise.all(locales().map(async (locale) => {
+    let response = await request.get(`/${locale}/`, { failOnStatusCode: false });
+    if (!response.ok()) {
+      await new Promise((settle) => { setTimeout(settle, 500); });
+      response = await request.get(`/${locale}/`, { failOnStatusCode: false });
+    }
+    if (response.ok()) here.add(locale);
+  }));
+  return here;
+}
+
+/**
+ * What this host is missing, for a test that wants to say so.
+ *
+ * A test that quietly checks three languages where it says fourteen is a test
+ * nobody can read. Every caller that narrows itself puts this in an annotation
+ * so the report says which languages were not there.
+ */
+export async function absentLocales(request: APIRequestContext): Promise<string[]> {
+  const here = await servedLocales(request);
+  return locales().filter((locale) => !here.has(locale));
 }
