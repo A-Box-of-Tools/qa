@@ -35,12 +35,20 @@ import { orphanedSpecs, uncoveredTools } from '../lib/coverage';
  * fixed order, and the first of them red the whole time: that is a check
  * telling an author to do something they cannot do yet.
  *
- * So on a pull request into the website's `dev` branch this reports instead of
- * failing. `dev` is where changes are bundled; the pull request from `dev` to
- * `main` is the release, and it is NOT relaxed - a tool cannot reach
- * production without a spec, which is the promise this file exists to keep.
- * Nothing else changes: production and scheduled runs are strict, and
- * coverage.yml still opens the issue daily whatever any preview run said.
+ * So on a website pull request that is not the release this reports instead of
+ * failing. The pull request from `dev` to `main` is the release, and it is NOT
+ * relaxed - a tool cannot reach production without a spec, which is the
+ * promise this file exists to keep. Nothing else changes: production and
+ * scheduled runs are strict, and coverage.yml still opens the issue daily
+ * whatever any preview run said.
+ *
+ * "Not the release" rather than "into dev", which is what this said first. The
+ * reason for the allowance is that an author cannot land two repositories in
+ * one change, and that is no less true one step further out: website#412 is a
+ * translation aimed at the branch of the pull request that adds the tool, so
+ * its base is neither `main` nor `dev`, and the first version of this held it
+ * to a spec that could not exist yet for a tool that was two merges from a
+ * release. A branch is further from production than `dev` is, not nearer.
  *
  * QA_PR_BASE is set by report.yml from the branch the website pull request is
  * against. Empty - a production run, a scheduled run, a run somebody started
@@ -48,7 +56,9 @@ import { orphanedSpecs, uncoveredTools } from '../lib/coverage';
  * excuse anything.
  */
 
-const A_SPEC_MAY_FOLLOW = process.env.QA_PR_BASE === 'dev';
+const A_SPEC_MAY_FOLLOW = process.env.QA_PR_BASE !== ''
+  && process.env.QA_PR_BASE !== undefined
+  && process.env.QA_PR_BASE !== 'main';
 
 /**
  * A SPEC MAY ALSO ARRIVE BEFORE ITS TOOL.
