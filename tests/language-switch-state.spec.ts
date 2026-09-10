@@ -138,6 +138,22 @@ async function visible(page: Page): Promise<string[]> {
       .sort());
 }
 
+/**
+ * Is there another language to switch to from this page at all?
+ *
+ * There is not always one. Since the site began listing only the tools a
+ * language actually has, a tool nobody has translated yet offers its own
+ * language and nothing else - the switcher on /bank-statement-to-csv/ holds
+ * one `<span>` saying English and no links. That is the site working, and it
+ * is also nothing this file can test: there is no navigation to carry a file
+ * across. Before this, the test waited two minutes for a link that was never
+ * coming and reported the tool as broken.
+ */
+async function hasSomewhereToGo(page: Page): Promise<boolean> {
+  await page.locator('details.lang-pick summary').first().click();
+  return (await page.locator('.lang-pick-menu a').count()) > 0;
+}
+
 /** Follow the header switcher to another language, and wait for the new page. */
 async function switchLanguage(page: Page): Promise<string> {
   await page.locator('details.lang-pick summary').first().click();
@@ -161,6 +177,12 @@ test.describe('switching language keeps the work', () => {
       test.setTimeout(120_000);
 
       await page.goto(`/${slug}/`);
+
+      // Before the fixture, because a tool with nowhere to switch to has
+      // nothing to preserve across a switch and the file would be wasted work.
+      test.skip(!await hasSomewhereToGo(page),
+        `/${slug}/ is offered in one language only, so there is no switch to `
+        + 'carry anything across');
 
       // Asked on the tool's own page rather than once for the file, because a
       // skip has to be decided per test and this is the cheapest place that

@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools, hasFilePicker } from '../../lib/tools';
 import {
-  declaredLang, isRtl, localeUrl, locales, offeredLocales, unadvertisedLocales,
+  absentLocales, declaredLang, isRtl, localeUrl, locales, offeredLocales,
+  servedLocales, unadvertisedLocales,
 } from '../../lib/locales';
 
 /**
@@ -23,18 +24,44 @@ import {
  * hundred test cases would report the same fault fourteen times and make the
  * published report harder to read than the thing it describes; a tool whose
  * Spanish page is missing is one fault, and the message names the language.
+ *
+ * IN EVERY LANGUAGE THE HOST HAS, WHICH IS NOT ALWAYS FIFTEEN
+ *
+ * A preview carries three of them - see servedLocales() in lib/locales.ts for
+ * why - so the languages are asked of the host rather than counted out of the
+ * checkout. Production has all fourteen and loses nothing. The count is left
+ * out of the title for the same reason: a title that promises fourteen and
+ * checks three is worse than one that promises neither, and a title that
+ * changes with the host would change every test's identity with it.
  */
 
 const TOOLS = discoverTools();
-const LANGS = locales();
 
 test.describe('every tool, in every language, as served', () => {
   for (const slug of TOOLS) {
-    test(`all ${LANGS.length} languages: ${slug}`, async ({ request }) => {
+    test(`every language the site serves: ${slug}`, async ({ request }, testInfo) => {
       test.setTimeout(120_000);
       const faults: string[] = [];
 
-      for (const lang of LANGS) {
+      const here = await servedLocales(request);
+      const langs = locales().filter((lang) => here.has(lang));
+      // A host with no translated language is a scoped build somebody made
+      // for one tool, not a site that lost its translations. Skipped rather
+      // than passed: a test that checked nothing and reported green is the
+      // one result nobody can act on.
+      test.skip(langs.length === 0, 'this host carries no translated language at all');
+      // Said out loud in the report rather than left to be inferred from a
+      // pass. A run that checked three languages and said nothing about the
+      // other twelve reads exactly like one that checked all fifteen.
+      const absent = await absentLocales(request);
+      if (absent.length) {
+        testInfo.annotations.push({
+          type: 'not on this host',
+          description: `${absent.join(', ')} - not built here, so not asked for`,
+        });
+      }
+
+      for (const lang of langs) {
         const url = localeUrl(lang, slug);
 
         // Asked twice before a failure is believed. Five hundred requests
@@ -112,7 +139,13 @@ test.describe('the language switcher goes where it says', () => {
       [...html.matchAll(/hreflang="([^"]+)"/g)].map((m) => m[1]),
     );
 
-    const missing = offeredLocales().filter((lang) => !linked.has(declaredLang(lang)));
+    // Offered AND on this host. A preview that carries three languages links
+    // to the ones it has, and holding it to a language nobody built there
+    // would be reporting the size of the deployment as a fault in the page.
+    const here = await servedLocales(request);
+    const missing = offeredLocales()
+      .filter((lang) => here.has(lang))
+      .filter((lang) => !linked.has(declaredLang(lang)));
     expect(
       missing,
       `the front page offers no alternate for: ${missing.join(', ')} - those languages `

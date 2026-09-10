@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../lib/tools';
-import { locales, localeUrl } from '../lib/locales';
+import { localeUrl, locales, servedLocales } from '../lib/locales';
 
 /**
  * A phrase key is not a sentence, and must never reach the page as one.
@@ -120,7 +120,14 @@ test.describe('nor in the other fourteen languages', () => {
   // wherever it is used, and walking every tool in every language would be
   // five hundred page loads to learn the same thing.
   for (const lang of locales()) {
-    test(`${lang} · dicom-viewer`, async ({ page }) => {
+    test(`${lang} · dicom-viewer`, async ({ page, request }) => {
+      // A preview carries three languages, not fifteen - see servedLocales()
+      // in lib/locales.ts. Skipped rather than left to the check below, which
+      // would find no phrase keys on a 404 page and pass: a language that is
+      // not there has to read as absent and not as clean.
+      test.skip(!(await servedLocales(request)).has(lang),
+        'this host does not carry that language');
+
       await page.goto(localeUrl(lang, 'dicom-viewer'));
 
       const keys = await keysOn(page);
