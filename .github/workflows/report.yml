@@ -12,7 +12,26 @@
 # the tests, writes a blob report, and `merge-reports` in the job that
 # publishes stitches the slices back into one HTML report.
 #
-# SLICED BY PROJECT FIRST, AND WHY
+# SLICED BY PROJECT FIRST, AND THEN BY A MAP, AND WHY
+#
+# `--shard` cuts the test list into equal counts, in file order. Four such
+# quarters of the whole suite took 9, 16, 35 and 53 minutes: the tool specs
+# sit together at the end of the list, WebKit takes three times as long as
+# Chromium on every one of them, and a count says nothing about either. So
+# the cut is by project first - each project is its own list, so a Safari
+# job never waits on a Chrome quarter and the other way round.
+#
+# Within a project the cut was `--shard` too, and it had the same flaw at a
+# smaller scale: four Safari slices of one project took 7, 7, 11 and 12
+# minutes, with the whole workflow waiting on the twelfth, because the heavy
+# tool specs still sort last. Playwright cannot weight a shard by duration,
+# but it takes a list of files - so .github/shards.json says which files each
+# slice runs, balanced by measured seconds (scripts/plan-shards.mjs writes it
+# from a run's merged report; scripts/slice-files.mjs reads it here). A spec
+# the map has never seen is placed at run time on the lightest slice, so a
+# new file runs without anybody editing the map. Each WebKit project is cut
+# six ways and each Chrome project two: sixteen jobs, none planned past seven
+# minutes.
 #
 # `--shard` cuts the test list into equal counts, in file order. Four such
 # quarters of the whole suite took 9, 16, 35 and 53 minutes: the tool specs
@@ -296,22 +315,29 @@ jobs:
       # worth publishing if it describes the whole suite.
       fail-fast: false
       matrix:
+        # `part` is n/of over .github/shards.json, not a --shard: the slice
+        # count here has to agree with the map, and scripts/slice-files.mjs
+        # refuses to run if it does not.
         include:
-          - { slice: desktop-chrome-1, project: Desktop Chrome, shard: 1/2 }
-          - { slice: desktop-chrome-2, project: Desktop Chrome, shard: 2/2 }
-          - { slice: mobile-chrome-1,  project: Mobile Chrome,  shard: 1/2 }
-          - { slice: mobile-chrome-2,  project: Mobile Chrome,  shard: 2/2 }
-          - { slice: desktop-safari-1, project: Desktop Safari, shard: 1/4 }
-          - { slice: desktop-safari-2, project: Desktop Safari, shard: 2/4 }
-          - { slice: desktop-safari-3, project: Desktop Safari, shard: 3/4 }
-          - { slice: desktop-safari-4, project: Desktop Safari, shard: 4/4 }
-          - { slice: mobile-safari-1,  project: Mobile Safari,  shard: 1/4 }
-          - { slice: mobile-safari-2,  project: Mobile Safari,  shard: 2/4 }
-          - { slice: mobile-safari-3,  project: Mobile Safari,  shard: 3/4 }
-          - { slice: mobile-safari-4,  project: Mobile Safari,  shard: 4/4 }
+          - { slice: desktop-chrome-1, project: Desktop Chrome, part: 1/2 }
+          - { slice: desktop-chrome-2, project: Desktop Chrome, part: 2/2 }
+          - { slice: mobile-chrome-1, project: Mobile Chrome, part: 1/2 }
+          - { slice: mobile-chrome-2, project: Mobile Chrome, part: 2/2 }
+          - { slice: desktop-safari-1, project: Desktop Safari, part: 1/6 }
+          - { slice: desktop-safari-2, project: Desktop Safari, part: 2/6 }
+          - { slice: desktop-safari-3, project: Desktop Safari, part: 3/6 }
+          - { slice: desktop-safari-4, project: Desktop Safari, part: 4/6 }
+          - { slice: desktop-safari-5, project: Desktop Safari, part: 5/6 }
+          - { slice: desktop-safari-6, project: Desktop Safari, part: 6/6 }
+          - { slice: mobile-safari-1, project: Mobile Safari, part: 1/6 }
+          - { slice: mobile-safari-2, project: Mobile Safari, part: 2/6 }
+          - { slice: mobile-safari-3, project: Mobile Safari, part: 3/6 }
+          - { slice: mobile-safari-4, project: Mobile Safari, part: 4/6 }
+          - { slice: mobile-safari-5, project: Mobile Safari, part: 5/6 }
+          - { slice: mobile-safari-6, project: Mobile Safari, part: 6/6 }
     steps:
       # A rerun does no work in the projects that had no failure - eight or ten
-      # of these twelve, each of which would otherwise spend a minute checking
+      # of these sixteen, each of which would otherwise spend a minute checking
       # out two repositories and installing a browser to run nothing.
       #
       # Decided here and not in a job-level `if`, which is where it belongs and
@@ -457,8 +483,13 @@ jobs:
             only="--grep=($pattern) --pass-with-no-tests"
             echo "Only the cases naming: $TOOLS"
           fi
+          # This slice's files, out of the map. A rerun's --last-failed and a
+          # tool scope's --grep both narrow within these; neither can reach a
+          # case another slice holds, and between them the slices hold every
+          # file on disk.
+          files=$(node scripts/slice-files.mjs "${{ matrix.project }}" "${{ matrix.part }}")
           npx playwright test --project="${{ matrix.project }}" \
-            --shard=${{ matrix.shard }} $only --reporter=blob,github
+            $files $only --reporter=blob,github
 
       # The traces this slice kept for its failures. Out of git and expiring,
       # for the reasons in the header.
