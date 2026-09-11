@@ -5,10 +5,11 @@ import { discoverTools } from '../../lib/tools';
 /**
  * Tool-level functional tests for the PDF-to-CSV converter.
  *
- * It lives at /bank-statement-to-csv/ and was a bank statement converter when
- * this file was written. Since website#416 it finds every table in a PDF -
- * statements, invoices, price lists, reports - and keeps every row of each,
- * under the name PDF to CSV; the slug did not move, so neither did this file.
+ * It was a bank statement converter at /bank-statement-to-csv/ when this file
+ * was written. Since website#416 it finds every table in a PDF - statements,
+ * invoices, price lists, reports - and keeps every row of each, under the name
+ * PDF to CSV, and since website#422 it lives at the address that says so.
+ * The old one redirects there, and this file moved with it.
  *
  * WHAT IS WORTH TESTING HERE, AND WHAT IS NOT
  *
@@ -51,7 +52,7 @@ import { discoverTools } from '../../lib/tools';
  * older tool's is always a list of one.
  */
 
-const URL_PATH = '/bank-statement-to-csv/';
+const URL_PATH = '/pdf-to-csv/';
 
 /**
  * Whether the site under test has this tool at all.
@@ -63,8 +64,8 @@ const URL_PATH = '/bank-statement-to-csv/';
  * nothing about the tool. Asked of the checkout the run was given, the same
  * way the rest of the suite discovers what to test.
  */
-const SHIPPED = discoverTools().includes('bank-statement-to-csv');
-const NOT_YET = 'this site does not ship bank-statement-to-csv yet';
+const SHIPPED = discoverTools().includes('pdf-to-csv');
+const NOT_YET = 'this site does not ship pdf-to-csv yet';
 
 /** One row of a table with a running balance, as far as this file cares. */
 interface Row {
@@ -208,7 +209,7 @@ async function savedCsv(page: Page): Promise<string> {
   return fs.readFileSync(where, 'utf8');
 }
 
-test.describe('bank-statement-to-csv: the statement it ships with', () => {
+test.describe('pdf-to-csv: the statement it ships with', () => {
   test.skip(!SHIPPED, NOT_YET);
 
   test.beforeEach(async ({ page }) => {
@@ -316,7 +317,7 @@ test.describe('bank-statement-to-csv: the statement it ships with', () => {
   });
 });
 
-test.describe('bank-statement-to-csv: what it refuses', () => {
+test.describe('pdf-to-csv: what it refuses', () => {
   test.skip(!SHIPPED, NOT_YET);
 
   test('something that is not a PDF is refused, and said so', async ({ page }) => {
