@@ -371,6 +371,24 @@ jobs:
       - run: npm ci
         if: steps.slice.outputs.wanted == 'yes'
 
+      # The browsers themselves, kept between runs. A Playwright version pins
+      # exact browser builds, so the download is the same bytes every time
+      # until package-lock.json moves - and every one of the twelve slices was
+      # fetching it again on every run: about 60 seconds on a WebKit slice, 20
+      # on a Chromium one, on the critical path of the whole workflow.
+      #
+      # Keyed on the lockfile and on which engines this slice wants, so a
+      # Chrome slice never restores a WebKit it has no use for. The install
+      # step below still runs on a hit: it finds the browsers already there
+      # and skips the download, but --with-deps also puts the OS packages
+      # WebKit needs on to a fresh runner, and those are not in the cache.
+      - name: Remember the browsers between runs
+        if: steps.slice.outputs.wanted == 'yes'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ contains(matrix.project, 'Safari') && 'chromium-webkit' || 'chromium' }}
+
       # The engine this slice runs, and Chromium either way: a WebKit slice
       # still needs it, because lib/browser-video.ts borrows Chromium to
       # record the video fixtures WebKit cannot. On iOS every browser is
