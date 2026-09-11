@@ -1,5 +1,5 @@
 import { chromium, type Page } from '@playwright/test';
-import { ask } from './engine';
+import { ask, onAPageOfItsOwn } from './engine';
 
 export interface VideoFixtureOptions {
   width?: number;
@@ -378,25 +378,14 @@ export async function canDecodeVideo(
  * needs afterwards. It asks on a page of its own, so the caller's survives
  * whatever happens. One page per worker, because ask() caches per engine.
  *
- * The scratch page is navigated rather than left on about:blank: WebCodecs is
- * secure-context only, and an answer from a page that is not one would be a
- * fact about the wrong place. It goes to the site's front page rather than to
- * wherever the caller's page is, so a caller can ask before it has navigated
- * anywhere - and a test that is about to skip need not load a page it will
- * never use. It is closed on the way out where it can be - where the process
- * dies the evaluate is abandoned mid-flight, so the close never runs and the
- * page goes when its context does.
+ * The scratch page is onAPageOfItsOwn() in lib/engine.ts, which every probe
+ * that needs a real origin now shares: navigated to the front page, so a
+ * caller can ask before it has navigated anywhere, and closed where it can
+ * be - where the process dies the evaluate is abandoned mid-flight, so the
+ * close never runs and the page goes when its context does.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
-  return ask(page, 'encode-video', async () => {
-    const scratch = await page.context().newPage();
-    try {
-      await scratch.goto('/');
-      return await askThePage(scratch);
-    } finally {
-      void scratch.close().catch(() => {});
-    }
-  }, false);
+  return ask(page, 'encode-video', () => onAPageOfItsOwn(page, askThePage), false);
 }
 
 /** The question itself, wherever it is being put. */

@@ -220,6 +220,36 @@ export async function ask<T>(
 }
 
 /**
+ * A page of the probe's own, at the site's front page.
+ *
+ * Two reasons a probe should not run on the page the test is about to use.
+ * The first is origin: IndexedDB, mediaDevices and WebCodecs all answer
+ * differently on about:blank than on a page served over https, so a probe
+ * that ran wherever the caller happened to be would give a fact about the
+ * wrong place - which is why the callers all navigated first, and why 176
+ * skips on the WebKit projects were each paying a three-second navigation to
+ * a tool page they then never used. The second is survival: the encoder
+ * question ends the page's process on the WebKit build CI runs, and a caller
+ * that asked it on its own page was left holding a page that no longer
+ * existed.
+ *
+ * So the question goes to a page opened here, navigated to the front page
+ * for its origin, and closed on the way out where it can be - where the
+ * process dies the evaluate is abandoned mid-flight, so the close never runs
+ * and the page goes when its context does. Callers ask first and navigate
+ * after, and a test that is going to skip loads nothing.
+ */
+export async function onAPageOfItsOwn<T>(page: Page, work: (scratch: Page) => Promise<T>): Promise<T> {
+  const scratch = await page.context().newPage();
+  try {
+    await scratch.goto('/');
+    return await work(scratch);
+  } finally {
+    void scratch.close().catch(() => {});
+  }
+}
+
+/**
  * Can this engine keep a File in IndexedDB?
  *
  * Real Safari can, and shared/lang-keep.js relies on it: it is the only
@@ -230,14 +260,15 @@ export async function ask<T>(
  *
  * - because a blob in IndexedDB is written to a file beside the database and
  * this build has nowhere to put it. Nothing about the site is involved: the
- * probe below stores a five-byte File in a database of its own.
+ * probe below stores a five-byte File in a database of its own, on a page of
+ * its own, so a test may ask before it has navigated anywhere.
  *
  * Worth knowing that a real browser can refuse too. Safari in private
  * browsing does exactly this, so a skip here is not only an artefact of the
  * test build - it is a state some visitors are in.
  */
 export async function keepsFilesInStorage(page: Page): Promise<boolean> {
-  return ask(page, 'files-in-storage', () => page.evaluate(async () => {
+  return ask(page, 'files-in-storage', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
     const NAME = 'abox-qa-storage-probe';
     try {
       const db: IDBDatabase = await new Promise((resolve, reject) => {
@@ -262,7 +293,7 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
     } catch {
       return false;
     }
-  }), false);
+  })), false);
 }
 
 /**
@@ -279,8 +310,8 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
  * picture to, and the CI build is exactly that.
  */
 export async function hasCameraInterface(page: Page): Promise<boolean> {
-  return ask(page, 'camera-interface',
-    () => page.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia)), false);
+  return ask(page, 'camera-interface', () => onAPageOfItsOwn(page,
+    (own) => own.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia))), false);
 }
 
 /**
@@ -304,12 +335,14 @@ export async function hasCameraInterface(page: Page): Promise<boolean> {
  * turns a skip into a test timeout, which is the one outcome worse than the
  * failure it was meant to prevent.
  *
- * A page has to be open for this: `navigator` on `about:blank` is not the
- * navigator of a page served over https, and mediaDevices depends on the
- * difference.
+ * Asked on a page of its own, because `navigator` on `about:blank` is not the
+ * navigator of a page served over https and mediaDevices depends on the
+ * difference - which used to mean the caller had to navigate first, and the
+ * fourteen camera cases each loaded the reader before learning they would
+ * skip. See onAPageOfItsOwn().
  */
 export async function canFakeCamera(page: Page): Promise<boolean> {
-  return ask(page, 'fake-camera', () => page.evaluate(async () => {
+  return ask(page, 'fake-camera', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
     // A 2x2 red PNG, the smallest thing that proves the decode path works.
     const PICTURE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAAB'
       + 'ytg0kAAAAFElEQVR4nGP8z4AATAxIYBQAAgAA//8DPQEQdOJPHwAAAABJRU5ErkJggg==';
@@ -366,7 +399,7 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
     } catch {
       return false;
     }
-  }), false);
+  })), false);
 }
 
 /**

@@ -136,10 +136,13 @@ test.describe('qr-barcode-reader: reading through the camera', () => {
   // defined on about:blank whatever the engine, so the question has to be put
   // to a page that was really served.
   test.beforeEach(async ({ page }) => {
-    await page.goto(READER);
+    // Asked before the reader is loaded: the probe brings its own page, and an
+    // engine that cannot be given a camera skips all of these without paying
+    // for a page it will not use.
     test.skip(!await canFakeCamera(page),
       'no camera can be supplied on this engine: a canvas stream never reaches '
       + 'a <video> here, so there is nothing to point the reader at');
+    await page.goto(READER);
   });
 
   test('a code held in front of the camera is read', async ({ page }) => {
