@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Page } from '@playwright/test';
 
 /**
@@ -42,8 +44,52 @@ import type { Page } from '@playwright/test';
  * Keyed by engine as well as question, because a worker is not guaranteed to
  * stay with one project for its whole life and an answer from Chromium is not
  * an answer about WebKit.
+ *
+ * AND WRITTEN DOWN FOR THE OTHER WORKERS
+ *
+ * A map in this process is remembered by this process, and a slice runs
+ * four. Each of them was paying the probe again to learn what its neighbour
+ * had just learned - and on the WebKit build CI runs the encoder question
+ * does not answer at all, so each payment was the full deadline. Thirty-two
+ * worker processes across the eight WebKit slices, eight to eleven seconds
+ * apiece, came to about thirteen minutes of test time a run spent
+ * re-establishing two facts about one browser.
+ *
+ * So an answer is also written to a file under test-results/, which
+ * Playwright empties at the start of every run and which every worker of the
+ * run can see. The first worker to ask pays; the rest read. Two workers that
+ * ask at once both pay and both write the same answer, which is a race with
+ * no loser. A file that cannot be read or written is simply not there, and
+ * the worker does what it always did.
  */
 const answers = new Map<string, unknown>();
+
+const NOTEBOOK = path.join(__dirname, '..', 'test-results', '.engine-answers.json');
+
+interface Noted { answer: unknown; silent: boolean }
+
+function readNotebook(): Record<string, Noted> {
+  try {
+    return JSON.parse(fs.readFileSync(NOTEBOOK, 'utf8')) as Record<string, Noted>;
+  } catch {
+    return {};
+  }
+}
+
+function note(key: string, entry: Noted): void {
+  try {
+    const all = { ...readNotebook(), [key]: entry };
+    fs.mkdirSync(path.dirname(NOTEBOOK), { recursive: true });
+    // Written whole and renamed into place, so a worker reading at the same
+    // moment sees the old file or the new one and never half of either.
+    const draft = `${NOTEBOOK}.${process.pid}`;
+    fs.writeFileSync(draft, JSON.stringify(all));
+    fs.renameSync(draft, NOTEBOOK);
+  } catch {
+    // Not there, then. This worker keeps its own answer and asks again in
+    // the next process, which is what happened before the notebook existed.
+  }
+}
 
 /**
  * The questions this engine did not answer at all, as opposed to answered no.
@@ -99,6 +145,13 @@ export async function ask<T>(
   const key = `${engine}:${question}`;
   if (answers.has(key)) return answers.get(key) as T;
 
+  const noted = readNotebook()[key];
+  if (noted) {
+    answers.set(key, noted.answer);
+    if (noted.silent) silences.add(key);
+    return noted.answer as T;
+  }
+
   const QUIET = Symbol('no answer');
   let timer: NodeJS.Timeout | undefined;
   const answer = await Promise.race([
@@ -111,6 +164,7 @@ export async function ask<T>(
   const settled = (answer === QUIET ? cautious : answer) as T;
 
   answers.set(key, settled);
+  note(key, { answer: settled, silent: answer === QUIET });
   return settled;
 }
 

@@ -380,15 +380,18 @@ export async function canDecodeVideo(
  *
  * The scratch page is navigated rather than left on about:blank: WebCodecs is
  * secure-context only, and an answer from a page that is not one would be a
- * fact about the wrong place. It is closed on the way out where it can be -
- * where the process dies the evaluate is abandoned mid-flight, so the close
- * never runs and the page goes when its context does.
+ * fact about the wrong place. It goes to the site's front page rather than to
+ * wherever the caller's page is, so a caller can ask before it has navigated
+ * anywhere - and a test that is about to skip need not load a page it will
+ * never use. It is closed on the way out where it can be - where the process
+ * dies the evaluate is abandoned mid-flight, so the close never runs and the
+ * page goes when its context does.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
   return ask(page, 'encode-video', async () => {
     const scratch = await page.context().newPage();
     try {
-      await scratch.goto(page.url());
+      await scratch.goto('/');
       return await askThePage(scratch);
     } finally {
       void scratch.close().catch(() => {});
