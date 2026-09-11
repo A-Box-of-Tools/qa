@@ -61,7 +61,11 @@ async function expectClean(page: Page): Promise<void> {
 
 const PAGES: string[] = [
   '/',
-  '/ar/', // the RTL direction: dir, lang and hreflang all differ from '/'
+  // A translated page: lang and hreflang differ from '/'. It was /ar/, for the
+  // right-to-left direction, until website#424 froze Arabic with twelve other
+  // languages - it is still served, as deployed, and no longer built, so a
+  // preview does not have it. Chinese is the one translation still built.
+  '/zh/',
   ...TOOLS.map((slug) => `/${slug}/`),
   '/guides/',
   firstGuide(),
