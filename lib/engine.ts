@@ -57,10 +57,24 @@ import type { Page } from '@playwright/test';
  *
  * So an answer is also written to a file under test-results/, which
  * Playwright empties at the start of every run and which every worker of the
- * run can see. The first worker to ask pays; the rest read. Two workers that
- * ask at once both pay and both write the same answer, which is a race with
- * no loser. A file that cannot be read or written is simply not there, and
- * the worker does what it always did.
+ * run can see. The first worker to ask pays; the rest read.
+ *
+ * "The rest read" needed a second half. The first version of this let two
+ * workers that asked at once both pay, on the grounds that a race with the
+ * same answer at both ends has no loser - and measured, it had four. With
+ * fullyParallel on, a slice's four workers reach the video specs inside the
+ * same eleven seconds, every one of them misses the notebook, and every one
+ * probes: on the run that tested it, four costly skips on four workers whose
+ * start times were 2.7 seconds apart, and the one worker that arrived after
+ * the first had finished paid under a second. So now the first to arrive
+ * takes a lock - a file created with wx, which only one process can win -
+ * and the others wait on the notebook for its answer. If the prober dies
+ * before writing, the waiters give up after the probe's own deadline plus a
+ * margin and ask for themselves, which is the old behaviour and only in the
+ * case that used to be the only behaviour.
+ *
+ * A file that cannot be read or written is simply not there, and the worker
+ * does what it always did.
  */
 const answers = new Map<string, unknown>();
 
@@ -75,6 +89,28 @@ function readNotebook(): Record<string, Noted> {
     return {};
   }
 }
+
+/** The lock one worker holds while it asks, so the others can wait for it. */
+function lockFor(key: string): string {
+  return `${NOTEBOOK}.${key.replace(/[^A-Za-z0-9]+/g, '-')}.asking`;
+}
+
+/** Try to be the one who asks. True if this process won; false if another holds it. */
+function claim(key: string): boolean {
+  try {
+    fs.mkdirSync(path.dirname(NOTEBOOK), { recursive: true });
+    fs.writeFileSync(lockFor(key), String(process.pid), { flag: 'wx' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function release(key: string): void {
+  try { fs.unlinkSync(lockFor(key)); } catch { /* already gone, or never ours */ }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
 function note(key: string, entry: Noted): void {
   try {
@@ -145,11 +181,25 @@ export async function ask<T>(
   const key = `${engine}:${question}`;
   if (answers.has(key)) return answers.get(key) as T;
 
-  const noted = readNotebook()[key];
-  if (noted) {
+  const adopt = (noted: Noted): T => {
     answers.set(key, noted.answer);
     if (noted.silent) silences.add(key);
     return noted.answer as T;
+  };
+  const noted = readNotebook()[key];
+  if (noted) return adopt(noted);
+
+  // Somebody else is asking this very question. Their answer will be ours;
+  // wait for it rather than paying for a second copy. The wait is bounded by
+  // what their probe can take - the deadline below plus the page it opens -
+  // so a prober that died mid-question cannot hold everyone else for ever.
+  if (!claim(key)) {
+    const patience = Date.now() + ms + 15_000;
+    while (Date.now() < patience) {
+      await sleep(200);
+      const theirs = readNotebook()[key];
+      if (theirs) return adopt(theirs);
+    }
   }
 
   const QUIET = Symbol('no answer');
@@ -165,6 +215,7 @@ export async function ask<T>(
 
   answers.set(key, settled);
   note(key, { answer: settled, silent: answer === QUIET });
+  release(key);
   return settled;
 }
 
