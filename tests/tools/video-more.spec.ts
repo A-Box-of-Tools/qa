@@ -142,10 +142,13 @@ const colourGap = (
  * argument for asking what an engine can do rather than what it has.
  */
 test.beforeEach(async ({ page }) => {
-  await page.goto('/');
+  // Asked before anything is loaded: the probe brings its own page, and on an
+  // engine that is about to skip all eighteen of these, a navigation each
+  // would be three seconds apiece spent on a page nobody looks at.
   test.skip(!await canEncodeVideo(page),
     'this engine can write no video, by WebCodecs or MediaRecorder, so no tool '
     + 'here can produce anything');
+  await page.goto('/');
 });
 
 /**

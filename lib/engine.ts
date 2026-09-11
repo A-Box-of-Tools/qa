@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Page } from '@playwright/test';
 
 /**
@@ -42,8 +44,88 @@ import type { Page } from '@playwright/test';
  * Keyed by engine as well as question, because a worker is not guaranteed to
  * stay with one project for its whole life and an answer from Chromium is not
  * an answer about WebKit.
+ *
+ * AND WRITTEN DOWN FOR THE OTHER WORKERS
+ *
+ * A map in this process is remembered by this process, and a slice runs
+ * four. Each of them was paying the probe again to learn what its neighbour
+ * had just learned - and on the WebKit build CI runs the encoder question
+ * does not answer at all, so each payment was the full deadline. Thirty-two
+ * worker processes across the eight WebKit slices, eight to eleven seconds
+ * apiece, came to about thirteen minutes of test time a run spent
+ * re-establishing two facts about one browser.
+ *
+ * So an answer is also written to a file under test-results/, which
+ * Playwright empties at the start of every run and which every worker of the
+ * run can see. The first worker to ask pays; the rest read.
+ *
+ * "The rest read" needed a second half. The first version of this let two
+ * workers that asked at once both pay, on the grounds that a race with the
+ * same answer at both ends has no loser - and measured, it had four. With
+ * fullyParallel on, a slice's four workers reach the video specs inside the
+ * same eleven seconds, every one of them misses the notebook, and every one
+ * probes: on the run that tested it, four costly skips on four workers whose
+ * start times were 2.7 seconds apart, and the one worker that arrived after
+ * the first had finished paid under a second. So now the first to arrive
+ * takes a lock - a file created with wx, which only one process can win -
+ * and the others wait on the notebook for its answer. If the prober dies
+ * before writing, the waiters give up after the probe's own deadline plus a
+ * margin and ask for themselves, which is the old behaviour and only in the
+ * case that used to be the only behaviour.
+ *
+ * A file that cannot be read or written is simply not there, and the worker
+ * does what it always did.
  */
 const answers = new Map<string, unknown>();
+
+const NOTEBOOK = path.join(__dirname, '..', 'test-results', '.engine-answers.json');
+
+interface Noted { answer: unknown; silent: boolean }
+
+function readNotebook(): Record<string, Noted> {
+  try {
+    return JSON.parse(fs.readFileSync(NOTEBOOK, 'utf8')) as Record<string, Noted>;
+  } catch {
+    return {};
+  }
+}
+
+/** The lock one worker holds while it asks, so the others can wait for it. */
+function lockFor(key: string): string {
+  return `${NOTEBOOK}.${key.replace(/[^A-Za-z0-9]+/g, '-')}.asking`;
+}
+
+/** Try to be the one who asks. True if this process won; false if another holds it. */
+function claim(key: string): boolean {
+  try {
+    fs.mkdirSync(path.dirname(NOTEBOOK), { recursive: true });
+    fs.writeFileSync(lockFor(key), String(process.pid), { flag: 'wx' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function release(key: string): void {
+  try { fs.unlinkSync(lockFor(key)); } catch { /* already gone, or never ours */ }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+
+function note(key: string, entry: Noted): void {
+  try {
+    const all = { ...readNotebook(), [key]: entry };
+    fs.mkdirSync(path.dirname(NOTEBOOK), { recursive: true });
+    // Written whole and renamed into place, so a worker reading at the same
+    // moment sees the old file or the new one and never half of either.
+    const draft = `${NOTEBOOK}.${process.pid}`;
+    fs.writeFileSync(draft, JSON.stringify(all));
+    fs.renameSync(draft, NOTEBOOK);
+  } catch {
+    // Not there, then. This worker keeps its own answer and asks again in
+    // the next process, which is what happened before the notebook existed.
+  }
+}
 
 /**
  * The questions this engine did not answer at all, as opposed to answered no.
@@ -99,6 +181,27 @@ export async function ask<T>(
   const key = `${engine}:${question}`;
   if (answers.has(key)) return answers.get(key) as T;
 
+  const adopt = (noted: Noted): T => {
+    answers.set(key, noted.answer);
+    if (noted.silent) silences.add(key);
+    return noted.answer as T;
+  };
+  const noted = readNotebook()[key];
+  if (noted) return adopt(noted);
+
+  // Somebody else is asking this very question. Their answer will be ours;
+  // wait for it rather than paying for a second copy. The wait is bounded by
+  // what their probe can take - the deadline below plus the page it opens -
+  // so a prober that died mid-question cannot hold everyone else for ever.
+  if (!claim(key)) {
+    const patience = Date.now() + ms + 15_000;
+    while (Date.now() < patience) {
+      await sleep(200);
+      const theirs = readNotebook()[key];
+      if (theirs) return adopt(theirs);
+    }
+  }
+
   const QUIET = Symbol('no answer');
   let timer: NodeJS.Timeout | undefined;
   const answer = await Promise.race([
@@ -111,7 +214,39 @@ export async function ask<T>(
   const settled = (answer === QUIET ? cautious : answer) as T;
 
   answers.set(key, settled);
+  note(key, { answer: settled, silent: answer === QUIET });
+  release(key);
   return settled;
+}
+
+/**
+ * A page of the probe's own, at the site's front page.
+ *
+ * Two reasons a probe should not run on the page the test is about to use.
+ * The first is origin: IndexedDB, mediaDevices and WebCodecs all answer
+ * differently on about:blank than on a page served over https, so a probe
+ * that ran wherever the caller happened to be would give a fact about the
+ * wrong place - which is why the callers all navigated first, and why 176
+ * skips on the WebKit projects were each paying a three-second navigation to
+ * a tool page they then never used. The second is survival: the encoder
+ * question ends the page's process on the WebKit build CI runs, and a caller
+ * that asked it on its own page was left holding a page that no longer
+ * existed.
+ *
+ * So the question goes to a page opened here, navigated to the front page
+ * for its origin, and closed on the way out where it can be - where the
+ * process dies the evaluate is abandoned mid-flight, so the close never runs
+ * and the page goes when its context does. Callers ask first and navigate
+ * after, and a test that is going to skip loads nothing.
+ */
+export async function onAPageOfItsOwn<T>(page: Page, work: (scratch: Page) => Promise<T>): Promise<T> {
+  const scratch = await page.context().newPage();
+  try {
+    await scratch.goto('/');
+    return await work(scratch);
+  } finally {
+    void scratch.close().catch(() => {});
+  }
 }
 
 /**
@@ -125,14 +260,15 @@ export async function ask<T>(
  *
  * - because a blob in IndexedDB is written to a file beside the database and
  * this build has nowhere to put it. Nothing about the site is involved: the
- * probe below stores a five-byte File in a database of its own.
+ * probe below stores a five-byte File in a database of its own, on a page of
+ * its own, so a test may ask before it has navigated anywhere.
  *
  * Worth knowing that a real browser can refuse too. Safari in private
  * browsing does exactly this, so a skip here is not only an artefact of the
  * test build - it is a state some visitors are in.
  */
 export async function keepsFilesInStorage(page: Page): Promise<boolean> {
-  return ask(page, 'files-in-storage', () => page.evaluate(async () => {
+  return ask(page, 'files-in-storage', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
     const NAME = 'abox-qa-storage-probe';
     try {
       const db: IDBDatabase = await new Promise((resolve, reject) => {
@@ -157,7 +293,7 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
     } catch {
       return false;
     }
-  }), false);
+  })), false);
 }
 
 /**
@@ -174,8 +310,8 @@ export async function keepsFilesInStorage(page: Page): Promise<boolean> {
  * picture to, and the CI build is exactly that.
  */
 export async function hasCameraInterface(page: Page): Promise<boolean> {
-  return ask(page, 'camera-interface',
-    () => page.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia)), false);
+  return ask(page, 'camera-interface', () => onAPageOfItsOwn(page,
+    (own) => own.evaluate(() => Boolean(navigator.mediaDevices?.getUserMedia))), false);
 }
 
 /**
@@ -199,12 +335,14 @@ export async function hasCameraInterface(page: Page): Promise<boolean> {
  * turns a skip into a test timeout, which is the one outcome worse than the
  * failure it was meant to prevent.
  *
- * A page has to be open for this: `navigator` on `about:blank` is not the
- * navigator of a page served over https, and mediaDevices depends on the
- * difference.
+ * Asked on a page of its own, because `navigator` on `about:blank` is not the
+ * navigator of a page served over https and mediaDevices depends on the
+ * difference - which used to mean the caller had to navigate first, and the
+ * fourteen camera cases each loaded the reader before learning they would
+ * skip. See onAPageOfItsOwn().
  */
 export async function canFakeCamera(page: Page): Promise<boolean> {
-  return ask(page, 'fake-camera', () => page.evaluate(async () => {
+  return ask(page, 'fake-camera', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
     // A 2x2 red PNG, the smallest thing that proves the decode path works.
     const PICTURE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAAB'
       + 'ytg0kAAAAFElEQVR4nGP8z4AATAxIYBQAAgAA//8DPQEQdOJPHwAAAABJRU5ErkJggg==';
@@ -261,7 +399,7 @@ export async function canFakeCamera(page: Page): Promise<boolean> {
     } catch {
       return false;
     }
-  }), false);
+  })), false);
 }
 
 /**

@@ -180,6 +180,18 @@ test.describe('switching language keeps the work', () => {
     test(`${slug} still has the file afterwards`, async ({ page }) => {
       test.setTimeout(120_000);
 
+      // Asked before anything is loaded. The probe brings its own page and its
+      // answer is per engine, so on the WebKit projects, which cannot put a
+      // File in IndexedDB at all, every one of these tests skips - and used
+      // to load its tool page first, four and a half seconds apiece, seventy-
+      // eight times per project, on a page it then never used. See the note
+      // in the header: an engine that cannot store a File cannot carry one
+      // across a navigation by any means, so there is nothing here for it to
+      // get right or wrong.
+      test.skip(!await keepsFilesInStorage(page),
+        'this engine cannot put a File in IndexedDB, which is the only place '
+        + 'one survives a navigation');
+
       await page.goto(`/${slug}/`);
 
       // Before the fixture, because a tool with nowhere to switch to has
@@ -187,15 +199,6 @@ test.describe('switching language keeps the work', () => {
       test.skip(!await hasSomewhereToGo(page),
         `/${slug}/ is offered in one language only, so there is no switch to `
         + 'carry anything across');
-
-      // Asked on the tool's own page rather than once for the file, because a
-      // skip has to be decided per test and this is the cheapest place that
-      // has a page open. See the note in the header: an engine that cannot
-      // put a File in IndexedDB cannot carry one across a navigation by any
-      // means, so there is nothing here for it to get right or wrong.
-      test.skip(!await keepsFilesInStorage(page),
-        'this engine cannot put a File in IndexedDB, which is the only place '
-        + 'one survives a navigation');
 
       const accept = (await page.locator('#file-input').getAttribute('accept')) ?? '';
       const fixture = fixtureFor(slug, accept);
