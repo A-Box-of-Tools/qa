@@ -302,6 +302,12 @@ export interface PdfPage {
   mediaBox: number[] | null;
   /** The strings drawn by the page's content stream, in order. */
   text: string[];
+  /**
+   * The resource names the content stream draws with `Do`, in order - the
+   * images and forms placed on the page. A stamp put on a page by the
+   * watermarker is one of these, and a page with none was not stamped.
+   */
+  xobjects: string[];
 }
 
 /**
@@ -350,7 +356,12 @@ export function readPages(bytes: Buffer): PdfPage[] {
     const box = numbers(dictValue(node.body, 'MediaBox')) ?? inheritedBox;
 
     if (/\/Type\s*\/Page\b/.test(node.body) && !/\/Type\s*\/Pages\b/.test(node.body)) {
-      pages.push({ mediaBox: box, text: contentText(objects, node) });
+      const content = contentOf(objects, node);
+      pages.push({
+        mediaBox: box,
+        text: [...content.matchAll(/\(((?:[^()\\]|\\.)*)\)\s*Tj/g)].map((m) => m[1]),
+        xobjects: [...content.matchAll(/\/([^\s/[\]<>()]+)\s+Do\b/g)].map((m) => m[1]),
+      });
       return;
     }
 
@@ -364,18 +375,17 @@ export function readPages(bytes: Buffer): PdfPage[] {
   return pages;
 }
 
-/** The literal strings a page's content stream draws, in order. */
-function contentText(objects: Map<number, RawObject>, page: RawObject): string[] {
+/** A page's content streams, un-Flated and joined in order, as one string. */
+function contentOf(objects: Map<number, RawObject>, page: RawObject): string {
   const token = dictValue(page.body, 'Contents');
   const ids = token?.match(/(\d+)\s+\d+\s+R/g)?.map((r) => Number(r.match(/^(\d+)/)![1])) ?? [];
 
   let joined = '';
   for (const id of ids) {
     const stream = objects.get(id)?.stream;
-    if (stream) joined += latin1(stream);
+    if (stream) joined += `${latin1(stream)}\n`;
   }
-
-  return [...joined.matchAll(/\(((?:[^()\\]|\\.)*)\)\s*Tj/g)].map((m) => m[1]);
+  return joined;
 }
 
 /** Every string drawn anywhere in the document, in page order. */
