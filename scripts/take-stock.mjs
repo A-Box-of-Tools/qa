@@ -53,9 +53,11 @@ if (!reportPath || !fs.existsSync(reportPath)) {
 /* ------------------------------------------------------------------ report */
 
 /**
- * The two kinds of finding, each a set of names: the same tool is found by
- * every project that ran the test, and a spec with no tool is found both by
- * the orphan check and by the path-constant one, and once is enough.
+ * The kinds of finding, each a set of names: the same tool is found by every
+ * project that ran the test, and a spec with no tool is found both by the
+ * orphan check and by the path-constant one, and once is enough. The third
+ * kind comes from tests/locales/parity.spec.ts rather than the coverage
+ * checks: a page an offered language has not translated yet.
  */
 const KINDS = {
   uncovered: {
@@ -70,6 +72,13 @@ const KINDS = {
     explain: 'Either the tool is still on its way and the release will settle it, or it '
       + 'was renamed or retired and the spec has been testing a redirecting stub.',
     notice: (name) => `${name} - no tool of that name is shipped here.`,
+  },
+  untranslated: {
+    heading: 'Pages an offered language still serves in English',
+    explain: 'The language is offered, the tool is newer than its translation, and the site '
+      + 'holds the page out of the sitemap until it is translated. Written as `<lang>/<slug>`; '
+      + 'each needs `locales/<lang>/tools/<slug>.{toml,html}` on the website.',
+    notice: (name) => `${name} is still in English - held out of the sitemap until translated.`,
   },
 };
 
