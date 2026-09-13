@@ -5,10 +5,11 @@ import { discoverTools } from './tools';
 /**
  * Which tools have a functional spec and which do not.
  *
- * Lives here rather than inside the test because two things need the answer:
- * tests/coverage.spec.ts, which fails the suite, and the workflow that opens
- * an issue about it. Two copies of this would eventually disagree, and the one
- * that disagreed quietly would be the one nobody was reading.
+ * Lives here rather than inside the test because the answer is read in more
+ * than one place: tests/coverage.spec.ts, which writes it on to the run as
+ * annotations, and through those scripts/take-stock.mjs, which keeps the
+ * issue. Two copies of this would eventually disagree, and the one that
+ * disagreed quietly would be the one nobody was reading.
  */
 
 const SPEC_DIRECTORY = path.join(__dirname, '..', 'tests', 'tools');
