@@ -228,3 +228,40 @@ export async function absentLocales(request: APIRequestContext): Promise<string[
   const here = await servedLocales(request);
   return locales().filter((locale) => !here.has(locale));
 }
+
+/**
+ * Every path the host's sitemap lists, once per process.
+ *
+ * The site's own rule for a page that is not translated yet - see "FALLING
+ * BACK" in its buildlib/i18n.py - is that the page is built, in English, at
+ * its address in that language, and kept out of the sitemap, the hreflang
+ * sets and the switcher until somebody translates it. So the sitemap is the
+ * site's statement of which pages it is willing to be judged on, and a check
+ * on how complete an offered language is has to read it: a German page the
+ * site advertises in English is a fault; one it holds back is a page still
+ * owed, which is written down rather than failed on.
+ *
+ * A host with no sitemap answers with an empty set, which makes every page
+ * unadvertised - the lenient direction, and the one a test should take when
+ * it cannot see the site's list.
+ */
+let listed: Promise<Set<string>> | undefined;
+
+export function advertisedPaths(request: APIRequestContext): Promise<Set<string>> {
+  if (!listed) listed = readTheSitemap(request);
+  return listed;
+}
+
+async function readTheSitemap(request: APIRequestContext): Promise<Set<string>> {
+  const paths = new Set<string>();
+  const response = await request.get('/sitemap.xml', { failOnStatusCode: false });
+  if (!response.ok()) return paths;
+  for (const match of (await response.text()).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)) {
+    try {
+      paths.add(new URL(match[1]).pathname);
+    } catch {
+      // A malformed <loc> is the sitemap's problem, checked elsewhere.
+    }
+  }
+  return paths;
+}

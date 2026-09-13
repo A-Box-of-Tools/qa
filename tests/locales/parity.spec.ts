@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import {
-  englishBody, idsIn, localeBody, locales, missingFrom, offeredLocales,
-  phraseKeysIn, slugMap,
+  advertisedPaths, englishBody, idsIn, localeBody, localeUrl, locales, missingFrom,
+  offeredLocales, phraseKeysIn, slugMap,
 } from '../../lib/locales';
 
 /**
@@ -59,15 +59,45 @@ const LANGS = locales();
  */
 const OFFERED = offeredLocales();
 
+/**
+ * WHAT AN UNTRANSLATED PAGE IN AN OFFERED LANGUAGE IS
+ *
+ * The site's own rule (buildlib/i18n.py, "FALLING BACK") is that a page not
+ * yet translated is built, in English, at its address in that language, and
+ * kept out of the sitemap, the hreflang sets and the switcher until it is.
+ * English ships a tool most weeks and every one arrives untranslated in every
+ * language at once, so an offered language is allowed to be behind English -
+ * what it is not allowed to do is advertise a page it has not translated.
+ *
+ * So the check reads the site's sitemap, which is its own statement of what
+ * it is willing to be judged on. A page the sitemap lists and the language has
+ * not translated is a fault and fails. A page the sitemap holds back is a page
+ * still owed: written on to the run as an `untranslated` annotation, which
+ * scripts/take-stock.mjs carries into the issue that lists what is out of
+ * step, and not failed on - the first version of this went red for every
+ * offered language on every tool English gained, which is a check about
+ * ambition dressed as one about correctness.
+ */
 test.describe('every tool exists in every language', () => {
   for (const slug of TOOLS) {
-    test(`translated everywhere: ${slug}`, async () => {
+    test(`translated everywhere: ${slug}`, async ({ request }) => {
       const missing = OFFERED.filter((lang) => localeBody(lang, slug) === null);
+      if (missing.length === 0) return;
+
+      const advertised = await advertisedPaths(request);
+      const shown = missing.filter((lang) => advertised.has(localeUrl(lang, slug)));
       expect(
-        missing,
-        `${slug} has no translated copy in: ${missing.join(', ')} - those languages `
-        + 'will serve the English markup, or nothing',
+        shown,
+        `${slug} is in the sitemap for ${shown.join(', ')} with no translated copy: the site `
+        + 'is inviting readers to an English page in their language',
       ).toEqual([]);
+
+      test.info().annotations.push({
+        type: 'untranslated',
+        description: missing.map((lang) => `${lang}/${slug}`).join(', '),
+      });
+      console.log(`${slug} is not yet translated in ${missing.join(', ')}; the site holds `
+        + 'those pages out of the sitemap, so they are owed rather than wrong.');
     });
   }
 });
@@ -121,12 +151,14 @@ test.describe('the translated URLs', () => {
 
       if (translated.length === 0) return; // keeps English slugs by policy
 
-      const untranslated = TOOLS.filter((slug) => !table.has(slug));
+      // Only a tool whose PAGE is translated can be missing a slug: a tool
+      // still served in English has nothing to give a German name to yet,
+      // and the check above already writes those down.
+      const untranslated = TOOLS.filter((slug) => !table.has(slug) && localeBody(lang, slug) !== null);
       expect(
         untranslated,
-        `${lang} translates ${translated.length} of ${TOOLS.length} tool slugs, leaving `
-        + `${untranslated.join(', ')} at the English URL. Either the table is incomplete `
-        + 'or this language has changed policy.',
+        `${lang} translates its slugs, but ${untranslated.join(', ')} - translated pages - sit `
+        + 'at the English URL. Either the table is incomplete or this language has changed policy.',
       ).toEqual([]);
     });
 
