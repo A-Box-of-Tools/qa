@@ -122,7 +122,7 @@ on:
         default: ''
         required: false
       pr_base:
-        description: 'The branch the website pull request is against, if it is one. `dev` lets a tool arrive before its spec'
+        description: 'The branch the website pull request is against, if it is one. Named in the run summary; nothing is decided by it'
         default: ''
         required: false
 
@@ -477,14 +477,6 @@ jobs:
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
           RERUN: ${{ needs.announce.outputs.rerun }}
           TOOLS: ${{ needs.announce.outputs.tools }}
-          # Read by tests/coverage.spec.ts, and by nothing else. Empty on a
-          # production or scheduled run, which is the strict answer.
-          QA_PR_BASE: ${{ needs.announce.outputs.pr_base }}
-          # The mirror of it, read by the two orphan checks. A pull request in
-          # THIS repository may carry a spec for a tool that is still on the
-          # website's dev branch, because the tool and its spec cannot land in
-          # one change. Empty everywhere else, which is the strict answer.
-          QA_SELF_PR: ${{ github.event_name == 'pull_request' && 'yes' || '' }}
         run: |
           set -euo pipefail
           only=''
@@ -690,6 +682,20 @@ jobs:
           # and the script is told to open issues but never close them.
           QA_CAN_CLOSE: ${{ (needs.test.result == 'success' || needs.test.result == 'failure') && 'yes' || 'no' }}
         run: node scripts/triage-failures.mjs merged.json
+
+      # What the run found out of step - a tool with no spec, a spec with no
+      # tool - as notices on every run, so the author of a website pull
+      # request that adds a tool is told a spec is owed without the run going
+      # red for it. The issue that makes it durable is only touched from a
+      # production run on main, for the same reason the failure issues are:
+      # a preview sees a site nobody has released yet.
+      - name: Take stock of tools and specs
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          QA_STOCK_ISSUE: ${{ (github.ref == 'refs/heads/main' && needs.announce.outputs.production == 'true') && 'yes' || 'no' }}
+        run: node scripts/take-stock.mjs merged.json
 
       - name: Fail the workflow if the suite failed
         if: ${{ needs.test.result != 'success' }}

@@ -67,24 +67,31 @@ test.describe('the tool specs point at addresses that exist', () => {
       .filter((one) => !shipped.has(one.slug))
       .map((one) => `${one.file} points at /${one.slug}/`);
 
-    // A spec may also arrive before its tool. The tool and the spec live in
-    // different repositories and cannot land in one change, so a pull request
-    // here can carry a spec for a tool that is still on the website's `dev`,
-    // against a checkout of `main` where it does not exist yet. Reported
-    // rather than failed on a pull request in this repository, and strict
-    // everywhere else - see the same allowance in tests/coverage.spec.ts.
-    test.skip(
-      process.env.QA_SELF_PR === 'yes' && stale.length > 0,
-      `${stale.join('; ')} - not in this checkout. On a pull request here that `
-      + 'is a spec waiting for a tool still on `dev`.',
-    );
-
-    expect(
-      stale,
-      `${stale.join('; ')} - no tool of that name is shipped. If it was renamed, `
-      + 'the site leaves a redirecting stub behind, so these specs would have '
-      + `gone on passing against it. Shipped tools: ${[...shipped].join(', ')}`,
-    ).toEqual([]);
+    // Written down rather than failed on. A spec may arrive before its tool -
+    // they live in different repositories and cannot land in one change - and
+    // for those few days this is exactly what a spec waiting for its tool
+    // looks like. So the finding goes into the run's stock-taking, in the
+    // same shape and under the same name as the orphan check in
+    // tests/coverage.spec.ts, so that scripts/take-stock.mjs lists each spec
+    // once: a notice on every run, and on production one issue that stays
+    // open until the address is a real tool again. A rename that left a stub
+    // behind shows up there the same way, and stays there, which is how it
+    // gets noticed without thirty tests timing out the day the stub is
+    // cleaned up.
+    if (stale.length > 0) {
+      test.info().annotations.push({
+        type: 'orphan',
+        description: references
+          .filter((one) => !shipped.has(one.slug))
+          .map((one) => `${path.basename(one.file)} -> /${one.slug}/`)
+          .join(', '),
+      });
+      console.log(
+        `${stale.join('; ')} - no tool of that name is shipped. If it was renamed, `
+        + 'the site leaves a redirecting stub behind, so these specs would have '
+        + `gone on passing against it. Shipped tools: ${[...shipped].join(', ')}`,
+      );
+    }
   });
 
   test('every tool with a spec of its own has that spec named after it', async () => {

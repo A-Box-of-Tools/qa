@@ -102,6 +102,10 @@ Only runs from `main` against production file issues; a dispatch at some other `
 - Every tool also has a functional spec under `tests/tools/` — real files in,
   the downloaded result decoded and measured against an independent
   implementation (`lib/` carries its own PNG, GIF, PDF, JPEG/EXIF, MP4, WAV,
-  ICO, DICOM and HEIC readers and writers for exactly that reason). The
-  coverage guard in `tests/coverage.spec.ts` fails, and a workflow opens an
-  issue, the moment a tool ships without one.
+  ICO, DICOM and HEIC readers and writers for exactly that reason). A tool
+  that ships without one does not turn a run red — the tool and its spec live
+  in different repositories and cannot land together — but `tests/coverage.spec.ts`
+  writes it down, every run says so in a notice, and on production
+  `scripts/take-stock.mjs` keeps one issue, "Tools and specs out of step",
+  open until the spec exists (and a spec whose tool has gone is listed the
+  same way).
