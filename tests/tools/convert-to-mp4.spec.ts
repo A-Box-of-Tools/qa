@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { canEncodeVideo, recordVideo } from '../../lib/browser-video';
+import { canEncodeAac, canEncodeVideo, recordVideo } from '../../lib/browser-video';
 import { audioTrack, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { loadFile, loadTheExample, runAndSave } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
@@ -53,11 +53,22 @@ test.describe('convert-to-mp4: the recording it ships with', () => {
     test.setTimeout(300_000);
 
     // The plan is the page's contract with the visitor: what changes, and
-    // what does not, said before a frame is touched.
+    // what does not, said before a frame is touched. The sound half depends
+    // on the engine: Opus has to be encoded again as AAC, and Chromium on
+    // the Linux runners has no AAC encoder, in which case the honest plan
+    // is that the sound is left out - the page ticks the box itself and
+    // says so - and the honest file has no sound track. Both are held to.
+    const aac = await canEncodeAac(page);
     await expect(page.locator('#file-facts')).toContainText(/WebM/i);
     await expect(page.locator('#plan-picture')).toContainText(/H\.264/);
     await expect(page.locator('#plan-picture')).toContainText(/VP8/);
-    await expect(page.locator('#plan-sound')).toContainText(/AAC/);
+    if (aac) {
+      await expect(page.locator('#plan-sound')).toContainText(/AAC/);
+    } else {
+      await expect(page.locator('#plan-sound'), 'no AAC encoder, and the plan did not say the sound goes')
+        .toContainText(/left out/i);
+      await expect(page.locator('#drop-audio')).toBeChecked();
+    }
 
     const bytes = await runAndSave(page, { timeout: 240_000 });
     expect(isMp4(bytes), 'the converted file is not an MP4').toBe(true);
@@ -77,9 +88,13 @@ test.describe('convert-to-mp4: the recording it ships with', () => {
     expect(file.seconds).toBeLessThan(SECONDS + 0.6);
 
     const sound = audioTrack(file);
-    expect(sound, 'the sound was lost').not.toBeNull();
-    expect(sound!.codec, 'the sound is not AAC').toBe('mp4a');
-    expect(sound!.seconds).toBeGreaterThan(SECONDS - 1);
+    if (aac) {
+      expect(sound, 'the sound was lost').not.toBeNull();
+      expect(sound!.codec, 'the sound is not AAC').toBe('mp4a');
+      expect(sound!.seconds).toBeGreaterThan(SECONDS - 1);
+    } else {
+      expect(sound, 'no AAC encoder, and the file still has a sound track in it').toBeNull();
+    }
   });
 
   test('leaving the sound out leaves it out', async ({ page }) => {

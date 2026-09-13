@@ -421,3 +421,33 @@ function askThePage(page: Page): Promise<boolean> {
       .some((type) => recorder.isTypeSupported!(type));
   });
 }
+
+/**
+ * Can this engine encode AAC?
+ *
+ * Asked because the examples the newer video tools ship - a clip with sound,
+ * built in the page - are written with AudioEncoder as AAC, and the converter
+ * turns any other sound into AAC the same way. Chromium has the encoder on
+ * Windows and macOS, where the platform provides one, and not on the Linux
+ * builds CI runs, where the example cannot be built at all and the converter
+ * ticks "leave the sound out" itself and says so. Each is a fact the specs
+ * have to know before they decide what to hand a tool and what to expect
+ * back; nothing here is a tool's defect.
+ *
+ * The configuration is the one shared/js/reencode-sound.js asks about, so
+ * this and the page agree.
+ */
+export async function canEncodeAac(page: Page): Promise<boolean> {
+  return ask(page, 'encode-aac', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
+    const Encoder = (globalThis as { AudioEncoder?: { isConfigSupported(c: unknown): Promise<{ supported?: boolean }> } }).AudioEncoder;
+    if (!Encoder) return false;
+    try {
+      const { supported } = await Encoder.isConfigSupported({
+        codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 2, bitrate: 160000,
+      });
+      return supported === true;
+    } catch {
+      return false;
+    }
+  })), false);
+}
