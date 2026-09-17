@@ -33,6 +33,44 @@ async function portrait(page: Page): Promise<Buffer> {
   return realJpeg(page, 900, 1200, 3);
 }
 
+/**
+ * Choose one of the rules, whatever country it belongs to.
+ *
+ * The chooser is a country and then that country's documents, so a rule is two
+ * controls away rather than one, and the page only builds the radio for a
+ * document once its country has been picked. Rather than keep a copy of which
+ * country each rule belongs to - a second rulebook, in another repository,
+ * with nothing to keep it in step - this walks the country list until the
+ * radio it is after exists.
+ *
+ * THE #spec BRANCH IS A BRIDGE AND COMES OUT. This file runs against a website
+ * pull request's preview and against production, and those are the new chooser
+ * and the old one until the change reaches production. Delete the branch, and
+ * this paragraph, once /id-photo/ is live with a #country on it.
+ */
+async function chooseSpec(page: Page, spec: string): Promise<void> {
+  const old = page.locator('#spec');
+  if ((await old.count()) > 0) {
+    await old.selectOption(spec);
+    return;
+  }
+
+  const radio = page.locator(`#doc-${spec}`);
+  await expect(page.locator('#country')).toBeVisible();
+
+  if ((await radio.count()) === 0) {
+    const countries = await page.locator('#country option').evaluateAll(
+      (options) => options.map((option) => (option as HTMLOptionElement).value));
+    for (const country of countries) {
+      await page.locator('#country').selectOption(country);
+      if ((await radio.count()) > 0) break;
+    }
+  }
+
+  await expect(radio).toHaveCount(1);
+  await radio.check();
+}
+
 /** Load a photo and choose a specification. */
 async function setup(page: Page, spec: string): Promise<void> {
   await page.goto(URL_PATH);
@@ -44,7 +82,7 @@ async function setup(page: Page, spec: string): Promise<void> {
   await expect(page.locator('#frame-controls')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#load-error')).toBeHidden();
 
-  await page.locator('#spec').selectOption(spec);
+  await chooseSpec(page, spec);
   // The dots open at default positions the moment a photo loads, so the crop
   // box can be fitted without anyone dragging anything.
   await page.locator('#fit-box').click();
@@ -151,10 +189,10 @@ test.describe('id-photo: the print sizes are the published ones', () => {
     // it has to move when the rule does - the UK's head band is not ICAO's.
     await page.goto(URL_PATH);
 
-    await page.locator('#spec').selectOption('icao');
+    await chooseSpec(page, 'icao');
     const icao = ((await page.locator('#spec-facts').textContent()) ?? '').trim();
 
-    await page.locator('#spec').selectOption('uk-passport');
+    await chooseSpec(page, 'uk-passport');
     const uk = ((await page.locator('#spec-facts').textContent()) ?? '').trim();
 
     expect(icao.length).toBeGreaterThan(0);
@@ -185,7 +223,7 @@ test.describe('id-photo: the promise', () => {
       buffer: face,
     });
     await expect(page.locator('#frame-controls')).toBeVisible({ timeout: 20_000 });
-    await page.locator('#spec').selectOption('icao');
+    await chooseSpec(page, 'icao');
     await page.locator('#fit-box').click();
     await makeFiles(page);
     await quiet(page);
