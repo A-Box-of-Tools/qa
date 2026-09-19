@@ -42,19 +42,8 @@ async function portrait(page: Page): Promise<Buffer> {
  * country each rule belongs to - a second rulebook, in another repository,
  * with nothing to keep it in step - this walks the country list until the
  * radio it is after exists.
- *
- * THE #spec BRANCH IS A BRIDGE AND COMES OUT. This file runs against a website
- * pull request's preview and against production, and those are the new chooser
- * and the old one until the change reaches production. Delete the branch, and
- * this paragraph, once /id-photo/ is live with a #country on it.
  */
 async function chooseSpec(page: Page, spec: string): Promise<void> {
-  const old = page.locator('#spec');
-  if ((await old.count()) > 0) {
-    await old.selectOption(spec);
-    return;
-  }
-
   const radio = page.locator(`#doc-${spec}`);
   await expect(page.locator('#country')).toBeVisible();
 
@@ -200,6 +189,49 @@ test.describe('id-photo: the print sizes are the published ones', () => {
 
     // And each cites where its figures came from.
     await expect(page.locator('#spec-source')).not.toBeEmpty();
+  });
+
+  test('typing to find a country narrows the list and never moves the rule', async ({ page }) => {
+    // The list is forty-odd countries long now, so there is a box to type in.
+    // Its own notes name the way it could go wrong: "a filter that quietly
+    // moved the selection would change which rule the crop box is obeying,
+    // silently, while somebody was still typing". Nothing on the page would
+    // look broken - the photo would just be cut to another country's rule.
+    await page.goto(URL_PATH);
+    await chooseSpec(page, 'uk-passport');
+
+    const country = page.locator('#country');
+    const chosen = await country.inputValue();
+    const facts = ((await page.locator('#spec-facts').textContent()) ?? '').trim();
+    const everything = await country.locator('option').count();
+    expect(everything, 'the country list is shorter than the rulebook').toBeGreaterThan(30);
+
+    // Some other country, by the name this page gives it, so the test types
+    // what a visitor to this page would and not an English word.
+    const other = await country.locator('option').evaluateAll((options, mine) => {
+      const found = (options as HTMLOptionElement[]).find((option) => option.value !== mine);
+      return { value: found?.value ?? '', label: (found?.textContent ?? '').trim() };
+    }, chosen);
+    expect(other.label.length).toBeGreaterThan(0);
+
+    await page.locator('#country-filter').fill(other.label);
+    await expect(page.locator('#filter-note')).not.toBeEmpty();
+
+    const shown = await country.locator('option').evaluateAll(
+      (options) => (options as HTMLOptionElement[]).map((option) => option.value));
+    expect(shown.length, 'typing did not narrow the list').toBeLessThan(everything);
+    expect(shown, 'the country that was typed is not on the list').toContain(other.value);
+
+    // The rule in force is the one that was chosen, and the page still shows it.
+    expect(shown, 'the chosen country was filtered off its own list').toContain(chosen);
+    expect(await country.inputValue()).toBe(chosen);
+    await expect(page.locator('#doc-uk-passport')).toBeChecked();
+    expect(((await page.locator('#spec-facts').textContent()) ?? '').trim()).toBe(facts);
+
+    // And clearing the box brings everything back.
+    await page.locator('#country-filter').fill('');
+    await expect(country.locator('option')).toHaveCount(everything);
+    expect(await country.inputValue()).toBe(chosen);
   });
 });
 
