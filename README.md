@@ -102,7 +102,8 @@ Only runs from `main` against production file issues; a dispatch at some other `
 - Every tool also has a functional spec under `tests/tools/` — real files in,
   the downloaded result decoded and measured against an independent
   implementation (`lib/` carries its own PNG, GIF, PDF, JPEG/EXIF, MP4, WAV,
-  ICO, DICOM and HEIC readers and writers for exactly that reason). A tool
+  ICO, DICOM, HEIC, WebP, AVIF and zip readers and writers for exactly that
+  reason). A tool
   that ships without one does not turn a run red — the tool and its spec live
   in different repositories and cannot land together — but `tests/coverage.spec.ts`
   writes it down, every run says so in a notice, and on production

@@ -43,11 +43,21 @@ function chunk(type: string, data: Buffer): Buffer {
 
 export type Rgb = readonly [number, number, number];
 
-/** An opaque 8-bit RGBA PNG, each pixel decided by `paint`. */
+/** A colour with how solid it is; 255 is opaque and 0 is not there at all. */
+export type Rgba = readonly [number, number, number, number];
+
+/**
+ * An 8-bit RGBA PNG, each pixel decided by `paint`.
+ *
+ * Opaque unless `paint` says otherwise: three numbers are a solid pixel, and
+ * a fourth is its alpha. Nothing is written to say what colour space the
+ * numbers are in, so a browser takes them as sRGB and hands the same numbers
+ * back - which is what lets a test compare a pixel exactly.
+ */
 export function encodePng(
   width: number,
   height: number,
-  paint: (x: number, y: number) => Rgb,
+  paint: (x: number, y: number) => Rgb | Rgba,
 ): Buffer {
   // One filter byte (0 - none) then RGBA, per scanline.
   const raw = Buffer.alloc((width * 4 + 1) * height);
@@ -57,11 +67,11 @@ export function encodePng(
     raw[at] = 0;
     at += 1;
     for (let x = 0; x < width; x += 1) {
-      const [r, g, b] = paint(x, y);
+      const [r, g, b, a = 255] = paint(x, y);
       raw[at] = r;
       raw[at + 1] = g;
       raw[at + 2] = b;
-      raw[at + 3] = 255;
+      raw[at + 3] = a;
       at += 4;
     }
   }
