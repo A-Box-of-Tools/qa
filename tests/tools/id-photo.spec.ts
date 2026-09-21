@@ -34,6 +34,41 @@ async function portrait(page: Page): Promise<Buffer> {
 }
 
 /**
+ * Whether the country chooser is still a <select> with a search box over it.
+ *
+ * THIS IS A BRIDGE AND COMES OUT. The chooser became one control - a box that
+ * is typed into and the list it narrows - and this file runs against the site
+ * that is live as well as the preview that changes it, so for one release it
+ * has to drive both. Once /id-photo/ is live with `#country-list` on it, delete
+ * this, the two `if (await isMenu(page))` branches and this paragraph.
+ */
+async function isMenu(page: Page): Promise<boolean> {
+  return (await page.locator('select#country').count()) > 0;
+}
+
+/** Every country the chooser holds, by the key the page knows it by. */
+async function countryKeys(page: Page): Promise<string[]> {
+  if (await isMenu(page)) {
+    return page.locator('#country option').evaluateAll(
+      (options) => options.map((option) => (option as HTMLOptionElement).value));
+  }
+  // The list is filled while it is closed, so it can be read without opening it.
+  return page.locator('#country-list [role="option"]').evaluateAll(
+    (rows) => rows.map((row) => (row as HTMLElement).dataset.value ?? ''));
+}
+
+async function chooseCountry(page: Page, key: string): Promise<void> {
+  if (await isMenu(page)) {
+    await page.locator('#country').selectOption(key);
+    return;
+  }
+  // The arrow on the end of the box opens the whole list, typed text or none.
+  await page.locator('#country-toggle').click();
+  await page.locator(`#country-list [data-value="${key}"]`).click();
+  await expect(page.locator('#country-list')).toBeHidden();
+}
+
+/**
  * Choose one of the rules, whatever country it belongs to.
  *
  * The chooser is a country and then that country's documents, so a rule is two
@@ -48,10 +83,17 @@ async function chooseSpec(page: Page, spec: string): Promise<void> {
   await expect(page.locator('#country')).toBeVisible();
 
   if ((await radio.count()) === 0) {
-    const countries = await page.locator('#country option').evaluateAll(
-      (options) => options.map((option) => (option as HTMLOptionElement).value));
-    for (const country of countries) {
-      await page.locator('#country').selectOption(country);
+    // The combined control says on each row which rules are behind it, so the
+    // country is one lookup. The menu it replaced does not, and is walked: a
+    // <select> can be set forty times in a second, which opening a list and
+    // pressing a row cannot - on a phone that walk ran past the test's time.
+    const home = await page.locator('#country-list [role="option"]').evaluateAll(
+      (rows, wanted) => (rows as HTMLElement[])
+        .find((row) => (row.dataset.rules ?? '').split(' ').includes(wanted))?.dataset.value ?? '',
+      spec);
+    const candidates = home ? [home] : await countryKeys(page);
+    for (const country of candidates) {
+      await chooseCountry(page, country);
       if ((await radio.count()) > 0) break;
     }
   }
@@ -192,46 +234,80 @@ test.describe('id-photo: the print sizes are the published ones', () => {
   });
 
   test('typing to find a country narrows the list and never moves the rule', async ({ page }) => {
-    // The list is forty-odd countries long now, so there is a box to type in.
-    // Its own notes name the way it could go wrong: "a filter that quietly
-    // moved the selection would change which rule the crop box is obeying,
-    // silently, while somebody was still typing". Nothing on the page would
-    // look broken - the photo would just be cut to another country's rule.
+    // The list is forty-odd countries long now, so it can be typed into. Its
+    // own notes name the way that could go wrong: "the rule the crop box is
+    // obeying must not change because a word was half typed". Nothing on the
+    // page would look broken - the photo would just be cut to another
+    // country's rule.
     await page.goto(URL_PATH);
     await chooseSpec(page, 'uk-passport');
-
-    const country = page.locator('#country');
-    const chosen = await country.inputValue();
     const facts = ((await page.locator('#spec-facts').textContent()) ?? '').trim();
-    const everything = await country.locator('option').count();
+    const everything = (await countryKeys(page)).length;
     expect(everything, 'the country list is shorter than the rulebook').toBeGreaterThan(30);
+
+    if (await isMenu(page)) {
+      const country = page.locator('#country');
+      const chosen = await country.inputValue();
+      const other = await country.locator('option').evaluateAll((options, mine) => {
+        const found = (options as HTMLOptionElement[]).find((option) => option.value !== mine);
+        return { value: found?.value ?? '', label: (found?.textContent ?? '').trim() };
+      }, chosen);
+      expect(other.label.length).toBeGreaterThan(0);
+
+      await page.locator('#country-filter').fill(other.label);
+      await expect(page.locator('#filter-note')).not.toBeEmpty();
+      const shown = await countryKeys(page);
+      expect(shown.length, 'typing did not narrow the list').toBeLessThan(everything);
+      expect(shown, 'the country that was typed is not on the list').toContain(other.value);
+      expect(shown, 'the chosen country was filtered off its own list').toContain(chosen);
+      expect(await country.inputValue()).toBe(chosen);
+      await expect(page.locator('#doc-uk-passport')).toBeChecked();
+      expect(((await page.locator('#spec-facts').textContent()) ?? '').trim()).toBe(facts);
+
+      await page.locator('#country-filter').fill('');
+      await expect(country.locator('option')).toHaveCount(everything);
+      expect(await country.inputValue()).toBe(chosen);
+      return;
+    }
+
+    const box = page.locator('#country');
+    const rows = page.locator('#country-list [role="option"]');
+    const chosenName = await box.inputValue();
+    const chosenKey = await page.locator('#country-list [aria-selected="true"]')
+      .evaluate((row) => (row as HTMLElement).dataset.value ?? '');
 
     // Some other country, by the name this page gives it, so the test types
     // what a visitor to this page would and not an English word.
-    const other = await country.locator('option').evaluateAll((options, mine) => {
-      const found = (options as HTMLOptionElement[]).find((option) => option.value !== mine);
-      return { value: found?.value ?? '', label: (found?.textContent ?? '').trim() };
-    }, chosen);
+    const other = await rows.evaluateAll((all, mine) => {
+      const found = (all as HTMLElement[]).find((row) => row.dataset.value !== mine);
+      return { value: found?.dataset.value ?? '', label: (found?.textContent ?? '').trim() };
+    }, chosenKey);
     expect(other.label.length).toBeGreaterThan(0);
 
-    await page.locator('#country-filter').fill(other.label);
+    await box.fill(other.label);
+    await expect(page.locator('#country-list')).toBeVisible();
     await expect(page.locator('#filter-note')).not.toBeEmpty();
-
-    const shown = await country.locator('option').evaluateAll(
-      (options) => (options as HTMLOptionElement[]).map((option) => option.value));
+    const shown = await countryKeys(page);
     expect(shown.length, 'typing did not narrow the list').toBeLessThan(everything);
-    expect(shown, 'the country that was typed is not on the list').toContain(other.value);
+    expect(shown[0], 'the country that was typed is not the first answer').toBe(other.value);
 
-    // The rule in force is the one that was chosen, and the page still shows it.
-    expect(shown, 'the chosen country was filtered off its own list').toContain(chosen);
-    expect(await country.inputValue()).toBe(chosen);
+    // Typing asked a question and chose nothing: the rule in force is still
+    // the one that was picked, and the page still shows it.
     await expect(page.locator('#doc-uk-passport')).toBeChecked();
     expect(((await page.locator('#spec-facts').textContent()) ?? '').trim()).toBe(facts);
 
-    // And clearing the box brings everything back.
-    await page.locator('#country-filter').fill('');
-    await expect(country.locator('option')).toHaveCount(everything);
-    expect(await country.inputValue()).toBe(chosen);
+    // Walking away puts the chosen name back, and the list is whole again.
+    await box.press('Escape');
+    await expect(page.locator('#country-list')).toBeHidden();
+    expect(await box.inputValue()).toBe(chosenName);
+    await expect(rows).toHaveCount(everything);
+    await expect(page.locator('#doc-uk-passport')).toBeChecked();
+
+    // And Enter on the first answer is a choice: the other country's rule.
+    await box.fill(other.label);
+    await box.press('Enter');
+    await expect(page.locator('#doc-uk-passport')).toHaveCount(0);
+    expect(((await page.locator('#spec-facts').textContent()) ?? '').trim()).not.toBe(facts);
   });
 });
 
