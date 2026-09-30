@@ -224,6 +224,10 @@ async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
       const video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
+      // Presented-frame callbacks need a painted player. It is removed after
+      // sampling, including when the native decoder refuses the file.
+      video.style.cssText = 'position:fixed;top:0;left:0;width:320px;height:240px;z-index:2147483647';
+      document.body.append(video);
       const wait = (event: 'loadeddata' | 'seeked', action: () => void) => new Promise<void>((resolve, reject) => {
         const clean = () => {
           clearTimeout(timer);
@@ -239,7 +243,59 @@ async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
       });
       try {
         await wait('loadeddata', () => { video.src = url; });
-        await wait('seeked', () => { video.currentTime = 0.75; });
+        const target = 0.75;
+        if (!Number.isFinite(video.duration) || video.duration <= target) {
+          throw new Error('the crop fixture ended before the sampled frame');
+        }
+        await new Promise<void>((resolve, reject) => {
+          let seeked = false;
+          let presented = typeof video.requestVideoFrameCallback !== 'function';
+          let callback = 0;
+          let animation = 0;
+          let settling = false;
+          const clean = () => {
+            clearTimeout(timer);
+            video.removeEventListener('seeked', onSeeked);
+            video.removeEventListener('error', failed);
+            if (callback) video.cancelVideoFrameCallback(callback);
+            cancelAnimationFrame(animation);
+          };
+          const fail = (message: string) => { clean(); reject(new Error(message)); };
+          const failed = () => fail('the crop fixture failed while seeking');
+          const ready = () => {
+            if (!seeked || !presented || settling) return;
+            settling = true;
+            // seeked can precede the canvas-visible frame. Let presentation
+            // settle; this is also the fallback when rVFC is unavailable.
+            animation = requestAnimationFrame(() => {
+              animation = requestAnimationFrame(() => {
+                if (video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+                  || Math.abs(video.currentTime - target) > 0.001) {
+                  fail('the crop fixture was not ready at the requested time');
+                  return;
+                }
+                clean();
+                resolve();
+              });
+            });
+          };
+          const onSeeked = () => { seeked = true; ready(); };
+          const frame = (_: number, metadata: VideoFrameCallbackMetadata) => {
+            // This fixture is recorded at 20 fps. Reject the old poster frame,
+            // allowing one frame interval plus timestamp-rounding tolerance.
+            if (metadata.mediaTime <= target + 0.005 && target - metadata.mediaTime <= 0.055) {
+              presented = true;
+              ready();
+            } else {
+              callback = video.requestVideoFrameCallback(frame);
+            }
+          };
+          const timer = setTimeout(() => fail('the crop fixture never presented the requested frame'), 15_000);
+          video.addEventListener('seeked', onSeeked);
+          video.addEventListener('error', failed);
+          if (!presented) callback = video.requestVideoFrameCallback(frame);
+          video.currentTime = target;
+        });
         const canvas = document.createElement('canvas');
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
@@ -250,6 +306,7 @@ async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
       } finally {
         video.removeAttribute('src');
         video.load();
+        video.remove();
         URL.revokeObjectURL(url);
       }
     };
