@@ -180,3 +180,23 @@ test.describe('base64: the promise', () => {
     }
   });
 });
+
+
+test('base64: whitespace is input data, and decoded spaces are not trimmed', async ({ page }) => {
+  await page.goto(URL_PATH);
+  await codec(page, 'base64');
+  for (const text of [' ', '\t', '\n', ' \t\n ']) {
+    await direction(page, 'encode');
+    await page.locator('#input').fill(text);
+    const encoded = Buffer.from(text).toString('base64');
+    await expect(page.locator('#output')).toHaveText(encoded);
+    await expect(page.locator('#copy')).toBeEnabled();
+    await direction(page, 'decode');
+    await page.locator('#input').fill(encoded);
+    // textContent is intentional: text matchers normalize whitespace.
+    await expect.poll(() => page.locator('#output').textContent()).toBe(text);
+  }
+  await page.locator('#clear').click();
+  await expect(page.locator('#output')).toBeEmpty();
+  await expect(page.locator('#copy')).toBeDisabled();
+});

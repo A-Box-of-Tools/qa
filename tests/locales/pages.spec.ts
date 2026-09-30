@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { discoverTools, hasFilePicker } from '../../lib/tools';
 import {
   absentLocales, declaredLang, isRtl, localeUrl, locales, offeredLocales,
-  servedLocales, unadvertisedLocales,
+  servedLocales, unadvertisedLocales, maintainedLocales,
 } from '../../lib/locales';
 
 /**
@@ -27,15 +27,30 @@ import {
  *
  * IN EVERY LANGUAGE THE HOST HAS, WHICH IS NOT ALWAYS FIFTEEN
  *
- * A preview carries three of them - see servedLocales() in lib/locales.ts for
- * why - so the languages are asked of the host rather than counted out of the
- * checkout. Production has all fourteen and loses nothing. The count is left
- * out of the title for the same reason: a title that promises fourteen and
- * checks three is worse than one that promises neither, and a title that
- * changes with the host would change every test's identity with it.
+ * Full previews carry the maintained languages from config/site.toml, while
+ * production also carries frozen archive pages. The independent presence
+ * gate below requires every maintained hub; discovery then lets these
+ * structural checks cover any archived languages the host also provides.
  */
 
 const TOOLS = discoverTools();
+
+test('a full deployment carries every maintained language and its sitemap', async ({ request }) => {
+  // Presence is a deployment contract, not something HTTP discovery can
+  // infer. Otherwise losing an entire language merely removes its tests.
+  const expected = maintainedLocales();
+  expect(expected.length, 'no maintained translations were discovered').toBeGreaterThan(0);
+  for (const lang of expected) {
+    const response = await request.get(`/${lang}/`);
+    expect(response.ok(), `the maintained /${lang}/ hub is missing`).toBe(true);
+    const opening = (await response.text()).match(/<html\b[^>]*>/i)?.[0] ?? '';
+    expect(opening, `/${lang}/ returned a different page or a soft 404`)
+      .toMatch(new RegExp(`\\blang=["']${declaredLang(lang)}["']`));
+  }
+  const sitemap = await request.get('/sitemap.xml');
+  expect(sitemap.ok(), 'the full deployment lost its sitemap').toBe(true);
+  expect(await sitemap.text()).toContain('<urlset');
+});
 
 test.describe('every tool, in every language, as served', () => {
   for (const slug of TOOLS) {
@@ -45,10 +60,8 @@ test.describe('every tool, in every language, as served', () => {
 
       const here = await servedLocales(request);
       const langs = locales().filter((lang) => here.has(lang));
-      // A host with no translated language is a scoped build somebody made
-      // for one tool, not a site that lost its translations. Skipped rather
-      // than passed: a test that checked nothing and reported green is the
-      // one result nobody can act on.
+      // The deployment gate above reports missing maintained languages.
+      // These per-tool checks must not report success for an empty set.
       test.skip(langs.length === 0, 'this host carries no translated language at all');
       // Said out loud in the report rather than left to be inferred from a
       // pass. A run that checked three languages and said nothing about the
@@ -139,9 +152,8 @@ test.describe('the language switcher goes where it says', () => {
       [...html.matchAll(/hreflang="([^"]+)"/g)].map((m) => m[1]),
     );
 
-    // Offered AND on this host. A preview that carries three languages links
-    // to the ones it has, and holding it to a language nobody built there
-    // would be reporting the size of the deployment as a fault in the page.
+    // The deployment gate independently requires maintained languages. Any
+    // archived languages absent from this host remain outside this check.
     const here = await servedLocales(request);
     const missing = offeredLocales()
       .filter((lang) => here.has(lang))

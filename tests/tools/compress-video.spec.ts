@@ -3,6 +3,7 @@ import { canEncodeAac, canEncodeVideo } from '../../lib/browser-video';
 import { audioTrack, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { loadTheExample, pressChip, runAndSave } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
+import { canEncodeH264, holdVideoFlush, holdVerificationRead, releaseHeldExport, waitForHeldExport } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the video compressor.
@@ -152,6 +153,41 @@ test.describe('compress-video: the silent example', () => {
     await expect(page.locator('#estimate')).toContainText(/already under/i);
     await expect(page.locator('#run-card')).toHaveAttribute('inert', '');
   });
+});
+
+test.describe('compress-video: retiring an export', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
+  for (const action of ['clear', 'cancel'] as const) {
+    test(`${action} at an export completion offers no retired file and can be retried`, async ({ page }) => {
+      test.setTimeout(600_000);
+      test.skip(!await canEncodeH264(page), 'this engine cannot encode H.264 with WebCodecs; this case needs that converter path');
+      await page.goto(URL_PATH);
+      const size = await loadTheSilentExample(page);
+      await setTarget(page, size * 0.5);
+      if (action === 'clear') await holdVideoFlush(page);
+      else await holdVerificationRead(page);
+      await page.locator('#run').click();
+      await waitForHeldExport(page);
+      await page.locator(action === 'clear' ? '#clear-file' : '#cancel').click();
+      await releaseHeldExport(page);
+      await expect(page.locator('#cancel')).toBeHidden();
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#run-error')).toBeHidden();
+      await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+
+      if (action === 'clear') {
+        await expect(page.locator('#file-row')).toBeHidden();
+        await expect(page.locator('#run-card')).toHaveAttribute('inert', '');
+        const replacementSize = await loadTheSilentExample(page);
+        await setTarget(page, replacementSize * 0.5);
+      }
+      const bytes = await runAndSave(page, { timeout: 360_000 });
+      const video = videoTrack(readMp4(bytes));
+      expect(video?.codec).toBe('avc1');
+      expect(video?.samples).toBe(SECONDS * FPS);
+    });
+  }
 });
 
 test.describe('compress-video: the clip it ships with, which has sound', () => {

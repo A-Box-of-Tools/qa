@@ -166,29 +166,25 @@ test.describe('extract-audio-from-video: the job it is named for', () => {
     // refused for the right reason and would say nothing about this job.
     const clip = await recordVideo(page, { seconds: 2, withSound: true });
 
-    await page.locator('#file-input').setInputFiles({
-      name: 'clip.mp4', mimeType: clip.mimeType, buffer: clip.bytes,
-    });
+    // Probe the exact recorded fixture with the native decoder before the
+    // tool sees it. A tool error must fail this scenario, not become the
+    // evidence used to skip its own regression.
+    const native = await page.evaluate(async (bytes) => {
+      const context = new AudioContext();
+      try {
+        const audio = await context.decodeAudioData(new Uint8Array(bytes).buffer);
+        return { ok: true, duration: audio.duration, channels: audio.numberOfChannels, error: '' };
+      } catch (error) {
+        return { ok: false, duration: 0, channels: 0, error: String(error) };
+      } finally {
+        await context.close();
+      }
+    }, Array.from(clip.bytes));
+    test.skip(!native.ok, `the native audio decoder cannot read this fixture: ${native.error}`);
+    expect(native.channels, 'the recorded fixture has no audio channels').toBeGreaterThan(0);
+    expect(Math.abs(native.duration - 2), 'the recorded fixture has the wrong audio duration').toBeLessThan(0.6);
 
-    // An engine that cannot decode this clip could not have got the audio out
-    // of it either, so there is nothing here for the tool to be wrong about.
-    // Asked by watching which way the page went rather than by naming a
-    // browser: it either reads the file or says it cannot.
-    //
-    // Polled rather than `locator('#result, #error').first()`, which reads as
-    // "either of these" and means "whichever is first in the document" - and
-    // that is #error, sitting hidden at the top of the page while the result
-    // it was meant to be an alternative to appeared below it.
-    await expect
-      .poll(async () => (await page.locator('#result').isVisible())
-        || (await page.locator('#error').isVisible()), { timeout: 120_000 })
-      .toBe(true);
-    test.skip(
-      await page.locator('#error').isVisible(),
-      'this engine will not decode the recorded clip, so there is no audio '
-      + 'in it for the tool to find',
-    );
-
+    await load(page, { name: 'clip.mp4', mimeType: clip.mimeType, buffer: clip.bytes });
     await expect(page.locator('#src-length')).not.toHaveText('—');
 
     const wav = await saved(page);

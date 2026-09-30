@@ -1,3 +1,5 @@
+import { encodePng } from '../../lib/image-fixtures';
+import { encodeWebp, webpChunks } from '../../lib/webp';
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import {
@@ -43,7 +45,7 @@ async function fixture(page: Page): Promise<Buffer> {
 async function load(page: Page, bytes: Buffer, name = 'holiday.jpg'): Promise<void> {
   await page.locator('#file-input').setInputFiles({
     name,
-    mimeType: 'image/jpeg',
+    mimeType: name.endsWith('.png') ? 'image/png' : name.endsWith('.webp') ? 'image/webp' : 'image/jpeg',
     buffer: bytes,
   });
   await expect(page.locator('#file-list li')).toHaveCount(1);
@@ -218,3 +220,47 @@ test.describe('exif-editor: the promise', () => {
     await expect(page.locator('#strip-all')).toBeDisabled();
   });
 });
+
+
+/** Compare compressed image payloads independently of the tool's EXIF reader. */
+function pixelPayload(bytes: Buffer, kind: string): Buffer {
+  if (kind === 'jpg') return scan(bytes);
+  if (kind === 'webp') return Buffer.concat(webpChunks(bytes)
+    .filter((chunk) => ['VP8 ', 'VP8L', 'ALPH'].includes(chunk.type))
+    .map((chunk) => bytes.subarray(chunk.at, chunk.at + chunk.size)));
+  const imageChunks: Buffer[] = [];
+  for (let at = 8; at + 12 <= bytes.length;) {
+    const size = bytes.readUInt32BE(at);
+    if (bytes.subarray(at + 4, at + 8).toString() === 'IDAT') imageChunks.push(bytes.subarray(at + 8, at + 8 + size));
+    at += size + 12;
+  }
+  return Buffer.concat(imageChunks);
+}
+
+for (const kind of ['jpg', 'png', 'webp']) {
+  test(`exif-editor: editing and reopening ${kind} preserves the tag and image bytes`, async ({ page }) => {
+    await page.goto(URL_PATH);
+    const original = kind === 'jpg' ? await realJpeg(page, 64, 48, 38)
+      : kind === 'png' ? encodePng(64, 48, (x, y) => [x * 3, y * 4, 80])
+        // The independent lossless writer supports two values per channel;
+        // quadrants retain a varying picture for the byte-preservation oracle.
+        : encodeWebp(64, 48, (x, y) => [x < 32 ? 35 : 205, y < 24 ? 60 : 180, 80, 255]);
+    const name = `editing.${kind}`;
+    await load(page, original, name);
+    await page.locator('#add-tag > summary').click();
+    await page.locator('#add-tag-select').selectOption('ifd0:270');
+    await page.locator('#add-tag-value').fill('Original QA description');
+    await page.locator('#add-tag-go').click();
+    const field = page.locator('#tag-groups tr').filter({ hasText: '0x010e' }).locator('input.tag-input');
+    await field.fill('Edited QA description & punctuation');
+    await field.blur();
+    const saved = await download(page, '#save-edits');
+    expect(pixelPayload(saved, kind).length).toBeGreaterThan(0);
+    expect(pixelPayload(saved, kind)).toEqual(pixelPayload(original, kind));
+    await page.locator('#clear-all').click();
+    await load(page, saved, name);
+    await expect(page.locator('#tag-groups tr').filter({ hasText: '0x010e' }).locator('input.tag-input'))
+      .toHaveValue('Edited QA description & punctuation');
+    await expect(page.locator('#edit-error')).toBeHidden();
+  });
+}

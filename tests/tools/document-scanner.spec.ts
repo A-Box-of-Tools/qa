@@ -1,7 +1,9 @@
+import { decodedPixels, pixelAt } from '../../lib/browser-image';
+import { zipEntries } from '../../lib/zip';
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { encodePng, type Rgb } from '../../lib/image-fixtures';
-import { readPages } from '../../lib/pdf';
+import { readPages, readImages } from '../../lib/pdf';
 import { quiet } from '../../lib/engine';
 
 /**
@@ -195,3 +197,53 @@ test.describe('document-scanner: the promise', () => {
     }
   });
 });
+
+
+for (const output of ['pdf', 'images']) {
+  test(`document-scanner: ${output} export keeps its original pages while the strip is edited`, async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(URL_PATH);
+    const colours: Rgb[] = [[220, 30, 30], [30, 210, 30], [30, 30, 220]];
+    await page.locator('#file-input').setInputFiles(colours.map((colour, at) => ({
+      name: `colour-${at}.png`, mimeType: 'image/png', buffer: encodePng(160, 120, () => colour),
+    })));
+    await expect(page.locator('#page-strip li')).toHaveCount(3);
+    await page.locator('input[name="mode"][value="photo"]').check();
+    // Suspend the first actual image encoder, so edits happen after the export
+    // starts regardless of how quickly this browser would otherwise finish it.
+    await page.evaluate(() => {
+      const original = HTMLCanvasElement.prototype.toBlob;
+      HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+        HTMLCanvasElement.prototype.toBlob = original;
+        original.call(this, (blob) => {
+          (window as any).releaseExport = () => callback(blob);
+          (window as any).exportHeld = true;
+        }, type, quality);
+      };
+    });
+    await page.locator(output === 'pdf' ? '#save-pdf' : '#save-images').click();
+    await expect.poll(() => page.evaluate(() => Boolean((window as any).exportHeld))).toBe(true);
+    await page.locator('#page-strip li').first().locator('.tile-actions button').nth(1).click();
+    await page.locator('#page-strip li').last().locator('.tile-actions button').last().click();
+    await page.locator('#clear-all').click();
+    await page.evaluate(() => (window as any).releaseExport());
+    await expect(page.locator('#busy')).toBeHidden({ timeout: 90_000 });
+    await expect(page.locator('#result')).toBeVisible();
+    await expect(page.locator('#load-error')).toBeHidden();
+    const pending = page.waitForEvent('download');
+    await page.locator('#download').click();
+    const saved = await pending;
+    const bytes = fs.readFileSync((await saved.path())!);
+    const pictures = output === 'pdf' ? readImages(bytes).map((image) => image.data)
+      : zipEntries(bytes).map((entry) => entry.data);
+    expect(pictures).toHaveLength(3);
+    if (output === 'pdf') expect(readPages(bytes)).toHaveLength(3);
+    for (const [at, picture] of pictures.entries()) {
+      const decoded = await decodedPixels(page, picture, 'image/jpeg');
+      expect(decoded.error).toBeUndefined();
+      const middle = pixelAt(decoded, Math.floor(decoded.width / 2), Math.floor(decoded.height / 2));
+      expect(middle[at], `page ${at + 1} lost its original colour/order`).toBeGreaterThan(170);
+      expect(middle[(at + 1) % 3]).toBeLessThan(80);
+    }
+  });
+}

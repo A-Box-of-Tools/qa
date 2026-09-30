@@ -1,10 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { recordVideo , skipWithoutWebCodecs } from '../../lib/browser-video';
-import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
+import { canDecodeVideo, recordVideo, skipWithoutWebCodecs } from '../../lib/browser-video';
+import { boxesIn, findBox, findBoxes, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
-import { decodedSize } from '../../lib/browser-image';
-import { quiet } from '../../lib/engine';
+import { decodedPixels, decodedSize, pixelAt } from '../../lib/browser-image';
+import { ask, onAPageOfItsOwn, quiet } from '../../lib/engine';
+import { canEncodeH264 } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the video tools: grabbing a frame, cropping,
@@ -123,15 +124,30 @@ async function scrubTo(page: Page, fraction: number): Promise<void> {
   await expect(page.locator('#stage-busy')).toBeHidden({ timeout: 30_000 });
 }
 
-// Every test in this file hands a clip to a tool and expects something back.
-// An engine without WebCodecs cannot decode a frame at all - Playwright's
-// WebKit has no VideoDecoder, VideoEncoder, MediaRecorder or OffscreenCanvas -
-// and the tools say so and stop, which is the right answer and leaves nothing
-// here to measure. The refusal itself is asserted in video.spec.ts.
-test.beforeEach(async ({ page }) => {
+// Keep the older WebCodecs scenarios behind their existing prerequisite.
+// Copy and its refusal guard need only native playback for their pixel oracle:
+// probe the cached fixture before loading it into the app, so an app failure
+// cannot be mistaken for a missing decoder.
+test.beforeEach(async ({ page }, testInfo) => {
   await page.goto('/');
+  if (testInfo.tags.includes('@native-playback')) {
+    const { bytes } = await recordVideo(page, {
+      width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
+    });
+    test.skip(!isMp4(bytes), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
+    // The hub forbids blob media in its CSP. A native capability probe must
+    // not inherit that page policy or mistake it for an unsupported decoder.
+    const probe = await page.context().newPage();
+    try {
+      test.skip(!await canDecodeVideo(probe, bytes),
+        'this engine cannot decode the fixture for the independent native playback oracle');
+    } finally {
+      await probe.close();
+    }
+    return;
+  }
   test.skip(await skipWithoutWebCodecs(page),
-    'this engine has no WebCodecs, so no video tool can decode anything');
+    'this scenario requires the WebCodecs VideoDecoder API');
 });
 
 test.describe('the fixture itself', () => {
@@ -199,6 +215,69 @@ test.describe('grab-frame: a still out of a film', () => {
   });
 });
 
+/** Compare the saved crop with source coordinates, using fresh native players. */
+async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
+  return page.evaluate(async ({ source, output }) => {
+    const read = async (encoded: string) => {
+      const bytes = Uint8Array.from(atob(encoded), (value) => value.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      const wait = (event: 'loadeddata' | 'seeked', action: () => void) => new Promise<void>((resolve, reject) => {
+        const clean = () => {
+          clearTimeout(timer);
+          video.removeEventListener(event, done);
+          video.removeEventListener('error', failed);
+        };
+        const done = () => { clean(); resolve(); };
+        const failed = () => { clean(); reject(new Error(`video failed before ${event}`)); };
+        const timer = setTimeout(() => { clean(); reject(new Error(`video never reached ${event}`)); }, 15_000);
+        video.addEventListener(event, done);
+        video.addEventListener('error', failed);
+        action();
+      });
+      try {
+        await wait('loadeddata', () => { video.src = url; });
+        await wait('seeked', () => { video.currentTime = 0.75; });
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d', { willReadFrequently: true })!;
+        context.drawImage(video, 0, 0);
+        return { width: canvas.width, height: canvas.height,
+          pixels: context.getImageData(0, 0, canvas.width, canvas.height).data };
+      } finally {
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(url);
+      }
+    };
+    const before = await read(source);
+    const after = await read(output);
+    let crop = 0;
+    let scaled = 0;
+    let samples = 0;
+    // The requested crop is the top-left 160 x 120. The moving black bar
+    // lies inside it at this instant but would land at half the x coordinate
+    // if the whole 320 x 240 picture were merely scaled down.
+    for (let y = 12; y < 108; y += 8) {
+      for (let x = 4; x < 156; x += 4) {
+        const actual = (y * after.width + x) * 4;
+        const wanted = (y * before.width + x) * 4;
+        const wrong = (Math.floor(y * before.height / after.height) * before.width
+          + Math.floor(x * before.width / after.width)) * 4;
+        for (let channel = 0; channel < 3; channel += 1) {
+          crop += Math.abs(after.pixels[actual + channel] - before.pixels[wanted + channel]);
+          scaled += Math.abs(after.pixels[actual + channel] - before.pixels[wrong + channel]);
+          samples += 1;
+        }
+      }
+    }
+    return { crop: crop / samples, scaled: scaled / samples };
+  }, { source: source.toString('base64'), output: output.toString('base64') });
+}
+
 test.describe('crop-video: keeping part of the picture', () => {
   test('the cropped video is the size of the crop, not a rescale of the whole', async ({ page }) => {
     // The failure worth catching: a tool that scaled the whole frame down to
@@ -206,12 +285,15 @@ test.describe('crop-video: keeping part of the picture', () => {
     // is identical either way, so the size alone cannot tell them apart -
     // which is why the still below is compared as well.
     test.setTimeout(240_000);
-    await loadClip(page, CROP);
+    const original = await loadClip(page, CROP);
+    test.skip(!await canDecodeVideo(page, original),
+      'this engine cannot decode the fixture for the independent pixel oracle');
 
     await page.locator('#crop-x').fill('0');
     await page.locator('#crop-y').fill('0');
     await page.locator('#crop-w').fill('160');
     await page.locator('#crop-h').fill('120');
+    await page.locator('#crop-h').blur();
 
     await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
     await page.locator('#export').click();
@@ -224,6 +306,10 @@ test.describe('crop-video: keeping part of the picture', () => {
     expect(track).not.toBeNull();
     expect(track!.width).toBe(160);
     expect(track!.height).toBe(120);
+    const error = await cropPixelError(page, original, bytes);
+    expect(error.crop, 'saved pixels must match the selected source coordinates').toBeLessThan(12);
+    expect(error.scaled - error.crop, 'the output must distinguish a crop from whole-frame rescaling')
+      .toBeGreaterThan(8);
   });
 
   test('the cropped video still plays, and for about as long', async ({ page }) => {
@@ -262,7 +348,394 @@ test.describe('crop-video: keeping part of the picture', () => {
   });
 });
 
+/** A typed commit replaces the row, so locators are resolved after each blur. */
+async function typeVideoPart(page: Page, start: string, end: string): Promise<void> {
+  await page.locator('#add-segment').click();
+  const row = page.locator('#segment-rows tr').last();
+  await row.locator('.segment-time').nth(0).fill(start);
+  await row.locator('.segment-time').nth(0).blur();
+  await row.locator('.segment-time').nth(1).fill(end);
+  await row.locator('.segment-time').nth(1).blur();
+}
+
+/**
+ * Decode the downloaded bytes in a fresh native video element. Nothing here
+ * imports the trimmer or reads its result preview. Three separated pixels at
+ * the same height let the median ignore the fixture's narrow moving black bar.
+ */
+async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
+  return page.evaluate(async ({ data, times }) => {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: 'video/mp4' }));
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    const waitFor = (event: 'loadeddata' | 'seeked', action: () => void) =>
+      new Promise<void>((resolve, reject) => {
+        const clean = () => {
+          clearTimeout(timer);
+          video.removeEventListener(event, done);
+          video.removeEventListener('error', failed);
+        };
+        const done = () => { clean(); resolve(); };
+        const failed = () => { clean(); reject(new Error(`video failed before ${event}`)); };
+        const timer = setTimeout(() => { clean(); reject(new Error(`video never reached ${event}`)); }, 15_000);
+        video.addEventListener(event, done);
+        video.addEventListener('error', failed);
+        action();
+      });
+    try {
+      await waitFor('loadeddata', () => { video.src = url; });
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d', { willReadFrequently: true })!;
+      const colours: number[][] = [];
+      for (const time of times) {
+        if (time >= video.duration) throw new Error('the downloaded video ended before a requested frame');
+        await waitFor('seeked', () => { video.currentTime = time; });
+        context.drawImage(video, 0, 0);
+        const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
+          Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
+        ).data);
+        colours.push([0, 1, 2].map((channel) =>
+          pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]));
+      }
+      return { duration: video.duration, width: video.videoWidth, height: video.videoHeight, colours };
+    } finally {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(url);
+    }
+  }, { data: Array.from(bytes), times });
+}
+
+/**
+ * Native seeking across a multi-entry edit list is approximate in Chromium
+ * (also documented by the tool). Observe real sequentially presented frames
+ * instead, retaining their media timestamps when the runner misses a callback.
+ */
+async function playedVideoFrames(page: Page, bytes: Buffer, targets: number[]) {
+  return page.evaluate(async ({ data, targets }) => {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: 'video/mp4' }));
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.playbackRate = 0.5;
+    // A presented-frame callback needs a rendered video, not a hidden scratch
+    // element. This temporary player is removed even if decoding fails.
+    video.style.cssText = 'position:fixed;top:0;left:0;width:320px;height:240px;z-index:2147483647';
+    document.body.append(video);
+    let callback = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await new Promise<{ duration: number; frames: Array<{ time: number; colour: number[] }> }>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('sequential video sampling did not finish within 20 seconds')), 20_000);
+        video.onerror = () => reject(new Error('the downloaded video failed during sequential playback'));
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d', { willReadFrequently: true })!;
+        const frames: Array<{ time: number; colour: number[] }> = [];
+        const frame = (_: number, metadata: VideoFrameCallbackMetadata) => {
+          const target = targets[frames.length];
+          if (metadata.mediaTime >= target) {
+            // Sampling a later interval would stop checking this one at all.
+            if (metadata.mediaTime - target >= 0.25) {
+              reject(new Error(`no presented frame observed near ${target}s; first was ${metadata.mediaTime}s`));
+              return;
+            }
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0);
+            const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
+              Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
+            ).data);
+            frames.push({ time: metadata.mediaTime, colour: [0, 1, 2].map((channel) =>
+              pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]) });
+            if (frames.length === targets.length) {
+              resolve({ duration: video.duration, frames });
+              return;
+            }
+          }
+          callback = video.requestVideoFrameCallback(frame);
+        };
+        video.onended = () => reject(new Error('the downloaded video ended before every retained interval was sampled'));
+        video.onloadeddata = () => {
+          callback = video.requestVideoFrameCallback(frame);
+          void video.play().catch(reject);
+        };
+        video.src = url;
+      });
+    } finally {
+      clearTimeout(timer);
+      video.cancelVideoFrameCallback(callback);
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.remove();
+      URL.revokeObjectURL(url);
+    }
+  }, { data: Array.from(bytes), targets });
+}
+
+interface EncodedVideoSample { pts: number; duration: number; data: Buffer }
+
+/** Read the fixture/output sample tables here, independently of the tool. */
+function encodedVideoSamples(bytes: Buffer): { timescale: number; samples: EncodedVideoSample[] } {
+  const track = findBoxes(bytes, 'trak').find((box) => {
+    const handler = findBox(bytes, 'hdlr', box.dataStart, box.end)!;
+    return bytes.toString('latin1', handler.dataStart + 8, handler.dataStart + 12) === 'vide';
+  })!;
+  const box = (type: string) => findBox(bytes, type, track.dataStart, track.end)!;
+  const mdhd = box('mdhd').dataStart;
+  const timescale = bytes.readUInt32BE(mdhd + (bytes[mdhd] === 1 ? 20 : 12));
+  const samples: EncodedVideoSample[] = [];
+  const fragments = boxesIn(bytes).filter((entry) => entry.type === 'moof');
+  if (fragments.length) {
+    // The silent MediaRecorder fixture has one track. trun carries each sample
+    // size and duration, so no encoded payload or timing comes from site code.
+    expect(readMp4(bytes).tracks).toHaveLength(1);
+    for (const fragment of fragments) {
+      const tfhd = findBox(bytes, 'tfhd', fragment.dataStart, fragment.end)!.dataStart;
+      const flags = bytes.readUInt32BE(tfhd) & 0xffffff;
+      let field = tfhd + 8;
+      let base = fragment.start;
+      if (flags & 1) { base = Number(bytes.readBigUInt64BE(field)); field += 8; }
+      if (flags & 2) field += 4;
+      const defaultDuration = flags & 8 ? bytes.readUInt32BE(field) : 0;
+      if (flags & 8) field += 4;
+      const defaultSize = flags & 16 ? bytes.readUInt32BE(field) : 0;
+      const tfdt = findBox(bytes, 'tfdt', fragment.dataStart, fragment.end)!.dataStart;
+      let dts = bytes[tfdt] === 1 ? Number(bytes.readBigUInt64BE(tfdt + 4)) : bytes.readUInt32BE(tfdt + 4);
+      let offset = 0;
+      for (const run of findBoxes(bytes, 'trun', fragment.dataStart, fragment.end)) {
+        const at = run.dataStart;
+        const runFlags = bytes.readUInt32BE(at) & 0xffffff;
+        const count = bytes.readUInt32BE(at + 4);
+        let cursor = at + 8;
+        if (runFlags & 1) { offset = base + bytes.readInt32BE(cursor); cursor += 4; }
+        if (runFlags & 4) cursor += 4;
+        for (let i = 0; i < count; i += 1) {
+          const duration = runFlags & 0x100 ? bytes.readUInt32BE(cursor) : defaultDuration;
+          if (runFlags & 0x100) cursor += 4;
+          const size = runFlags & 0x200 ? bytes.readUInt32BE(cursor) : defaultSize;
+          if (runFlags & 0x200) cursor += 4;
+          if (runFlags & 0x400) cursor += 4;
+          const composition = runFlags & 0x800
+            ? (bytes[at] === 1 ? bytes.readInt32BE(cursor) : bytes.readUInt32BE(cursor)) : 0;
+          if (runFlags & 0x800) cursor += 4;
+          expect(duration).toBeGreaterThan(0);
+          expect(size).toBeGreaterThan(0);
+          samples.push({ pts: dts + composition, duration, data: bytes.subarray(offset, offset + size) });
+          dts += duration;
+          offset += size;
+        }
+      }
+    }
+    return { timescale, samples };
+  }
+  const expandRuns = (type: string): number[] => {
+    const table = findBox(bytes, type, track.dataStart, track.end);
+    if (!table) return [];
+    const at = table.dataStart;
+    const result: number[] = [];
+    for (let i = 0; i < bytes.readUInt32BE(at + 4); i += 1) {
+      const count = bytes.readUInt32BE(at + 8 + i * 8);
+      const value = type === 'ctts' && bytes[at] === 1
+        ? bytes.readInt32BE(at + 12 + i * 8) : bytes.readUInt32BE(at + 12 + i * 8);
+      result.push(...Array<number>(count).fill(value));
+    }
+    return result;
+  };
+  const durations = expandRuns('stts');
+  const compositions = expandRuns('ctts');
+  const stsz = box('stsz').dataStart;
+  const fixed = bytes.readUInt32BE(stsz + 4);
+  const stsc = box('stsc').dataStart;
+  const runs = Array.from({ length: bytes.readUInt32BE(stsc + 4) }, (_, i) => ({
+    first: bytes.readUInt32BE(stsc + 8 + i * 12), count: bytes.readUInt32BE(stsc + 12 + i * 12),
+  }));
+  const stco = box('stco').dataStart;
+  let sample = 0;
+  let dts = 0;
+  for (let chunk = 1; chunk <= bytes.readUInt32BE(stco + 4); chunk += 1) {
+    let offset = bytes.readUInt32BE(stco + 4 + chunk * 4);
+    const run = [...runs].reverse().find((entry) => entry.first <= chunk)!;
+    for (let i = 0; i < run.count; i += 1) {
+      const size = fixed || bytes.readUInt32BE(stsz + 12 + sample * 4);
+      samples.push({ pts: dts + (compositions[sample] ?? 0), duration: durations[sample], data: bytes.subarray(offset, offset + size) });
+      dts += durations[sample];
+      offset += size;
+      sample += 1;
+    }
+  }
+  expect(samples).toHaveLength(bytes.readUInt32BE(stsz + 8));
+  return { timescale, samples };
+}
+
+/** Probe the fixture's actual H.264 configuration without consulting the tool. */
+async function canDecodeFixtureWebCodecs(page: Page, bytes: Buffer): Promise<boolean> {
+  const stsd = findBox(bytes, 'stsd')!;
+  const entry = boxesIn(bytes, stsd.dataStart + 8, stsd.end)[0];
+  expect(['avc1', 'avc3']).toContain(entry.type);
+  const avcC = boxesIn(bytes, entry.dataStart + 78, entry.end).find((box) => box.type === 'avcC')!;
+  expect(avcC, 'the recording fixture must carry its H.264 decoder configuration').toBeDefined();
+  const description = bytes.subarray(avcC.dataStart, avcC.end);
+  const codec = `${entry.type}.${description.subarray(1, 4).toString('hex')}`;
+  const width = bytes.readUInt16BE(entry.dataStart + 24);
+  const height = bytes.readUInt16BE(entry.dataStart + 26);
+  const first = encodedVideoSamples(bytes).samples[0].data;
+  return ask(page, `decode-webcodecs:${codec}:${width}:${height}:${description.toString('hex')}`,
+    () => onAPageOfItsOwn(page, (own) => own.evaluate(async ({ codec, width, height, description, first }) => {
+      if (typeof VideoDecoder !== 'function' || typeof EncodedVideoChunk !== 'function') return false;
+      const config = { codec, codedWidth: width, codedHeight: height, description: new Uint8Array(description) };
+      let decoder: VideoDecoder | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (!(await VideoDecoder.isConfigSupported(config)).supported) return false;
+        let frames = 0;
+        let failed = false;
+        decoder = new VideoDecoder({ output: (frame) => { frames += 1; frame.close(); }, error: () => { failed = true; } });
+        decoder.configure(config);
+        decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, data: new Uint8Array(first) }));
+        const flushed = await Promise.race([
+          decoder.flush().then(() => true),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 5_000); }),
+        ]);
+        return flushed && !failed && frames > 0;
+      } catch { return false; }
+      finally {
+        clearTimeout(timer);
+        if (decoder && decoder.state !== 'closed') decoder.close();
+      }
+    }, { codec, width, height, description: Array.from(description), first: Array.from(first) })), false);
+}
+
+function expectCopiedIntervals(original: Buffer, saved: Buffer, ranges: Array<[number, number]>): void {
+  const source = encodedVideoSamples(original);
+  const output = encodedVideoSamples(saved);
+  const elst = findBox(saved, 'elst')!.dataStart;
+  expect(saved[elst], 'this writer emits version-zero edit lists').toBe(0);
+  expect(saved.readUInt32BE(elst + 4)).toBe(ranges.length);
+  const identities = new Map<string, EncodedVideoSample[]>();
+  for (const sample of source.samples) {
+    const key = sample.data.toString('base64');
+    identities.set(key, [...(identities.get(key) ?? []), sample]);
+  }
+  for (const [index, [start, end]] of ranges.entries()) {
+    const entry = elst + 8 + index * 12;
+    const duration = saved.readUInt32BE(entry) / 1000;
+    const from = saved.readInt32BE(entry + 4) / output.timescale;
+    expect(saved.readUInt32BE(entry + 8), 'edit rate is one').toBe(0x10000);
+    expect(Math.abs(duration - (end - start))).toBeLessThanOrEqual(0.001);
+    const visible = output.samples.filter((sample) =>
+      (sample.pts + sample.duration) / output.timescale > from && sample.pts / output.timescale < from + duration);
+    expect(visible.length, `interval ${index} has encoded pictures`).toBeGreaterThan(1);
+    for (const sample of visible) {
+      const expectedTime = start + sample.pts / output.timescale - from;
+      const matches = identities.get(sample.data.toString('base64')) ?? [];
+      expect(matches.some((input) => Math.abs(input.pts / source.timescale - expectedTime)
+        < 2 / Math.min(source.timescale, output.timescale)),
+      `interval ${index} contains the original encoded frame at ${expectedTime}s`).toBe(true);
+    }
+  }
+}
+
+function colourDistance(a: number[], b: number[]): number {
+  return Math.max(...a.map((value, channel) => Math.abs(value - b[channel])));
+}
+
+async function saveCopiedVideo(page: Page): Promise<Buffer> {
+  await expect(page.locator('#method option[value="copy"]')).toBeEnabled();
+  await page.locator('#method').selectOption('copy');
+  await expect(page.locator('#export')).toBeEnabled();
+  await page.locator('#export').click();
+  await expect(page.locator('#download')).toBeVisible({ timeout: 120_000 });
+  return save(page, () => page.locator('#download').click());
+}
+
 test.describe('trim-video: keeping part of the time', () => {
+  test('the downloaded copy preserves reordered parts when only the first needs preroll', { tag: '@native-playback' }, async ({ page }) => {
+    test.setTimeout(240_000);
+    const original = await loadClip(page, TRIM, '#section-card');
+    expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
+      'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
+    await typeVideoPart(page, '0:00.000', '0:00.500');
+    await typeVideoPart(page, '0:01.750', '0:02.500');
+    await page.locator('#segment-rows tr').nth(1).getByRole('button', { name: 'Move up', exact: true }).click();
+    await expect(page.locator('#segment-rows tr').first().locator('.segment-time').first())
+      .toHaveValue('0:01.750');
+    const bytes = await saveCopiedVideo(page);
+
+    // mdhd can include keyframe pre-roll. mvhd and a native player's visible
+    // duration must describe only the .75 + .5 seconds the reader requested.
+    const file = readMp4(bytes);
+    expect(file.seconds).toBeCloseTo(1.25, 2);
+    expect(videoTrack(file)?.width).toBe(WIDTH);
+    expect(videoTrack(file)?.height).toBe(HEIGHT);
+    test.skip(!await page.evaluate(() => 'requestVideoFrameCallback' in HTMLVideoElement.prototype),
+      'this engine cannot report timestamps of sequentially presented frames');
+    const actual = await playedVideoFrames(page, bytes, [0.20, 0.55, 0.95]);
+    const sourceTimes = actual.frames.map(({ time }) => time < 0.75 ? time + 1.75 : time - 0.75);
+    const expected = await savedVideoFrames(page, original, sourceTimes);
+    expect(actual.duration).toBeCloseTo(1.25, 1);
+    expectCopiedIntervals(original, bytes, [[1.75, 2.5], [0, 0.5]]);
+    expect(colourDistance(expected.colours[0], expected.colours[2]),
+      'the fixture must distinguish the later and earlier parts').toBeGreaterThan(80);
+    for (let i = 0; i < actual.frames.length; i += 1) {
+      expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
+        `saved Copy frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
+    }
+  });
+
+  test('cut mode refuses internal Copy preroll and explicitly exports Exact with the requested timing', { tag: '@native-playback' }, async ({ page }) => {
+    test.setTimeout(240_000);
+    const original = await loadClip(page, TRIM, '#section-card');
+    expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
+      'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
+    await typeVideoPart(page, '0:00.500', '0:01.000');
+    await typeVideoPart(page, '0:01.500', '0:02.000');
+    await page.locator('input[name="mode"][value="cut"]').check();
+    await expect(page.locator('#method option[value="copy"]')).toBeDisabled();
+    await expect(page.locator('#method')).toHaveValue('copy');
+    await expect(page.locator('#export')).toBeDisabled();
+    const exactLabel = (await page.locator('#method option[value="exact"]').textContent())!.trim();
+    await expect(page.locator('#copy-note')).toHaveText(
+      `These sections cannot be copied reliably in browsers. Choose ${exactLabel} to preserve their timing.`);
+    await expect(page.locator('#copy-note')).toBeVisible();
+    test.skip(!await canDecodeFixtureWebCodecs(page, original),
+      'an independent native WebCodecs decoder cannot decode the fixture');
+    test.skip(!await canEncodeH264(page),
+      'an independent native WebCodecs encoder does not support H.264');
+    await expect(page.locator('#method option[value="exact"]')).toBeEnabled();
+    await page.locator('#method').selectOption('exact');
+    await expect(page.locator('#export')).toBeEnabled();
+    await page.locator('#export').click();
+    await expect(page.locator('#download')).toBeVisible({ timeout: 120_000 });
+    const bytes = await save(page, () => page.locator('#download').click());
+
+    test.skip(!await page.evaluate(() => 'requestVideoFrameCallback' in HTMLVideoElement.prototype),
+      'this engine cannot report timestamps of sequentially presented frames');
+    const actual = await playedVideoFrames(page, bytes, [0.20, 0.70, 1.20]);
+    const sourceTimes = actual.frames.map(({ time }) => time < 0.5 ? time : time < 1 ? time + 0.5 : time + 1);
+    const expected = await savedVideoFrames(page, original, sourceTimes);
+    const seconds = expected.duration - 1;
+    expect(Math.abs(readMp4(bytes).seconds - seconds)).toBeLessThan(0.075);
+    expect(Math.abs(actual.duration - seconds)).toBeLessThan(0.075);
+    const written = readMp4(bytes);
+    expect(videoTrack(written)?.width).toBe(WIDTH);
+    expect(videoTrack(written)?.height).toBe(HEIGHT);
+    expect(findBox(bytes, 'elst'), 'silent Exact output contains no hidden video preroll').toBeNull();
+    const pictures = encodedVideoSamples(bytes);
+    expect(pictures.samples.length).toBeGreaterThan(25);
+    expect(pictures.samples[0].pts).toBe(0);
+    expect(pictures.samples.every((sample) => sample.pts / pictures.timescale < seconds + 0.075)).toBe(true);
+    for (let i = 0; i < actual.frames.length; i += 1) {
+      expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
+        `saved frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
+    }
+  });
+
   test('the tool reads the clip and reports its real length', async ({ page }) => {
     test.setTimeout(180_000);
     await loadClip(page, TRIM, '#section-card');
@@ -320,39 +793,40 @@ test.describe('trim-video: keeping part of the time', () => {
 });
 
 test.describe('video-to-gif: a clip as an animation', () => {
-  test('the GIF covers the stretch that was asked for, at the size asked for', async ({ page }) => {
-    // Verified with lib/gif.ts rather than by looking at it: a GIF made from
-    // the wrong seconds of the film still animates, and a GIF whose frame
-    // delays are wrong still plays.
+  test('the GIF covers the chosen second at 10 fps and a width of 240 pixels', async ({ page }) => {
     test.setTimeout(300_000);
-    await loadClip(page, TO_GIF);
+    const original = await loadClip(page, TO_GIF);
+    test.skip(!await canDecodeVideo(page, original),
+      'this engine cannot decode the fixture for the independent first-frame oracle');
+    await page.locator('#start-time').fill('0:00.500');
+    await page.locator('#start-time').blur();
+    await page.locator('#end-time').fill('0:01.500');
+    await page.locator('#end-time').blur();
+    await page.locator('#width').selectOption('240');
+    await page.locator('#fps').selectOption('10');
 
     await expect(page.locator('#export')).toBeEnabled({ timeout: 60_000 });
     await page.locator('#export').click();
     await expect(page.locator('#download')).toBeVisible({ timeout: 180_000 });
-
     const bytes = await save(page, () => page.locator('#download').click());
     const gif = readGif(bytes);
-
-    expect(gif.version).toMatch(/^GIF8/);
-    expect(gif.frames.length, 'a GIF of a three-second clip should have several frames')
-      .toBeGreaterThan(2);
-
-    // The canvas is a sensible scaling of a 320 x 240 source, not zero and not
-    // the whole film's pixel count by accident.
-    expect(gif.width).toBeGreaterThan(0);
-    expect(gif.height).toBeGreaterThan(0);
-    expect(gif.width / gif.height).toBeCloseTo(WIDTH / HEIGHT, 1);
-
-    // Every frame carries a delay; a GIF with none plays as fast as the
-    // renderer can manage, which is the usual way this goes wrong.
-    for (const [index, frame] of gif.frames.entries()) {
-      expect(frame.delayMs, `frame ${index} has no delay`).toBeGreaterThan(0);
-    }
-
+    expect([gif.width, gif.height]).toEqual([240, 180]);
+    // A delayed fixture capture can repeat a sampled picture, which GIF may
+    // coalesce. It may not invent more than the ten requested instants or
+    // turn this changing one-second section into a nearly static image.
+    expect(gif.frames.length).toBeGreaterThanOrEqual(8);
+    expect(gif.frames.length).toBeLessThanOrEqual(10);
+    expect(gif.frames.every((frame) => frame.delayMs >= 100)).toBe(true);
     const total = gif.frames.reduce((sum, frame) => sum + frame.delayMs, 0);
-    expect(total, 'the animation is nothing like the length of the clip')
-      .toBeGreaterThan((SECONDS - 1.5) * 1000);
+    expect(Math.abs(total - 1000), 'the chosen section must last one second').toBeLessThanOrEqual(10);
+
+    const source = await savedVideoFrames(page, original, [0.5]);
+    const first = await decodedPixels(page, bytes, 'image/gif');
+    expect([first.width, first.height]).toEqual([240, 180]);
+    const pixels = [0.15, 0.5, 0.85].map((x) => pixelAt(first, Math.floor(x * first.width), Math.floor(first.height / 4)));
+    const colour = [0, 1, 2].map((channel) => pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]);
+    expect(colourDistance(colour, source.colours[0]), 'the GIF must start at the selected source moment')
+      .toBeLessThan(40);
   });
 
   test('the GIF it writes is one a browser will play', async ({ page }) => {

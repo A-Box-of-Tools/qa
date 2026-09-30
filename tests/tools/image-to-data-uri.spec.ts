@@ -166,3 +166,24 @@ test.describe('image-to-data-uri: the promise', () => {
     }
   });
 });
+
+
+test('image-to-data-uri: a generated suffix and an existing filename stay distinct in CSS', async ({ page }) => {
+  await page.goto(URL_PATH);
+  const originals = await Promise.all([1, 2, 3].map((seed) => realJpeg(page, 24, 16, seed)));
+  const names = ['logo.jpg', 'logo.jpeg', 'logo-2.jpg'];
+  await page.locator('#file-input').setInputFiles(originals.map((buffer, at) => ({ name: names[at], mimeType: 'image/jpeg', buffer })));
+  await expect(page.locator('#result-list li')).toHaveCount(3);
+  await page.locator('input[name="shape"][value="css-var"]').check();
+  const rows = page.locator('#result-list li');
+  const identifiers: string[] = [];
+  for (let at = 0; at < 3; at += 1) {
+    const row = rows.nth(at);
+    const more = row.locator('.show-all');
+    if (await more.count()) await more.click();
+    const text = await row.locator('.result-code').textContent() ?? '';
+    identifiers.push(text.match(/^--([^:]+):/)![1]);
+    expect(Buffer.from(extractUri(text).split(',')[1], 'base64')).toEqual(originals[at]);
+  }
+  expect(new Set(identifiers).size).toBe(3);
+});

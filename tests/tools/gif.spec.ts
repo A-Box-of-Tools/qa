@@ -42,6 +42,27 @@ async function save(page: Page, click: () => Promise<void>): Promise<Buffer> {
   return fs.readFileSync(path);
 }
 
+/**
+ * Pause the next export decode, leaving any pending preview redraw alone. A
+ * palette change schedules a preview after 150 ms, which can beat a click on a
+ * busy runner. The export reveals Cancel synchronously before its first decode.
+ */
+async function holdNextDecode(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const decode = window.createImageBitmap.bind(window);
+    const state = window as any;
+    state.__qaGifDecodeHeld = false;
+    window.createImageBitmap = (async (...args: Parameters<typeof createImageBitmap>) => {
+      const cancel = document.getElementById('cancel');
+      if (!cancel || cancel.hidden) return (decode as any)(...args);
+      window.createImageBitmap = decode;
+      state.__qaGifDecodeHeld = true;
+      await new Promise<void>((resolve) => { state.__qaReleaseGifDecode = resolve; });
+      return (decode as any)(...args);
+    }) as typeof createImageBitmap;
+  });
+}
+
 test.describe('gif-maker: the animation it writes', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(MAKER);
@@ -142,6 +163,49 @@ test.describe('gif-maker: the animation it writes', () => {
     const bytes = await makeGif(page);
     const size = await decodedSize(page, bytes, 'image/gif');
     expect(size.width, `the GIF did not decode: ${size.error ?? ''}`).toBeGreaterThan(0);
+  });
+
+  for (const palette of ['per-frame', 'shared']) {
+    test(`an in-flight ${palette} palette export keeps the original frames and delays`, async ({ page }) => {
+      await loadFrames(page, [[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
+      const delays = page.locator('#frame-list input[type="number"]');
+      for (let i = 0; i < 3; i++) {
+        await delays.nth(i).fill(String((i + 1) / 10));
+        await delays.nth(i).blur();
+      }
+      await page.locator('#palette-mode').selectOption(palette);
+      await holdNextDecode(page);
+      await page.locator('#export').click();
+      await expect.poll(() => page.evaluate(() =>
+        Boolean((window as any).__qaGifDecodeHeld))).toBe(true);
+      await page.locator('[data-sort="reverse"]').click();
+      await page.locator('#bulk-unit').selectOption('seconds');
+      await page.locator('#bulk-amount').fill('2');
+      await page.locator('#apply-bulk').click();
+      await page.locator('#clear-all').click();
+      await page.evaluate(() => (window as any).__qaReleaseGifDecode());
+      await expect(page.locator('#download')).toBeVisible();
+      const bytes = await save(page, () => page.locator('#download').click());
+      const gif = readGif(bytes);
+      expect(gif.frames.map((frame) => frame.delayMs)).toEqual([100, 200, 300]);
+      expect(gif.frames).toHaveLength(3);
+      expect((await decodedSize(page, bytes, 'image/gif')).width)
+        .toBe(160);
+    });
+  }
+
+  test('cancelling the final decode publishes nothing and a later export works', async ({ page }) => {
+    await loadFrames(page, [[255, 0, 0]]);
+    await holdNextDecode(page);
+    await page.locator('#export').click();
+    await expect.poll(() => page.evaluate(() =>
+      Boolean((window as any).__qaGifDecodeHeld))).toBe(true);
+    await page.locator('#cancel').click();
+    await page.evaluate(() => (window as any).__qaReleaseGifDecode());
+    await expect(page.locator('#cancel')).toBeHidden();
+    await expect(page.locator('#result')).toBeHidden();
+    await expect(page.locator('#error')).toBeHidden();
+    expect(readGif(await makeGif(page)).frames).toHaveLength(1);
   });
 
   test('the pictures never leave the page', async ({ page }) => {

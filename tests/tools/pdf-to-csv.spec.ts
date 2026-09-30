@@ -343,3 +343,83 @@ test.describe('pdf-to-csv: what it refuses', () => {
     ).toBeHidden();
   });
 });
+
+
+/** An independent PDF producer: each cell is a positioned Helvetica text run. */
+function tablePdf(tables: { columns: number[]; rows: string[][] }[]): Buffer {
+  const bodies: string[] = ['', '', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  const kids: number[] = [];
+  for (const table of tables) {
+    const contents = table.rows.flatMap((row, y) => row.map((cell, x) => cell === '' ? ''
+      : `BT /F1 10 Tf 1 0 0 1 ${table.columns[x]} ${750 - y * 20} Tm (${cell.replace(/[\\()]/g, '\\$&')}) Tj ET`))
+      .filter(Boolean).join('\n') + '\n';
+    const contentId = bodies.push(`<< /Length ${Buffer.byteLength(contents, 'latin1')} >>\nstream\n${contents}endstream`);
+    kids.push(bodies.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`));
+  }
+  bodies[0] = '<< /Type /Catalog /Pages 2 0 R >>';
+  bodies[1] = `<< /Type /Pages /Count ${kids.length} /Kids [${kids.map((id) => `${id} 0 R`).join(' ')}] >>`;
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const [at, body] of bodies.entries()) {
+    offsets.push(Buffer.byteLength(pdf, 'latin1'));
+    pdf += `${at + 1} 0 obj\n${body}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf, 'latin1');
+  pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, 'latin1');
+}
+
+async function openTablePdf(page: Page, bytes: Buffer): Promise<void> {
+  await page.goto(URL_PATH);
+  await page.locator('#file-input').setInputFiles({ name: 'independent-tables.pdf', mimeType: 'application/pdf', buffer: bytes });
+  await expect(page.locator('#result-card')).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('#load-error')).toBeHidden();
+}
+
+test('pdf-to-csv: nonstatement tables keep sparse cells and references in downloaded CSV', async ({ page }) => {
+  test.skip(!SHIPPED, NOT_YET);
+  await openTablePdf(page, tablePdf([
+    { columns: [40, 240, 350, 470], rows: [
+      ['Item', 'Quantity', 'Unit price', 'Total'],
+      ['Widget A', '2', '12.50', '25.00'],
+      ['Widget B', '1', '4.50', '4.50'],
+      ['Freight', '', '', '3.00'],
+      ['Total', '', '', '32.50'],
+    ] },
+    { columns: [50, 400], rows: [
+      ['Reference', 'Rate'], ['ABC-0002', '4.50%'], ['DEF-0007', '8.00%'],
+    ] },
+  ]));
+  const tables = tablesOf(await savedCsv(page));
+  expect(tables).toHaveLength(2);
+  const invoice = tables.find((table) => table.rows.some((row) => row.includes('Widget A')))!;
+  expect(invoice.rows.find((row) => row[0] === 'Widget A')).toEqual(['Widget A', '2', '12.50', '25.00']);
+  expect(invoice.rows.find((row) => row[0] === 'Freight')).toEqual(['Freight', '', '', '3.00']);
+  expect(invoice.rows.find((row) => row[0] === 'Total')).toEqual(['Total', '', '', '32.50']);
+  expect(tables.flatMap((table) => table.rows)).toContainEqual(['ABC-0002', '4.50%']);
+  await expect(page.locator('#table-field')).toBeVisible();
+});
+
+test('pdf-to-csv: sparse debit and credit cells preserve partial balance coverage and date choice', async ({ page }) => {
+  test.skip(!SHIPPED, NOT_YET);
+  await openTablePdf(page, tablePdf([{ columns: [30, 150, 330, 420, 510], rows: [
+    ['Date', 'Memo', 'Debit', 'Credit', 'Balance'],
+    ['01/04/2026', 'Opening', '0.00', '', '100.00'],
+    ['02/04/2026', 'Fee', '5.00', '', '95.00'],
+    ['03/04/2026', 'Refund', '', '10.00', '105.00'],
+    ['04/04/2026', 'Fee', '2.00', '', '103.00'],
+    ['05/04/2026', 'Fee', '4.00', '', '99.00'],
+    ['06/04/2026', 'Pending', '3.00', '', ''],
+  ] }]));
+  const rows = tablesOf(await savedCsv(page))[0].rows;
+  expect(rows).toHaveLength(6);
+  expect(rows[2]).toEqual(['2026-04-03', 'Refund', '', '10.00', '105.00']);
+  expect(rows[5]).toEqual(['2026-04-06', 'Pending', '3.00', '', '']);
+  await expect(page.locator('#check-line')).toContainText('4 comparisons');
+  await expect(page.locator('#check-line')).toContainText('Rows not checked: rows 1, 6');
+  await expect(page.locator('#check-line')).not.toHaveClass(/held/);
+  await page.locator('#date-order').selectOption('mdy');
+  expect(tablesOf(await savedCsv(page))[0].rows[0][0]).toBe('2026-01-04');
+});

@@ -392,3 +392,78 @@ test.describe('share-text: letting people in', () => {
     await context.close();
   });
 });
+
+
+test('share-text: private attachments arrive intact only after admission, including an empty file', async ({ browser }) => {
+  test.setTimeout(240_000);
+  const context = await browser.newContext();
+  let reader: Page | undefined;
+  try {
+    const sharer = await context.newPage();
+    const frames = captureRendezvous(sharer);
+    const link = await publish(sharer, { text: SECRET, code: codeWord(), priv: true });
+    const binary = Buffer.concat([Buffer.from('QA-attachment-content-never-in-rendezvous'),
+      Buffer.from(Array.from({ length: 200_000 }, (_, at) => at % 256))]);
+    const files = [{ name: 'résumé.bin', buffer: binary }, { name: 'empty.bin', buffer: Buffer.alloc(0) }];
+    await sharer.locator('#fileinput').setInputFiles(files.map((file) => ({ ...file, mimeType: 'application/octet-stream' })));
+    const opened = await readerFor(browser, link);
+    reader = opened.page;
+    await reader.locator('#connect').click();
+    await expect(reader.locator('#knockrow')).toBeVisible({ timeout: 60_000 });
+    await expect(reader.locator('#filelist button')).toHaveCount(0);
+    await reader.locator('#knock').fill('File QA');
+    await reader.locator('#send-knock').click();
+    await expect(sharer.locator('#requests')).toContainText('File QA');
+    await sharer.locator('#requests button').first().click();
+    await expect(reader.locator('#filelist .filerow')).toHaveCount(2, { timeout: 60_000 });
+    for (const file of files) {
+      const pending = reader.waitForEvent('download');
+      await reader.locator('#filelist .filerow').filter({ hasText: file.name }).locator('button').click();
+      const saved = await pending;
+      expect(saved.suggestedFilename()).toBe(file.name);
+      expect(fs.readFileSync((await saved.path())!)).toEqual(file.buffer);
+    }
+    const signaling = [...frames, ...opened.frames].join('\n');
+    expect(signaling.length).toBeGreaterThan(0);
+    expect(signaling).not.toContain('QA-attachment-content-never-in-rendezvous');
+  } finally {
+    await context.close();
+    await reader?.context().close();
+  }
+});
+
+test('share-text: stopping a share during a file read never offers a partial download', async ({ browser }) => {
+  test.setTimeout(240_000);
+  const context = await browser.newContext();
+  let reader: Page | undefined;
+  try {
+    const sharer = await context.newPage();
+    const link = await publish(sharer, { text: SECRET, code: codeWord(), priv: false });
+    await sharer.locator('#fileinput').setInputFiles({ name: 'interrupted.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(200_000, 81) });
+    const opened = await readerFor(browser, link);
+    reader = opened.page;
+    await reader.locator('#connect').click();
+    await expect(reader.locator('#filelist button')).toHaveCount(1, { timeout: 60_000 });
+    await sharer.evaluate(() => {
+      const original = Blob.prototype.arrayBuffer;
+      Blob.prototype.arrayBuffer = async function () {
+        Blob.prototype.arrayBuffer = original;
+        const bytes = await original.call(this);
+        await new Promise<void>((resolve) => { (window as any).releaseFileRead = resolve; (window as any).fileReadHeld = true; });
+        return bytes;
+      };
+    });
+    const downloads: string[] = [];
+    reader.on('download', (download) => downloads.push(download.suggestedFilename()));
+    await reader.locator('#filelist button').click();
+    await expect.poll(() => sharer.evaluate(() => Boolean((window as any).fileReadHeld))).toBe(true);
+    await sharer.locator('#stop').click();
+    await sharer.evaluate(() => (window as any).releaseFileRead());
+    await expect(reader.locator('#filelist button')).toHaveCount(0, { timeout: 60_000 });
+    await expect(reader.locator('#retryrow')).toBeVisible();
+    expect(downloads).toEqual([]);
+  } finally {
+    await context.close();
+    await reader?.context().close();
+  }
+});

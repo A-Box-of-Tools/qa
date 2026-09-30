@@ -276,3 +276,69 @@ test.describe('hash-checksum: the promise', () => {
     }
   });
 });
+
+
+/** Pause the next real Blob read at the boundary where a user can cancel it. */
+async function holdNextRead(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const original = Blob.prototype.arrayBuffer;
+    const state = window as typeof window & { releaseRead?: () => void; readHeld?: boolean };
+    state.readHeld = false;
+    Blob.prototype.arrayBuffer = async function () {
+      Blob.prototype.arrayBuffer = original;
+      const bytes = await original.call(this);
+      await new Promise<void>((resolve) => { state.releaseRead = resolve; state.readHeld = true; });
+      return bytes;
+    };
+  });
+}
+
+async function releaseRead(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as typeof window & { releaseRead?: () => void }).releaseRead?.();
+  });
+}
+
+test('hash-checksum: Stop during the final read yields no completed checksum', async ({ page }) => {
+  await page.goto(URL_PATH);
+  await chooseAlgorithms(page, ['sha256']);
+  await holdNextRead(page);
+  await page.locator('#file-input').setInputFiles({ name: 'stopped.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('abc') });
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).readHeld))).toBe(true);
+  await page.locator('#stop').click();
+  await releaseRead(page);
+  await expect(page.locator('#stopped')).toBeVisible();
+  await expect(page.locator('#digests')).not.toContainText(digestOf('sha256', Buffer.from('abc')));
+  await page.locator('#restart').click();
+  await expect.poll(() => shown(page, 'sha256')).toBe(digestOf('sha256', Buffer.from('abc')));
+});
+
+test('hash-checksum: a superseded file cannot overwrite the new file checksum', async ({ page }) => {
+  await page.goto(URL_PATH);
+  await chooseAlgorithms(page, ['sha256']);
+  await holdNextRead(page);
+  await page.locator('#file-input').setInputFiles({ name: 'old.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('old') });
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).readHeld))).toBe(true);
+  await hash(page, Buffer.from('new'), 'new.bin');
+  await expect.poll(() => shown(page, 'sha256')).toBe(digestOf('sha256', Buffer.from('new')));
+  await releaseRead(page);
+  await expect(page.locator('#file-name')).toHaveText('new.bin');
+  // Another browser turn lets the released reader finish its promise chain.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  expect(await shown(page, 'sha256')).toBe(digestOf('sha256', Buffer.from('new')));
+});
+
+
+test('hash-checksum: choosing a new file with no algorithms selected cancels the old read', async ({ page }) => {
+  await page.goto(URL_PATH);
+  await chooseAlgorithms(page, ['sha256']);
+  await holdNextRead(page);
+  await page.locator('#file-input').setInputFiles({ name: 'old.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('old') });
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).readHeld))).toBe(true);
+  await chooseAlgorithms(page, []);
+  await page.locator('#file-input').setInputFiles({ name: 'new.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('new') });
+  await releaseRead(page);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await chooseAlgorithms(page, ['sha256']);
+  await expect.poll(() => shown(page, 'sha256')).toBe(digestOf('sha256', Buffer.from('new')));
+});

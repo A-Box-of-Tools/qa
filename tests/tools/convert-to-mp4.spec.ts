@@ -3,6 +3,7 @@ import { canEncodeAac, canEncodeVideo, recordVideo } from '../../lib/browser-vid
 import { audioTrack, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { loadFile, loadTheExample, runAndSave } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
+import { canEncodeH264, holdVideoFlush, holdVerificationRead, releaseHeldExport, waitForHeldExport } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the MP4 converter.
@@ -106,6 +107,41 @@ test.describe('convert-to-mp4: the recording it ships with', () => {
     expect(audioTrack(file), 'the sound track is still there').toBeNull();
     expect(videoTrack(file)?.codec).toBe('avc1');
   });
+});
+
+test.describe('convert-to-mp4: retiring an export', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
+  for (const action of ['clear', 'cancel'] as const) {
+    test(`${action} at an export completion offers no retired file and can be retried`, async ({ page }) => {
+      test.setTimeout(600_000);
+      test.skip(!await canEncodeH264(page), 'this engine cannot encode H.264 with WebCodecs; this case needs that converter path');
+      await page.goto(URL_PATH);
+      await loadTheExample(page);
+      await page.locator('#drop-audio').check();
+      if (action === 'clear') await holdVideoFlush(page);
+      else await holdVerificationRead(page);
+      await page.locator('#run').click();
+      await waitForHeldExport(page);
+      await page.locator(action === 'clear' ? '#clear-file' : '#cancel').click();
+      await releaseHeldExport(page);
+      await expect(page.locator('#cancel')).toBeHidden();
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#run-error')).toBeHidden();
+      await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+
+      if (action === 'clear') {
+        await expect(page.locator('#file-row')).toBeHidden();
+        await expect(page.locator('#run-card')).toHaveAttribute('inert', '');
+        await loadTheExample(page);
+        await page.locator('#drop-audio').check();
+      }
+      const bytes = await runAndSave(page, { timeout: 360_000 });
+      const video = videoTrack(readMp4(bytes));
+      expect(video?.codec).toBe('avc1');
+      expect(video?.samples).toBe(SECONDS * 25);
+    });
+  }
 });
 
 test.describe('convert-to-mp4: a clip that is already what an MP4 wants', () => {

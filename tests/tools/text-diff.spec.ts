@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { test, expect, type Page } from '@playwright/test';
 import { quiet } from '../../lib/engine';
 
@@ -19,26 +23,37 @@ import { quiet } from '../../lib/engine';
 const URL_PATH = '/text-diff/';
 
 /**
- * Put both sides in and wait for a verdict.
+ * Wait for a fresh rendered comparison with both requested inputs present.
  *
- * Clearing first is not tidiness, it is the whole reliability of this file.
- * The note is never empty - with the boxes empty it asks you to paste
- * something - so "wait until it is not empty" returns instantly with whatever
- * the last comparison concluded. The first draft of this file read the
- * previous verdict every time and reported the tool as both blind to
- * differences and inventing them, neither of which was true.
- *
- * Cleared, the note returns to its resting text; a verdict is then anything
- * that is not that.
+ * Each fill starts a debounce. A slow second fill can leave a completed verdict
+ * for the first input versus an empty box, so a changed note alone is not a
+ * completion signal. Observe the result before filling and accept its next
+ * render only once both values match; no expected verdict is assumed here.
  */
 async function compare(page: Page, left: string, right: string): Promise<string> {
   const note = page.locator('#result-note');
   await page.locator('#clear').click();
-  const resting = (await note.textContent()) ?? '';
+  await page.evaluate(({ left, right }) => {
+    const original = document.querySelector<HTMLTextAreaElement>('#input')!;
+    const changed = document.querySelector<HTMLTextAreaElement>('#input-b')!;
+    const resultNote = document.querySelector('#result-note')!;
+    const state = window as Window & { qaTextDiffRendered?: boolean };
+    state.qaTextDiffRendered = false;
+    const observer = new MutationObserver(() => {
+      if (original.value !== left || changed.value !== right
+        || !document.querySelector('#diff-view .diff-table')) return;
+      state.qaTextDiffRendered = true;
+      observer.disconnect();
+    });
+    observer.observe(resultNote, { childList: true, characterData: true, subtree: true });
+  }, { left: left.replace(/\r\n?/g, '\n'), right: right.replace(/\r\n?/g, '\n') });
 
   await page.locator('#input').fill(left);
   await page.locator('#input-b').fill(right);
-  await expect(note).not.toHaveText(resting, { timeout: 20_000 });
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & { qaTextDiffRendered?: boolean }).qaTextDiffRendered),
+  { timeout: 20_000, message: 'the rendered comparison must include both current inputs' })
+    .toBe(true);
   return (await note.textContent()) ?? '';
 }
 
@@ -189,3 +204,38 @@ test.describe('text-diff: the promise', () => {
     }
   });
 });
+
+
+for (const [name, original, changed, ignore] of [
+  ['final newline', 'alpha', 'alpha\n', false],
+  ['CRLF', 'alpha\r\nbeta\r\n', 'alpha\r\nBETA\r\n', false],
+  ['ignored blanks and case', 'alpha\n\nbeta', 'ALPHA\nbeta\n', true],
+] as const) {
+  test(`text-diff: downloaded patch applies exactly: ${name}`, async ({ page }) => {
+    await page.goto(URL_PATH);
+    await page.locator('#file-input').setInputFiles([
+      { name: 'original.txt', mimeType: 'text/plain', buffer: Buffer.from(original) },
+      { name: 'changed.txt', mimeType: 'text/plain', buffer: Buffer.from(changed) },
+    ]);
+    await expect(page.locator('#download')).toHaveAttribute('href', /^blob:/);
+    if (ignore) {
+      await page.locator('#ignore-case').check();
+      await page.locator('#ignore-blank').check();
+    }
+    const pending = page.waitForEvent('download');
+    await page.locator('#download').click();
+    const saved = await pending;
+    const patch = fs.readFileSync((await saved.path())!, 'utf8')
+      .replace(/^--- original$/m, '--- a/input.txt').replace(/^\+\+\+ changed$/m, '+++ b/input.txt');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abox-patch-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'input.txt'), original);
+      const patchFile = path.join(dir, 'changes.patch');
+      fs.writeFileSync(patchFile, patch);
+      execFileSync('git', ['apply', '--no-index', '--whitespace=nowarn', patchFile], { cwd: dir });
+      expect(fs.readFileSync(path.join(dir, 'input.txt'))).toEqual(Buffer.from(changed));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
