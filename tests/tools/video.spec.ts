@@ -1,9 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { recordVideo , skipWithoutWebCodecs } from '../../lib/browser-video';
+import { canDecodeVideo, recordVideo, skipWithoutWebCodecs } from '../../lib/browser-video';
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
-import { decodedSize } from '../../lib/browser-image';
+import { decodedPixels, decodedSize, pixelAt } from '../../lib/browser-image';
 import { quiet } from '../../lib/engine';
 
 /**
@@ -199,6 +199,69 @@ test.describe('grab-frame: a still out of a film', () => {
   });
 });
 
+/** Compare the saved crop with source coordinates, using fresh native players. */
+async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
+  return page.evaluate(async ({ source, output }) => {
+    const read = async (encoded: string) => {
+      const bytes = Uint8Array.from(atob(encoded), (value) => value.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      const wait = (event: 'loadeddata' | 'seeked', action: () => void) => new Promise<void>((resolve, reject) => {
+        const clean = () => {
+          clearTimeout(timer);
+          video.removeEventListener(event, done);
+          video.removeEventListener('error', failed);
+        };
+        const done = () => { clean(); resolve(); };
+        const failed = () => { clean(); reject(new Error(`video failed before ${event}`)); };
+        const timer = setTimeout(() => { clean(); reject(new Error(`video never reached ${event}`)); }, 15_000);
+        video.addEventListener(event, done);
+        video.addEventListener('error', failed);
+        action();
+      });
+      try {
+        await wait('loadeddata', () => { video.src = url; });
+        await wait('seeked', () => { video.currentTime = 0.75; });
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d', { willReadFrequently: true })!;
+        context.drawImage(video, 0, 0);
+        return { width: canvas.width, height: canvas.height,
+          pixels: context.getImageData(0, 0, canvas.width, canvas.height).data };
+      } finally {
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(url);
+      }
+    };
+    const before = await read(source);
+    const after = await read(output);
+    let crop = 0;
+    let scaled = 0;
+    let samples = 0;
+    // The requested crop is the top-left 160 x 120. The moving black bar
+    // lies inside it at this instant but would land at half the x coordinate
+    // if the whole 320 x 240 picture were merely scaled down.
+    for (let y = 12; y < 108; y += 8) {
+      for (let x = 4; x < 156; x += 4) {
+        const actual = (y * after.width + x) * 4;
+        const wanted = (y * before.width + x) * 4;
+        const wrong = (Math.floor(y * before.height / after.height) * before.width
+          + Math.floor(x * before.width / after.width)) * 4;
+        for (let channel = 0; channel < 3; channel += 1) {
+          crop += Math.abs(after.pixels[actual + channel] - before.pixels[wanted + channel]);
+          scaled += Math.abs(after.pixels[actual + channel] - before.pixels[wrong + channel]);
+          samples += 1;
+        }
+      }
+    }
+    return { crop: crop / samples, scaled: scaled / samples };
+  }, { source: source.toString('base64'), output: output.toString('base64') });
+}
+
 test.describe('crop-video: keeping part of the picture', () => {
   test('the cropped video is the size of the crop, not a rescale of the whole', async ({ page }) => {
     // The failure worth catching: a tool that scaled the whole frame down to
@@ -206,12 +269,15 @@ test.describe('crop-video: keeping part of the picture', () => {
     // is identical either way, so the size alone cannot tell them apart -
     // which is why the still below is compared as well.
     test.setTimeout(240_000);
-    await loadClip(page, CROP);
+    const original = await loadClip(page, CROP);
+    test.skip(!await canDecodeVideo(page, original),
+      'this engine cannot decode the fixture for the independent pixel oracle');
 
     await page.locator('#crop-x').fill('0');
     await page.locator('#crop-y').fill('0');
     await page.locator('#crop-w').fill('160');
     await page.locator('#crop-h').fill('120');
+    await page.locator('#crop-h').blur();
 
     await expect(page.locator('#export')).toBeEnabled({ timeout: 30_000 });
     await page.locator('#export').click();
@@ -224,6 +290,10 @@ test.describe('crop-video: keeping part of the picture', () => {
     expect(track).not.toBeNull();
     expect(track!.width).toBe(160);
     expect(track!.height).toBe(120);
+    const error = await cropPixelError(page, original, bytes);
+    expect(error.crop, 'saved pixels must match the selected source coordinates').toBeLessThan(12);
+    expect(error.scaled - error.crop, 'the output must distinguish a crop from whole-frame rescaling')
+      .toBeGreaterThan(8);
   });
 
   test('the cropped video still plays, and for about as long', async ({ page }) => {
@@ -262,7 +332,136 @@ test.describe('crop-video: keeping part of the picture', () => {
   });
 });
 
+/** A typed commit replaces the row, so locators are resolved after each blur. */
+async function typeVideoPart(page: Page, start: string, end: string): Promise<void> {
+  await page.locator('#add-segment').click();
+  const row = page.locator('#segment-rows tr').last();
+  await row.locator('.segment-time').nth(0).fill(start);
+  await row.locator('.segment-time').nth(0).blur();
+  await row.locator('.segment-time').nth(1).fill(end);
+  await row.locator('.segment-time').nth(1).blur();
+}
+
+/**
+ * Decode the downloaded bytes in a fresh native video element. Nothing here
+ * imports the trimmer or reads its result preview. Three separated pixels at
+ * the same height let the median ignore the fixture's narrow moving black bar.
+ */
+async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
+  return page.evaluate(async ({ data, times }) => {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: 'video/mp4' }));
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    const waitFor = (event: 'loadeddata' | 'seeked', action: () => void) =>
+      new Promise<void>((resolve, reject) => {
+        const clean = () => {
+          clearTimeout(timer);
+          video.removeEventListener(event, done);
+          video.removeEventListener('error', failed);
+        };
+        const done = () => { clean(); resolve(); };
+        const failed = () => { clean(); reject(new Error(`video failed before ${event}`)); };
+        const timer = setTimeout(() => { clean(); reject(new Error(`video never reached ${event}`)); }, 15_000);
+        video.addEventListener(event, done);
+        video.addEventListener('error', failed);
+        action();
+      });
+    try {
+      await waitFor('loadeddata', () => { video.src = url; });
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d', { willReadFrequently: true })!;
+      const colours: number[][] = [];
+      for (const time of times) {
+        if (time >= video.duration) throw new Error('the downloaded video ended before a requested frame');
+        await waitFor('seeked', () => { video.currentTime = time; });
+        context.drawImage(video, 0, 0);
+        const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
+          Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
+        ).data);
+        colours.push([0, 1, 2].map((channel) =>
+          pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]));
+      }
+      return { duration: video.duration, width: video.videoWidth, height: video.videoHeight, colours };
+    } finally {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(url);
+    }
+  }, { data: Array.from(bytes), times });
+}
+
+function colourDistance(a: number[], b: number[]): number {
+  return Math.max(...a.map((value, channel) => Math.abs(value - b[channel])));
+}
+
+async function saveCopiedVideo(page: Page): Promise<Buffer> {
+  await expect(page.locator('#method option[value="copy"]')).toBeEnabled();
+  await page.locator('#method').selectOption('copy');
+  await expect(page.locator('#export')).toBeEnabled();
+  await page.locator('#export').click();
+  await expect(page.locator('#download')).toBeVisible({ timeout: 120_000 });
+  return save(page, () => page.locator('#download').click());
+}
+
 test.describe('trim-video: keeping part of the time', () => {
+  test('the downloaded copy contains the two typed parts in their reordered order', async ({ page }) => {
+    test.setTimeout(240_000);
+    const original = await loadClip(page, TRIM, '#section-card');
+    test.skip(!isMp4(original), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
+    test.skip(!await canDecodeVideo(page, original), 'this engine cannot decode the fixture for the pixel oracle');
+    expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
+      'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
+    await typeVideoPart(page, '0:00.250', '0:00.750');
+    await typeVideoPart(page, '0:01.750', '0:02.500');
+    await page.locator('#segment-rows tr').nth(1).getByRole('button', { name: 'Move up', exact: true }).click();
+    await expect(page.locator('#segment-rows tr').first().locator('.segment-time').first())
+      .toHaveValue('0:01.750');
+    const bytes = await saveCopiedVideo(page);
+
+    // mdhd can include keyframe pre-roll. mvhd and a native player's visible
+    // duration must describe only the .75 + .5 seconds the reader requested.
+    const file = readMp4(bytes);
+    expect(file.seconds).toBeCloseTo(1.25, 2);
+    expect(videoTrack(file)?.width).toBe(WIDTH);
+    expect(videoTrack(file)?.height).toBe(HEIGHT);
+    const expected = await savedVideoFrames(page, original, [1.95, 2.30, 0.45]);
+    const actual = await savedVideoFrames(page, bytes, [0.20, 0.55, 0.95]);
+    expect(actual.duration).toBeCloseTo(1.25, 1);
+    expect(colourDistance(expected.colours[0], expected.colours[2]),
+      'the fixture must distinguish the later and earlier parts').toBeGreaterThan(80);
+    for (let i = 0; i < actual.colours.length; i += 1) {
+      expect(colourDistance(actual.colours[i], expected.colours[i]),
+        `saved frame ${i} belongs to its requested source time`).toBeLessThan(40);
+    }
+  });
+
+  test('cut mode removes both typed parts from the downloaded copy', async ({ page }) => {
+    test.setTimeout(240_000);
+    const original = await loadClip(page, TRIM, '#section-card');
+    test.skip(!isMp4(original), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
+    test.skip(!await canDecodeVideo(page, original), 'this engine cannot decode the fixture for the pixel oracle');
+    expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
+      'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
+    await typeVideoPart(page, '0:00.500', '0:01.000');
+    await typeVideoPart(page, '0:01.500', '0:02.000');
+    await page.locator('input[name="mode"][value="cut"]').check();
+    const bytes = await saveCopiedVideo(page);
+
+    const expected = await savedVideoFrames(page, original, [0.20, 1.20, 2.20]);
+    const actual = await savedVideoFrames(page, bytes, [0.20, 0.70, 1.20]);
+    const seconds = expected.duration - 1;
+    expect(Math.abs(readMp4(bytes).seconds - seconds)).toBeLessThan(0.075);
+    expect(Math.abs(actual.duration - seconds)).toBeLessThan(0.075);
+    for (let i = 0; i < actual.colours.length; i += 1) {
+      expect(colourDistance(actual.colours[i], expected.colours[i]),
+        `saved frame ${i} belongs to a retained interval`).toBeLessThan(40);
+    }
+  });
+
   test('the tool reads the clip and reports its real length', async ({ page }) => {
     test.setTimeout(180_000);
     await loadClip(page, TRIM, '#section-card');
@@ -320,39 +519,40 @@ test.describe('trim-video: keeping part of the time', () => {
 });
 
 test.describe('video-to-gif: a clip as an animation', () => {
-  test('the GIF covers the stretch that was asked for, at the size asked for', async ({ page }) => {
-    // Verified with lib/gif.ts rather than by looking at it: a GIF made from
-    // the wrong seconds of the film still animates, and a GIF whose frame
-    // delays are wrong still plays.
+  test('the GIF covers the chosen second at 10 fps and a width of 240 pixels', async ({ page }) => {
     test.setTimeout(300_000);
-    await loadClip(page, TO_GIF);
+    const original = await loadClip(page, TO_GIF);
+    test.skip(!await canDecodeVideo(page, original),
+      'this engine cannot decode the fixture for the independent first-frame oracle');
+    await page.locator('#start-time').fill('0:00.500');
+    await page.locator('#start-time').blur();
+    await page.locator('#end-time').fill('0:01.500');
+    await page.locator('#end-time').blur();
+    await page.locator('#width').selectOption('240');
+    await page.locator('#fps').selectOption('10');
 
     await expect(page.locator('#export')).toBeEnabled({ timeout: 60_000 });
     await page.locator('#export').click();
     await expect(page.locator('#download')).toBeVisible({ timeout: 180_000 });
-
     const bytes = await save(page, () => page.locator('#download').click());
     const gif = readGif(bytes);
-
-    expect(gif.version).toMatch(/^GIF8/);
-    expect(gif.frames.length, 'a GIF of a three-second clip should have several frames')
-      .toBeGreaterThan(2);
-
-    // The canvas is a sensible scaling of a 320 x 240 source, not zero and not
-    // the whole film's pixel count by accident.
-    expect(gif.width).toBeGreaterThan(0);
-    expect(gif.height).toBeGreaterThan(0);
-    expect(gif.width / gif.height).toBeCloseTo(WIDTH / HEIGHT, 1);
-
-    // Every frame carries a delay; a GIF with none plays as fast as the
-    // renderer can manage, which is the usual way this goes wrong.
-    for (const [index, frame] of gif.frames.entries()) {
-      expect(frame.delayMs, `frame ${index} has no delay`).toBeGreaterThan(0);
-    }
-
+    expect([gif.width, gif.height]).toEqual([240, 180]);
+    // A delayed fixture capture can repeat a sampled picture, which GIF may
+    // coalesce. It may not invent more than the ten requested instants or
+    // turn this changing one-second section into a nearly static image.
+    expect(gif.frames.length).toBeGreaterThanOrEqual(8);
+    expect(gif.frames.length).toBeLessThanOrEqual(10);
+    expect(gif.frames.every((frame) => frame.delayMs >= 100)).toBe(true);
     const total = gif.frames.reduce((sum, frame) => sum + frame.delayMs, 0);
-    expect(total, 'the animation is nothing like the length of the clip')
-      .toBeGreaterThan((SECONDS - 1.5) * 1000);
+    expect(Math.abs(total - 1000), 'the chosen section must last one second').toBeLessThanOrEqual(10);
+
+    const source = await savedVideoFrames(page, original, [0.5]);
+    const first = await decodedPixels(page, bytes, 'image/gif');
+    expect([first.width, first.height]).toEqual([240, 180]);
+    const pixels = [0.15, 0.5, 0.85].map((x) => pixelAt(first, Math.floor(x * first.width), Math.floor(first.height / 4)));
+    const colour = [0, 1, 2].map((channel) => pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]);
+    expect(colourDistance(colour, source.colours[0]), 'the GIF must start at the selected source moment')
+      .toBeLessThan(40);
   });
 
   test('the GIF it writes is one a browser will play', async ({ page }) => {

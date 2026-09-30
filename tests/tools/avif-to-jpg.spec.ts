@@ -68,9 +68,8 @@ test.describe('avif-to-jpg: the fixtures', () => {
   });
 
   test('a file that is not an AVIF is not evidence about the browser', async ({ page }) => {
-    // The page decides a browser cannot read AVIF when every real AVIF in a
-    // batch was refused. A PNG with the wrong name is not a real AVIF, and
-    // must not talk the page into telling somebody their browser is too old.
+    // A PNG with the wrong name is not an AVIF. Its refusal must stay about
+    // the file rather than become a claim about the browser's decoder.
     // True on every engine, so asked of every engine.
     await page.goto(URL_PATH);
     await give(page, [avif('pretender.avif', encodePng(16, 16, () => [10, 20, 30]))], 0);
@@ -87,6 +86,23 @@ test.describe('avif-to-jpg: the fixtures', () => {
 test.describe('avif-to-jpg: where the browser reads AVIF', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await readsAvif(page)), 'this engine does not open AVIF; see the refusal below');
+  });
+
+  test('a damaged AVIF does not disable a later valid file', async ({ page }) => {
+    await page.goto(URL_PATH);
+    // The genuine brand survives, but no image payload does. A wrong-format
+    // fixture would miss the capability bug because it never reaches decode.
+    await give(page, [avif('truncated.avif', quadrantsAvif().subarray(0, 64))], 0);
+    await expect(page.locator('#load-error')).toContainText('truncated.avif');
+    await expect(page.locator('#dropzone')).not.toHaveClass(/busy/);
+    await expect(page.locator('#support-error')).toBeHidden();
+
+    await give(page, [avif('recovered.avif', quadrantsAvif())]);
+    const [made] = await convert(page);
+    const decoded = await openJpeg(page, made.bytes);
+    expect([decoded.width, decoded.height]).toEqual([AVIF_WIDTH, AVIF_HEIGHT]);
+    expectColour(decoded, QUADRANTS.topLeft, QUADRANTS.topLeft.rgb, 'recovered top left');
+    await expect(page.locator('#support-error')).toBeHidden();
   });
 
   test('the JPEG is the picture that went in, at the size the AVIF declares', async ({ page }) => {

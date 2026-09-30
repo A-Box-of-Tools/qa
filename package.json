@@ -2,7 +2,7 @@
   "name": "etoolbox-qa",
   "private": true,
   "version": "0.1.0",
-  "description": "Playwright QA suite for abox.tools (etoolbox) - simulates Chrome desktop and mobile against a local build or a running server.",
+  "description": "Playwright QA suite for abox.tools (etoolbox) - exercises Chromium and WebKit desktop and mobile projects against a local build or a running server.",
   "scripts": {
     "test": "playwright test",
     "test:desktop": "playwright test --project=\"Desktop Chrome\"",
@@ -11,7 +11,7 @@
     "test:failed": "playwright test --last-failed",
     "test:ui": "playwright test --ui",
     "report": "playwright show-report",
-    "install:browsers": "playwright install chromium"
+    "install:browsers": "playwright install chromium webkit"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.1",

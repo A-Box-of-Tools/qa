@@ -2,24 +2,33 @@
 
 A [Playwright](https://playwright.dev/) QA suite for
 **[abox.tools](https://abox.tools/)** — the site built by the sibling
-[`etoolbox`](../etoolbox) repository. It drives real Chromium under two
-projects, **Desktop Chrome** and **Mobile Chrome** (Pixel 5 emulation), so the
-same specs run once at a desktop viewport/UA and once at a mobile one.
+[`etoolbox`](../etoolbox) repository. Four projects exercise two engines:
+**Desktop Chrome**, **Mobile Chrome** (Pixel 5 emulation), **Desktop Safari**,
+and **Mobile Safari** (iPhone 13 emulation). The Safari projects run
+Playwright's WebKit build; they are not native Safari or a physical iPhone.
 
 This suite does not re-test what `etoolbox` already covers itself: its
 `tests/python` and `tests/js` unit-test the build and the in-browser file
-processing. What lives here is the layer those can't reach — a real Chrome
+processing. What lives here is the layer those can't reach — browsers
 rendering the generated pages, at both form factors, clicking through them.
 
 ## What it checks
+
+The [all-tools audit](docs/all-tools-audit.md) maps all 53 tools to concrete
+functional scenarios, records the additions from the audit, and names the
+remaining capability and scenario boundaries.
 
 | File | What it covers |
 |---|---|
 | [`tests/hub.spec.ts`](tests/hub.spec.ts) | The front page: every tool listed once, links resolve, language switcher, footer, navigation, no console errors |
 | [`tests/tool-pages.spec.ts`](tests/tool-pages.spec.ts) | Every tool page (discovered from the checkout, not hand-listed): frame renders, drop zone is wired up, privacy panel toggles, no JS errors, and — specific to this site's no-upload promise — no request to a host outside `config/site.toml`'s own CSP allowlist |
-| [`tests/responsive.spec.ts`](tests/responsive.spec.ts) | No horizontal overflow, tap targets, header layout — run once per viewport since it's the same spec under both projects |
-| [`tests/locales/`](tests/locales) | Every tool in every language: each translated copy keeps the element ids and phrase keys its script binds to, slugs are translated consistently and collision-free, and each of the ~490 tool/language URLs serves a page declaring the right `lang` (and `dir="rtl"` where it should) |
-| [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` (serious/critical) on every page — all tools, hub, RTL hub, guides, legal, roadmap, 404 — plus loaded/result/error states, dark mode, and Tab-reachability of every file picker |
+| [`tests/responsive.spec.ts`](tests/responsive.spec.ts) | Sampled horizontal overflow, tap targets and header layout across the four projects |
+| [`tests/locales/`](tests/locales) | Every maintained language must be deployed; translated copies preserve IDs, phrase keys and placeholders; translated URLs serve the expected language. These source/HTTP checks run once, under Desktop Chrome. |
+| [`tests/localized-runtime.spec.ts`](tests/localized-runtime.spec.ts) | Spanish and Portuguese interface text and accessible attributes on every tool, plus real loaded/result journeys for 18 tools and representative malformed-file errors; catches unresolved phrases/placeholders and translated phrases falling back to English |
+| [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` serious/critical checks on every English tool, the English/Chinese hubs, a guide and the page types; representative loaded/error/dark states and Tab-reachability of every file picker |
+| [`tests/loaded-accessibility.spec.ts`](tests/loaded-accessibility.spec.ts) | Additional loaded/result and error states across text, checksum, PDF, GIF, data-URI and audio interfaces |
+| [`tests/offline.spec.ts`](tests/offline.spec.ts) | Every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML and independent nested caches. |
+| [`tests/handoff.spec.ts`](tests/handoff.spec.ts) | A generated PDF reaches the next tool byte-for-byte, is consumed once, and storage refusal opens the destination without partial input |
 
 `lib/tools.ts` and `lib/csp.ts` read the tool list and the CSP allowlist
 straight out of the `etoolbox` checkout at test time, the same way its own
@@ -30,17 +39,17 @@ there and this suite picks it up with nothing to update here.
 
 ```bash
 npm install
-npx playwright install chromium
+npx playwright install chromium webkit
 ```
 
 ## Running
 
 By default this builds and serves the sibling `../etoolbox` checkout itself
-(`python build.py`, then its own `serve.ps1`) and points Chrome at
+(`python build.py`, then its own `serve.ps1`) and points the browsers at
 `http://localhost:8080`:
 
 ```bash
-npm test                 # both projects
+npm test                 # all four projects
 npm run test:desktop     # Desktop Chrome only
 npm run test:mobile      # Mobile Chrome only
 npm run test:headed      # watch it click through the site
@@ -51,7 +60,7 @@ npm run report           # open the last HTML report
 
 `test:failed` is Playwright's `--last-failed`, reading the `.last-run.json`
 the previous run left in `test-results/`. In CI there is no such file to
-read — twelve runners each threw their machine away — so the Report workflow
+read — the runners each threw their machine away — so the Report workflow
 takes a `rerun` input instead: give it the id of a run that went red and it
 re-runs that run's failures and nothing else, in about three minutes rather
 than fourteen. `scripts/failed-cases.mjs` is the part that turns one into the
@@ -83,7 +92,40 @@ already running needs nothing but Node.
 
 **https://a-box-of-tools.github.io/qa/**
 
-It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). The suite is split across four runners and stitched back into one report by `merge-reports`. The workflow still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
+It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). The suite is split across sixteen slices and stitched back into one report by `merge-reports`. The workflow still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
+
+## What a passing run proves
+
+A green project proves the cases it executed, not every feature of that
+browser. Capability probes can skip video/audio processing, camera input,
+AVIF or WebP support, or storing a File in IndexedDB when the test engine
+cannot perform them. Corresponding refusals have separate scenarios where the
+engine can remain alive long enough to show one. A missing service-worker API
+likewise produces an explicit offline skip. Counts of passed, flaky and
+skipped cases are reported separately on the website commit.
+
+WebKit's codec and storage capabilities differ from native Safari's. Firefox
+and physical devices are not projects in this suite. Native Safari/device
+checks remain useful for those boundaries; emulated phone viewports do not
+prove a hardware codec, camera or touch implementation.
+
+The offline matrix verifies installed page/module availability for every tool
+and a small real operation, not every export format without a connection.
+Share-text's shell can reload offline; sharing itself deliberately needs the
+network. The controlled cache test uses the deployed worker's unchanged bytes
+on a local origin and never modifies the preview or production deployment.
+
+Localization checks cover structure and runtime copy, not linguistic quality.
+They allow technical identifiers and file content rather than calling those
+English leaks. Accessibility is a serious/critical axe gate with representative
+loaded/error states and keyboard checks, not a claim of full WCAG compliance.
+The idle layout checks sample tools; not every possible combination of inputs,
+settings, language and viewport is measured.
+
+Full preview/release runs require the maintained languages named by the source
+checkout, excluding `frozen_languages` in site configuration. A missing hub
+must fail rather than quietly remove that language's checks. Frozen archive
+pages are a separate deployment contract and are not rewritten by these specs.
 
 ### Failure issues
 

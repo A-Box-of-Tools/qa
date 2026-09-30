@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { test, expect, type Page } from '@playwright/test';
 import { quiet } from '../../lib/engine';
 
@@ -189,3 +193,38 @@ test.describe('text-diff: the promise', () => {
     }
   });
 });
+
+
+for (const [name, original, changed, ignore] of [
+  ['final newline', 'alpha', 'alpha\n', false],
+  ['CRLF', 'alpha\r\nbeta\r\n', 'alpha\r\nBETA\r\n', false],
+  ['ignored blanks and case', 'alpha\n\nbeta', 'ALPHA\nbeta\n', true],
+] as const) {
+  test(`text-diff: downloaded patch applies exactly: ${name}`, async ({ page }) => {
+    await page.goto(URL_PATH);
+    await page.locator('#file-input').setInputFiles([
+      { name: 'original.txt', mimeType: 'text/plain', buffer: Buffer.from(original) },
+      { name: 'changed.txt', mimeType: 'text/plain', buffer: Buffer.from(changed) },
+    ]);
+    await expect(page.locator('#download')).toHaveAttribute('href', /^blob:/);
+    if (ignore) {
+      await page.locator('#ignore-case').check();
+      await page.locator('#ignore-blank').check();
+    }
+    const pending = page.waitForEvent('download');
+    await page.locator('#download').click();
+    const saved = await pending;
+    const patch = fs.readFileSync((await saved.path())!, 'utf8')
+      .replace(/^--- original$/m, '--- a/input.txt').replace(/^\+\+\+ changed$/m, '+++ b/input.txt');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abox-patch-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'input.txt'), original);
+      const patchFile = path.join(dir, 'changes.patch');
+      fs.writeFileSync(patchFile, patch);
+      execFileSync('git', ['apply', '--no-index', '--whitespace=nowarn', patchFile], { cwd: dir });
+      expect(fs.readFileSync(path.join(dir, 'input.txt'))).toEqual(Buffer.from(changed));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

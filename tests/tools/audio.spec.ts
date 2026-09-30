@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { loudThenQuiet, peakBetween, readWav } from '../../lib/wav';
+import { loudThenQuiet, peakBetween, readWav, writeWav } from '../../lib/wav';
 import { canDecodeAudio, quiet } from '../../lib/engine';
 
 /**
@@ -203,7 +203,86 @@ test.describe('edit-audio: changing a recording', () => {
   });
 });
 
+/**
+ * Each sample has a known value, rather than a repeated tone that could hide a
+ * cut at the wrong cycle. PCM input and float output keep codec loss out of the
+ * oracle: expected runs come straight from our fixture's decoded sample bytes.
+ */
+async function loadSampleFixture(page: Page): Promise<Float32Array> {
+  const samples = new Float32Array(144_000);
+  let state = 42;
+  for (let i = 0; i < samples.length; i += 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    samples[i] = ((state >>> 16) - 32768) / 65536;
+  }
+  const bytes = writeWav(samples, 48_000);
+  await page.goto(TRIMMER);
+  await page.locator('#file-input').setInputFiles({
+    name: 'known-samples.wav', mimeType: 'audio/wav', buffer: bytes,
+  });
+  await expect(page.locator('#source')).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('#src-length')).not.toHaveText('—');
+  await page.locator('#fade').selectOption('0');
+  await page.locator('#depth').selectOption('32');
+  return readWav(bytes).samples;
+}
+
+/** A blur rebuilds the table, so resolve each input again after committing. */
+async function typeAudioPart(page: Page, start: string, end: string): Promise<void> {
+  await page.locator('#add-segment').click();
+  const row = page.locator('#segment-rows tr').last();
+  await row.locator('.segment-time').nth(0).fill(start);
+  await row.locator('.segment-time').nth(0).blur();
+  await row.locator('.segment-time').nth(1).fill(end);
+  await row.locator('.segment-time').nth(1).blur();
+}
+
+function expectSamples(wav: ReturnType<typeof readWav>, expected: Float32Array): void {
+  expect(wav.sampleRate).toBe(48_000);
+  expect(wav.channels).toBe(1);
+  expect(wav.bitsPerSample).toBe(32);
+  expect(wav.frames, 'the saved WAV has the exact requested sample count').toBe(expected.length);
+  expect(wav.seconds).toBe(expected.length / 48_000);
+  let mismatch = -1;
+  for (let i = 0; i < expected.length; i += 1) {
+    if (wav.samples[i] !== expected[i]) { mismatch = i; break; }
+  }
+  expect(mismatch, 'every saved sample must be the requested source sample, in order').toBe(-1);
+}
+
 test.describe('trim-audio: keeping part of a recording', () => {
+  test('typed parts keep their exact samples in the reordered list', async ({ page }) => {
+    test.setTimeout(180_000);
+    const samples = await loadSampleFixture(page);
+    await typeAudioPart(page, '0:00.125', '0:00.750');
+    await typeAudioPart(page, '0:01.750', '0:02.125');
+    await page.locator('#segment-rows tr').nth(1).getByRole('button', { name: 'Move up', exact: true }).click();
+    await expect(page.locator('#segment-rows tr').first().locator('.segment-time').first())
+      .toHaveValue('0:01.750');
+
+    // Later 18,000 samples first, then the earlier 30,000. Comparing the entire
+    // stream catches reordering, missing pieces, fades and off-by-one cuts.
+    const expected = new Float32Array(48_000);
+    expected.set(samples.subarray(84_000, 102_000));
+    expected.set(samples.subarray(6_000, 36_000), 18_000);
+    expectSamples(readWav(await exportSound(page)), expected);
+  });
+
+  test('cutting two typed parts saves their exact complement', async ({ page }) => {
+    test.setTimeout(180_000);
+    const samples = await loadSampleFixture(page);
+    await typeAudioPart(page, '0:00.250', '0:00.750');
+    await typeAudioPart(page, '0:01.500', '0:02.250');
+    await page.locator('input[name="mode"][value="cut"]').check();
+
+    // Three untouched runs remain: 0–.25, .75–1.5 and 2.25–3 seconds.
+    const expected = new Float32Array(84_000);
+    expected.set(samples.subarray(0, 12_000));
+    expected.set(samples.subarray(36_000, 72_000), 12_000);
+    expected.set(samples.subarray(108_000), 48_000);
+    expectSamples(readWav(await exportSound(page)), expected);
+  });
+
   test('it reads the recording and reports its real length', async ({ page }) => {
     test.setTimeout(120_000);
     await loadSound(page, TRIMMER);

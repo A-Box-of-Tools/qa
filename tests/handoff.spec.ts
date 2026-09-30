@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { encodePng } from '../lib/image-fixtures';
+import { keepsFilesInStorage, withoutThirdParties } from '../lib/engine';
 
 /**
  * The carry-on row, and when a tool is allowed to offer it.
@@ -99,4 +100,72 @@ test.describe('the carry-on row', () => {
         `these offer to carry a result before making one: ${offenders.join(', ')}`,
       ).toEqual([]);
     });
+});
+
+async function makeCarriablePdf(page: import('@playwright/test').Page): Promise<number[]> {
+  await withoutThirdParties(page);
+  await page.goto('/images-to-pdf/');
+  await page.locator('#file-input').setInputFiles([40, 120].map((shade, index) => ({
+    name: `handoff-${index}.png`, mimeType: 'image/png',
+    buffer: encodePng(120, 90, () => [shade, shade, shade]),
+  })));
+  await expect(page.locator('#image-list li')).toHaveCount(2);
+  await page.locator('#export').click();
+  await expect(page.locator('#result')).toBeVisible({ timeout: 30_000 });
+  return page.locator('#download').evaluate(async (anchor) => Array.from(new Uint8Array(
+    await (await fetch((anchor as HTMLAnchorElement).href)).arrayBuffer(),
+  )));
+}
+
+test('handoff: images-to-pdf carries the exact PDF into merge-pdf once', async ({ page }) => {
+  test.setTimeout(180_000);
+  test.skip(!await keepsFilesInStorage(page), 'this engine cannot preserve a File in IndexedDB');
+  const original = await makeCarriablePdf(page);
+  expect(original.length).toBeGreaterThan(500);
+  await Promise.all([
+    page.waitForURL('**/merge-pdf/'),
+    page.locator('nav.handoff a[data-slug="merge-pdf"]').click(),
+  ]);
+  await expect(page.locator('#page-list li')).toHaveCount(2, { timeout: 30_000 });
+  const delivered = await page.locator('#file-input').evaluate(async (input) => {
+    const files = (input as HTMLInputElement).files!;
+    return { count: files.length, bytes: Array.from(new Uint8Array(await files[0].arrayBuffer())) };
+  });
+  expect(delivered.count).toBe(1);
+  expect(delivered.bytes).toEqual(original);
+  const pending = await page.evaluate(() => new Promise<unknown>((resolve, reject) => {
+    const opening = indexedDB.open('abox-handoff', 1);
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      const db = opening.result;
+      const transaction = db.transaction('files', 'readonly');
+      const read = transaction.objectStore('files').get('merge-pdf');
+      read.onsuccess = () => resolve(read.result);
+      read.onerror = () => reject(read.error);
+      transaction.oncomplete = () => db.close();
+    };
+  }));
+  expect(pending, 'the receiver left the already-delivered file pending').toBeUndefined();
+  // Receiving consumes the record: a later visit must not rediscover an old
+  // document as though the visitor had just chosen it again.
+  await page.reload();
+  await expect(page.locator('#page-list li')).toHaveCount(0);
+});
+
+test('handoff: refused storage still opens the destination with no partial delivery', async ({ page }) => {
+  test.setTimeout(120_000);
+  await makeCarriablePdf(page);
+  await page.evaluate(() => {
+    Object.defineProperty(IDBFactory.prototype, 'open', {
+      configurable: true,
+      value() { throw new DOMException('Storage refused by this test', 'SecurityError'); },
+    });
+  });
+  await Promise.all([
+    page.waitForURL('**/merge-pdf/'),
+    page.locator('nav.handoff a[data-slug="merge-pdf"]').click(),
+  ]);
+  await expect(page.locator('#dropzone')).toBeVisible();
+  await expect(page.locator('#page-list li')).toHaveCount(0);
+  await expect(page.locator('#load-error')).toBeHidden();
 });

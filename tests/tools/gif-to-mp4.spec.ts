@@ -4,6 +4,7 @@ import { writeGif, type FixtureGifFrame } from '../../lib/gif';
 import { audioTrack, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { loadFile, loadTheExample, runAndSave } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
+import { holdVideoFlush, holdVerificationRead, releaseHeldExport, waitForHeldExport } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the GIF to MP4 converter.
@@ -116,6 +117,39 @@ test.describe('gif-to-mp4: the animation it ships with', () => {
     expect(video!.seconds).toBeGreaterThan(total - 0.01);
     expect(video!.seconds).toBeLessThan(total + 0.01);
   });
+});
+
+test.describe('gif-to-mp4: retiring an export', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
+  for (const action of ['clear', 'cancel'] as const) {
+    test(`${action} at an export completion offers no retired file and can be retried`, async ({ page }) => {
+      test.setTimeout(600_000);
+      test.skip(!await canEncodeVideo(page), 'this engine can write no video');
+      await page.goto(URL_PATH);
+      await loadTheExample(page);
+      if (action === 'clear') await holdVideoFlush(page);
+      else await holdVerificationRead(page);
+      await page.locator('#run').click();
+      await waitForHeldExport(page);
+      await page.locator(action === 'clear' ? '#clear-file' : '#cancel').click();
+      await releaseHeldExport(page);
+      await expect(page.locator('#cancel')).toBeHidden();
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#run-error')).toBeHidden();
+      await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+
+      if (action === 'clear') {
+        await expect(page.locator('#file-row')).toBeHidden();
+        await expect(page.locator('#run-card')).toHaveAttribute('inert', '');
+        await loadTheExample(page);
+      }
+      const bytes = await runAndSave(page, { timeout: 360_000 });
+      const video = videoTrack(readMp4(bytes));
+      expect(video?.codec).toBe('avc1');
+      expect(video?.samples).toBe(EXAMPLE.frames);
+    });
+  }
 });
 
 test.describe('gif-to-mp4: what it refuses', () => {

@@ -165,29 +165,33 @@ export function offeredLocales(): string[] {
   return locales().filter((locale) => !hidden.has(locale));
 }
 
+/** Languages rebuilt by a full preview, as opposed to archived deployments. */
+export function maintainedLocales(): string[] {
+  const config = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config', 'site.toml'), 'utf8');
+  const frozen = config.match(/^frozen_languages\s*=\s*\[([\s\S]*?)\]/m)?.[1] ?? '';
+  const archived = new Set([...frozen.matchAll(/"([^"]+)"/g)].map((entry) => entry[1]));
+  return locales().filter((locale) => !archived.has(locale));
+}
+
 /**
  * The languages this HOST carries, as against the ones the checkout has.
  *
  * They stopped being the same thing when previews were cut down to fit.
- * Cloudflare Pages refuses a deployment over 20,000 files and a full build is
- * 19,672, so website#407 gives every preview English, Chinese and Arabic and
- * leaves the other twelve out. Nothing is wrong with those twelve; they are
- * simply not on that host. A suite that reads `locales/` and asks a preview
- * for all fifteen reports the twelve absences as forty-three broken tools,
- * which is what `qa/preview` was red with.
+ * Previews rebuild the maintained locales; production also overlays frozen
+ * archive pages. Asking every preview for the archive would report a
+ * deployment choice as missing tools.
  *
  * So this asks the host instead, the same way lib/engine.ts asks the browser
- * rather than naming it. Production answers for all fourteen and nothing is
- * narrowed there; a preview answers for the three it has; and a preview built
- * differently tomorrow needs nothing changed here.
+ * rather than naming it. This only discovers optional extra coverage. The
+ * independent maintainedLocales() gate in pages.spec.ts prevents losing a
+ * maintained language from quietly removing all of its checks.
  *
  * WHY THE FRONT PAGE IS THE QUESTION
  *
  * `/<lang>/` is the one address every language has whatever its slugs are
  * translated to, so it needs no [slugs] lookup and cannot be confused by one.
- * A language whose front page answers has its tool pages too: that was checked
- * against this preview, where /zh/ and /zh/<tool>/ both answer and /de/ and
- * /de/<tool>/ are both absent.
+ * The tool-page checks then verify every address in each discovered language;
+ * a hub answering by itself is not proof that those tool pages exist.
  *
  * ASKED TWICE, AND ONCE PER PROCESS
  *

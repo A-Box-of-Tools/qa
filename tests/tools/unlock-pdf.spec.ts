@@ -1,7 +1,9 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { allText, readPages } from '../../lib/pdf';
 import { discoverTools } from '../../lib/tools';
+import { sentence } from '../../lib/converter-frame';
 
 /**
  * Tool-level functional tests for the PDF unlocker.
@@ -192,4 +194,60 @@ test.describe('unlock-pdf: what it refuses', () => {
       'a file it refused was still taken as the chosen document',
     ).toBeHidden();
   });
+});
+
+/**
+ * Independently encrypted by pypdf 6.18.0, copied byte-for-byte from the
+ * website's tests/js/unlock-pdf-fixtures.js aes_256_user fixture at 6b430cc.
+ * It has two text pages, an open password of letmein and a different owner
+ * password. Neither this test nor the tool's example writer encrypts it.
+ */
+const passwordedPdf = () => fs.readFileSync(path.join(__dirname, '../../fixtures/aes-256-password.pdf'));
+const PASSWORD_TEXT = [
+  'SORT CODE 40-11-60 ACCOUNT 71829304 BALANCE 1,284.55',
+  'PAGE TWO 992134 / REF QX-8871',
+];
+
+test.describe('unlock-pdf: a passworded document', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
+  for (const entry of [
+    { kind: 'user', password: 'letmein', retry: true },
+    { kind: 'owner', password: 'ownersecret', retry: false },
+  ]) {
+    test(`the ${entry.kind} password opens the document and preserves both pages`, async ({ page }) => {
+      await page.goto(URL_PATH);
+      await page.locator('#file-input').setInputFiles({
+        name: 'passworded.pdf', mimeType: 'application/pdf', buffer: passwordedPdf(),
+      });
+      await expect(page.locator('#password-row')).toBeVisible();
+      await expect(page.locator('#result')).toBeHidden();
+
+      if (entry.retry) {
+        await page.locator('#password').fill('not-the-password');
+        await page.locator('#try-password').click();
+        await expect(page.locator('#password-error')).toBeVisible();
+        await expect(page.locator('#scheme-what')).toBeHidden();
+        await expect(page.locator('#result')).toBeHidden();
+      }
+
+      await page.locator('#password').fill(entry.password);
+      // Cover the keyboard submission as well as the button used by the
+      // failed attempt: both need to wake the waiting conversion step.
+      if (entry.retry) await page.locator('#password').press('Enter');
+      else await page.locator('#try-password').click();
+      await expect(page.locator('#password-row')).toBeHidden();
+      await expect(page.locator('#password-error')).toBeHidden();
+      await expect(page.locator('#password')).toHaveValue('');
+      await expect(page.locator('#scheme-open')).toContainText(await sentence(page, `open.${entry.kind}`));
+
+      const bytes = await unlocked(page);
+      expect(bytes.toString('latin1')).not.toContain('/Encrypt');
+      const pages = readPages(bytes);
+      expect(pages).toHaveLength(2);
+      for (const [index, text] of PASSWORD_TEXT.entries()) {
+        expect(pages[index].text.join(' ')).toContain(text);
+      }
+    });
+  }
 });

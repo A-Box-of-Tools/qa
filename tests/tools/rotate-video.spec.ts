@@ -3,6 +3,7 @@ import { canEncodeAac, canEncodeVideo, recordVideo } from '../../lib/browser-vid
 import { audioTrack, isMp4, readMp4, videoTrack, type Mp4Track } from '../../lib/mp4';
 import { loadFile, loadTheExample, pressChip, runAndSave } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
+import { holdVideoFlush, holdVerificationRead, releaseHeldExport, waitForHeldExport } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the video rotator.
@@ -131,6 +132,41 @@ test.describe('rotate-video: a clip the browser recorded', () => {
     expect(file.seconds).toBeGreaterThan(SECONDS - 0.8);
     expect(file.seconds).toBeLessThan(SECONDS + 0.8);
   });
+});
+
+test.describe('rotate-video: retiring an export', () => {
+  test.skip(!SHIPPED, NOT_YET);
+
+  for (const action of ['clear', 'cancel'] as const) {
+    test(`${action} at an export completion offers no retired file and can be retried`, async ({ page }) => {
+      test.setTimeout(600_000);
+      test.skip(!await canEncodeVideo(page), 'this engine can write no video');
+      await page.goto(URL_PATH);
+      const before = await loadARecording(page);
+      await page.locator('#bake').check();
+      if (action === 'clear') await holdVideoFlush(page);
+      else await holdVerificationRead(page);
+      await page.locator('#run').click();
+      await waitForHeldExport(page);
+      await page.locator(action === 'clear' ? '#clear-file' : '#cancel').click();
+      await releaseHeldExport(page);
+      await expect(page.locator('#cancel')).toBeHidden();
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#run-error')).toBeHidden();
+      await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+
+      if (action === 'clear') {
+        await expect(page.locator('#file-row')).toBeHidden();
+        await expect(page.locator('#run-card')).toHaveAttribute('inert', '');
+        await loadARecording(page);
+        await page.locator('#bake').check();
+      }
+      const bytes = await runAndSave(page, { timeout: 360_000 });
+      const video = videoTrack(readMp4(bytes));
+      expect(video?.codec).toBe('avc1');
+      expect(video?.samples).toBe(before.samples);
+    });
+  }
 });
 
 test.describe('rotate-video: the clip it ships with, which has sound', () => {

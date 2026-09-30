@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { buildPdf, readPages, allText, type FixturePage } from '../../lib/pdf';
 import { quiet } from '../../lib/engine';
+import { zipEntries } from '../../lib/zip';
 
 /**
  * Tool-level functional tests for the PDF Merger & Splitter.
@@ -217,6 +218,36 @@ test.describe('merge-pdf: choosing and ordering pages', () => {
       'one-a', 'one-b', 'two-a', 'two-b', 'two-c',
     ]);
   });
+});
+
+test.describe('merge-pdf: splitting into a ZIP', () => {
+  for (const split of [
+    { mode: 'every', input: '#split-size', value: '2', groups: [[0, 1], [2, 3], [4]] },
+    { mode: 'at', input: '#split-at', value: '2, 4', groups: [[0], [1, 2], [3, 4]] },
+  ]) {
+    test(`${split.mode} produces readable parts with the selected boundaries`, async ({ page }) => {
+      await page.goto(URL_PATH);
+      await load(page, [
+        { name: 'one.pdf', pages: FIRST },
+        { name: 'two.pdf', pages: SECOND },
+      ]);
+      await page.locator(`input[name="split"][value="${split.mode}"]`).check();
+      await page.locator(split.input).fill(split.value);
+
+      const parts = zipEntries(await build(page));
+      expect(parts).toHaveLength(split.groups.length);
+      expect(new Set(parts.map((part) => part.name)).size).toBe(parts.length);
+      const sourcePages = [...FIRST, ...SECOND];
+      for (const [index, part] of parts.entries()) {
+        expect(part.name).toMatch(/\.pdf$/);
+        const wanted = split.groups[index].map((at) => sourcePages[at]);
+        expect(allText(part.data), part.name).toEqual(wanted.map((p) => p.label));
+        expect(readPages(part.data).map((p) => p.mediaBox), part.name).toEqual(
+          wanted.map((p) => [0, 0, p.width, p.height]),
+        );
+      }
+    });
+  }
 });
 
 test.describe('merge-pdf: the promise', () => {

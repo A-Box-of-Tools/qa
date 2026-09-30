@@ -170,6 +170,35 @@ async function save(page: Page): Promise<void> {
   await expect(page.locator('#result')).toBeVisible({ timeout: 20_000 });
 }
 
+/** Hold the real encoded bytes at the callback boundary, without a timing race. */
+async function holdEncoding(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const original = HTMLCanvasElement.prototype.toBlob;
+    const held = window as typeof window & { releaseRedactionEncode?: () => void };
+    HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+      original.call(this, (blob) => {
+        held.releaseRedactionEncode = () => {
+          HTMLCanvasElement.prototype.toBlob = original;
+          delete held.releaseRedactionEncode;
+          callback(blob);
+        };
+      }, type, quality);
+    };
+  });
+  await page.locator('#format').selectOption('png');
+  await page.locator('#save').click();
+  await page.waitForFunction(() => Boolean(
+    (window as typeof window & { releaseRedactionEncode?: () => void }).releaseRedactionEncode,
+  ));
+}
+
+async function releaseEncoding(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as typeof window & { releaseRedactionEncode?: () => void }).releaseRedactionEncode!();
+  });
+  await expect(page.locator('#busy')).toBeHidden();
+}
+
 test.describe('redact-image: the promise', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(URL_PATH);
@@ -358,6 +387,61 @@ test.describe('redact-image: the editing controls', () => {
     await expect(page.locator('#region-list li')).toHaveCount(0);
     await expect(page.locator('#clear-boxes')).toBeDisabled();
   });
+
+  test('editing after a save retires the old download until the new boxes are saved', async ({ page }) => {
+    await save(page);
+    expect((await analyse(page, BOX, { secret: SECRET })).counts.secret).toBeGreaterThan(0);
+
+    await page.locator('#add-box').click();
+    await expect(page.locator('#result')).toBeHidden();
+    await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+    await save(page);
+    expect((await analyse(page, BOX, { secret: SECRET })).counts.secret).toBe(0);
+    await expect(page.locator('#result-facts li').nth(1)).toContainText('1 area:');
+  });
+
+  test('an edit during encoding cannot be claimed by the older file', async ({ page }) => {
+    await holdEncoding(page);
+    // The held file has no boxes. This new box exists only in the editor.
+    await page.locator('#add-box').click();
+    await expect(page.locator('#region-list li')).toHaveCount(1);
+    await releaseEncoding(page);
+
+    await expect(page.locator('#result')).toBeHidden();
+    await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+    await save(page);
+    expect((await analyse(page, BOX, { secret: SECRET, keep: KEEP })).counts)
+      .toMatchObject({ secret: 0, keep: KEEP_RECT.width * KEEP_RECT.height });
+    await expect(page.locator('#result-facts li').nth(1)).toContainText('1 area:');
+  });
+
+  for (const action of ['clear', 'replace'] as const) {
+    test(`${action} during encoding cannot restore the retired picture's result`, async ({ page }) => {
+      await page.locator('#add-box').click();
+      await holdEncoding(page);
+      if (action === 'clear') {
+        await page.locator('#clear-image').click();
+      } else {
+        await page.locator('#file-input').setInputFiles({
+          name: 'replacement.png', mimeType: 'image/png', buffer: fixture(),
+        });
+        await expect(page.locator('#loaded-name')).toContainText('replacement.png');
+      }
+      await releaseEncoding(page);
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+      await expect(page.locator('#load-error')).toBeHidden();
+
+      if (action === 'clear') {
+        await expect(page.locator('#save')).toBeDisabled();
+        await loadFixture(page);
+      }
+      await expect(page.locator('#region-list li')).toHaveCount(0);
+      await page.locator('#add-box').click();
+      await save(page);
+      expect((await analyse(page, BOX, { secret: SECRET })).counts.secret).toBe(0);
+    });
+  }
 
   test('the picture never leaves the page', async ({ page }) => {
     // Same promise as every tool here, and the one worth checking on a tool

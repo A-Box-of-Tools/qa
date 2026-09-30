@@ -126,6 +126,25 @@ test.describe('the machinery survives translation', () => {
           `${lang}/${slug} is missing phrase key(s) English defines: ${missingPhrases.join(', ')}. `
           + 'Each is a sentence that comes out blank or in English.',
         ).toEqual([]);
+
+        // A key can survive while its blanks change name. That reaches the
+        // page as literal {count}, which key-presence alone cannot detect.
+        const phrases = (html: string) => [...html.matchAll(
+          /<span\b[^>]*data-phrase="([^"]+)"[^>]*>([\s\S]*?)<\/span>/g,
+        )];
+        const localPhrases = phrases(translated!);
+        const keys = localPhrases.map((entry) => entry[1]);
+        expect(keys.filter((key, index) => keys.indexOf(key) !== index),
+          `${lang}/${slug} defines the same phrase more than once`).toEqual([]);
+        const local = new Map(localPhrases.map((entry) => [entry[1], entry[2]]));
+        const blanks = (value: string) => [...value.matchAll(/\{(\w+)\}/g)]
+          .map((entry) => entry[1]).sort();
+        for (const [, key, value] of phrases(english)) {
+          if (local.has(key)) {
+            expect(blanks(local.get(key)!), `${lang}/${slug}: placeholders in ${key}`)
+              .toEqual(blanks(value));
+          }
+        }
       });
     }
   }
