@@ -124,15 +124,23 @@ async function scrubTo(page: Page, fraction: number): Promise<void> {
   await expect(page.locator('#stage-busy')).toBeHidden({ timeout: 30_000 });
 }
 
-// Every test in this file hands a clip to a tool and expects something back.
-// An engine without WebCodecs cannot decode a frame at all - Playwright's
-// WebKit has no VideoDecoder, VideoEncoder, MediaRecorder or OffscreenCanvas -
-// and the tools say so and stop, which is the right answer and leaves nothing
-// here to measure. The refusal itself is asserted in video.spec.ts.
-test.beforeEach(async ({ page }) => {
+// Keep the older WebCodecs scenarios behind their existing prerequisite.
+// Copy and its refusal guard need only native playback for their pixel oracle:
+// probe the cached fixture before loading it into the app, so an app failure
+// cannot be mistaken for a missing decoder.
+test.beforeEach(async ({ page }, testInfo) => {
   await page.goto('/');
+  if (testInfo.tags.includes('@native-playback')) {
+    const { bytes } = await recordVideo(page, {
+      width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
+    });
+    test.skip(!isMp4(bytes), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
+    test.skip(!await canDecodeVideo(page, bytes),
+      'this engine cannot decode the fixture for the independent native playback oracle');
+    return;
+  }
   test.skip(await skipWithoutWebCodecs(page),
-    'this engine has no WebCodecs, so no video tool can decode anything');
+    'this scenario requires the WebCodecs VideoDecoder API');
 });
 
 test.describe('the fixture itself', () => {
@@ -640,11 +648,9 @@ async function saveCopiedVideo(page: Page): Promise<Buffer> {
 }
 
 test.describe('trim-video: keeping part of the time', () => {
-  test('the downloaded copy preserves reordered parts when only the first needs preroll', async ({ page }) => {
+  test('the downloaded copy preserves reordered parts when only the first needs preroll', { tag: '@native-playback' }, async ({ page }) => {
     test.setTimeout(240_000);
     const original = await loadClip(page, TRIM, '#section-card');
-    test.skip(!isMp4(original), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
-    test.skip(!await canDecodeVideo(page, original), 'this engine cannot decode the fixture for the pixel oracle');
     expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
       'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
     await typeVideoPart(page, '0:00.000', '0:00.500');
@@ -675,11 +681,9 @@ test.describe('trim-video: keeping part of the time', () => {
     }
   });
 
-  test('cut mode refuses internal Copy preroll and explicitly exports Exact with the requested timing', async ({ page }) => {
+  test('cut mode refuses internal Copy preroll and explicitly exports Exact with the requested timing', { tag: '@native-playback' }, async ({ page }) => {
     test.setTimeout(240_000);
     const original = await loadClip(page, TRIM, '#section-card');
-    test.skip(!isMp4(original), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
-    test.skip(!await canDecodeVideo(page, original), 'this engine cannot decode the fixture for the pixel oracle');
     expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
       'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
     await typeVideoPart(page, '0:00.500', '0:01.000');
