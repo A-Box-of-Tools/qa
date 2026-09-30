@@ -135,8 +135,15 @@ test.beforeEach(async ({ page }, testInfo) => {
       width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
     });
     test.skip(!isMp4(bytes), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
-    test.skip(!await canDecodeVideo(page, bytes),
-      'this engine cannot decode the fixture for the independent native playback oracle');
+    // The hub forbids blob media in its CSP. A native capability probe must
+    // not inherit that page policy or mistake it for an unsupported decoder.
+    const probe = await page.context().newPage();
+    try {
+      test.skip(!await canDecodeVideo(probe, bytes),
+        'this engine cannot decode the fixture for the independent native playback oracle');
+    } finally {
+      await probe.close();
+    }
     return;
   }
   test.skip(await skipWithoutWebCodecs(page),

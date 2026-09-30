@@ -154,7 +154,11 @@ emulation. They do not cover Firefox, native Safari, hardware codecs or real
 camera/touch devices. Capability probes are independent of the app and can
 skip unsupported video/audio processing, camera input, AVIF/WebP, File storage
 or service-worker APIs and offline emulation. A refusal scenario does not prove a successful export.
-The two strict Video Cutter cases probe the actual fixture through native playback before loading the app; Copy and its refusal guard do not require VideoDecoder. Exact separately probes fixture decoding and H.264 encoding after asserting the Copy refusal.
+The two strict Video Cutter cases probe the actual fixture through native playback
+on a fresh blank page before loading the app, so the hub's policy cannot be
+mistaken for a missing decoder. Copy and its refusal guard do not require
+VideoDecoder. Exact separately probes fixture decoding and H.264 encoding after
+asserting the Copy refusal.
 Passed, flaky and skipped counts must be reported separately after CI.
 
 WebKit can expose APIs whose support probes stall. Those bounded probes may
