@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import { canDecodeVideo, recordVideo, skipWithoutWebCodecs } from '../../lib/browser-video';
-import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
+import { boxesIn, findBox, findBoxes, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
 import { decodedPixels, decodedSize, pixelAt } from '../../lib/browser-image';
 import { quiet } from '../../lib/engine';
@@ -394,6 +394,199 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
   }, { data: Array.from(bytes), times });
 }
 
+/**
+ * Native seeking across a multi-entry edit list is approximate in Chromium
+ * (also documented by the tool). Observe real sequentially presented frames
+ * instead, retaining their media timestamps when the runner misses a callback.
+ */
+async function playedVideoFrames(page: Page, bytes: Buffer, targets: number[]) {
+  return page.evaluate(async ({ data, targets }) => {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: 'video/mp4' }));
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.playbackRate = 0.5;
+    // A presented-frame callback needs a rendered video, not a hidden scratch
+    // element. This temporary player is removed even if decoding fails.
+    video.style.cssText = 'position:fixed;top:0;left:0;width:320px;height:240px;z-index:2147483647';
+    document.body.append(video);
+    let callback = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await new Promise<{ duration: number; frames: Array<{ time: number; colour: number[] }> }>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('sequential video sampling did not finish within 20 seconds')), 20_000);
+        video.onerror = () => reject(new Error('the downloaded video failed during sequential playback'));
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d', { willReadFrequently: true })!;
+        const frames: Array<{ time: number; colour: number[] }> = [];
+        const frame = (_: number, metadata: VideoFrameCallbackMetadata) => {
+          const target = targets[frames.length];
+          if (metadata.mediaTime >= target) {
+            // Sampling a later interval would stop checking this one at all.
+            if (metadata.mediaTime - target >= 0.25) {
+              reject(new Error(`no presented frame observed near ${target}s; first was ${metadata.mediaTime}s`));
+              return;
+            }
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0);
+            const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
+              Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
+            ).data);
+            frames.push({ time: metadata.mediaTime, colour: [0, 1, 2].map((channel) =>
+              pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]) });
+            if (frames.length === targets.length) {
+              resolve({ duration: video.duration, frames });
+              return;
+            }
+          }
+          callback = video.requestVideoFrameCallback(frame);
+        };
+        video.onended = () => reject(new Error('the downloaded video ended before every retained interval was sampled'));
+        video.onloadeddata = () => {
+          callback = video.requestVideoFrameCallback(frame);
+          void video.play().catch(reject);
+        };
+        video.src = url;
+      });
+    } finally {
+      clearTimeout(timer);
+      video.cancelVideoFrameCallback(callback);
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.remove();
+      URL.revokeObjectURL(url);
+    }
+  }, { data: Array.from(bytes), targets });
+}
+
+interface EncodedVideoSample { pts: number; duration: number; data: Buffer }
+
+/** Read the fixture/output sample tables here, independently of the tool. */
+function encodedVideoSamples(bytes: Buffer): { timescale: number; samples: EncodedVideoSample[] } {
+  const track = findBoxes(bytes, 'trak').find((box) => {
+    const handler = findBox(bytes, 'hdlr', box.dataStart, box.end)!;
+    return bytes.toString('latin1', handler.dataStart + 8, handler.dataStart + 12) === 'vide';
+  })!;
+  const box = (type: string) => findBox(bytes, type, track.dataStart, track.end)!;
+  const mdhd = box('mdhd').dataStart;
+  const timescale = bytes.readUInt32BE(mdhd + (bytes[mdhd] === 1 ? 20 : 12));
+  const samples: EncodedVideoSample[] = [];
+  const fragments = boxesIn(bytes).filter((entry) => entry.type === 'moof');
+  if (fragments.length) {
+    // The silent MediaRecorder fixture has one track. trun carries each sample
+    // size and duration, so no encoded payload or timing comes from site code.
+    expect(readMp4(bytes).tracks).toHaveLength(1);
+    for (const fragment of fragments) {
+      const tfhd = findBox(bytes, 'tfhd', fragment.dataStart, fragment.end)!.dataStart;
+      const flags = bytes.readUInt32BE(tfhd) & 0xffffff;
+      let field = tfhd + 8;
+      let base = fragment.start;
+      if (flags & 1) { base = Number(bytes.readBigUInt64BE(field)); field += 8; }
+      if (flags & 2) field += 4;
+      const defaultDuration = flags & 8 ? bytes.readUInt32BE(field) : 0;
+      if (flags & 8) field += 4;
+      const defaultSize = flags & 16 ? bytes.readUInt32BE(field) : 0;
+      const tfdt = findBox(bytes, 'tfdt', fragment.dataStart, fragment.end)!.dataStart;
+      let dts = bytes[tfdt] === 1 ? Number(bytes.readBigUInt64BE(tfdt + 4)) : bytes.readUInt32BE(tfdt + 4);
+      let offset = 0;
+      for (const run of findBoxes(bytes, 'trun', fragment.dataStart, fragment.end)) {
+        const at = run.dataStart;
+        const runFlags = bytes.readUInt32BE(at) & 0xffffff;
+        const count = bytes.readUInt32BE(at + 4);
+        let cursor = at + 8;
+        if (runFlags & 1) { offset = base + bytes.readInt32BE(cursor); cursor += 4; }
+        if (runFlags & 4) cursor += 4;
+        for (let i = 0; i < count; i += 1) {
+          const duration = runFlags & 0x100 ? bytes.readUInt32BE(cursor) : defaultDuration;
+          if (runFlags & 0x100) cursor += 4;
+          const size = runFlags & 0x200 ? bytes.readUInt32BE(cursor) : defaultSize;
+          if (runFlags & 0x200) cursor += 4;
+          if (runFlags & 0x400) cursor += 4;
+          const composition = runFlags & 0x800
+            ? (bytes[at] === 1 ? bytes.readInt32BE(cursor) : bytes.readUInt32BE(cursor)) : 0;
+          if (runFlags & 0x800) cursor += 4;
+          expect(duration).toBeGreaterThan(0);
+          expect(size).toBeGreaterThan(0);
+          samples.push({ pts: dts + composition, duration, data: bytes.subarray(offset, offset + size) });
+          dts += duration;
+          offset += size;
+        }
+      }
+    }
+    return { timescale, samples };
+  }
+  const expandRuns = (type: string): number[] => {
+    const table = findBox(bytes, type, track.dataStart, track.end);
+    if (!table) return [];
+    const at = table.dataStart;
+    const result: number[] = [];
+    for (let i = 0; i < bytes.readUInt32BE(at + 4); i += 1) {
+      const count = bytes.readUInt32BE(at + 8 + i * 8);
+      const value = type === 'ctts' && bytes[at] === 1
+        ? bytes.readInt32BE(at + 12 + i * 8) : bytes.readUInt32BE(at + 12 + i * 8);
+      result.push(...Array<number>(count).fill(value));
+    }
+    return result;
+  };
+  const durations = expandRuns('stts');
+  const compositions = expandRuns('ctts');
+  const stsz = box('stsz').dataStart;
+  const fixed = bytes.readUInt32BE(stsz + 4);
+  const stsc = box('stsc').dataStart;
+  const runs = Array.from({ length: bytes.readUInt32BE(stsc + 4) }, (_, i) => ({
+    first: bytes.readUInt32BE(stsc + 8 + i * 12), count: bytes.readUInt32BE(stsc + 12 + i * 12),
+  }));
+  const stco = box('stco').dataStart;
+  let sample = 0;
+  let dts = 0;
+  for (let chunk = 1; chunk <= bytes.readUInt32BE(stco + 4); chunk += 1) {
+    let offset = bytes.readUInt32BE(stco + 4 + chunk * 4);
+    const run = [...runs].reverse().find((entry) => entry.first <= chunk)!;
+    for (let i = 0; i < run.count; i += 1) {
+      const size = fixed || bytes.readUInt32BE(stsz + 12 + sample * 4);
+      samples.push({ pts: dts + (compositions[sample] ?? 0), duration: durations[sample], data: bytes.subarray(offset, offset + size) });
+      dts += durations[sample];
+      offset += size;
+      sample += 1;
+    }
+  }
+  expect(samples).toHaveLength(bytes.readUInt32BE(stsz + 8));
+  return { timescale, samples };
+}
+
+function expectCopiedIntervals(original: Buffer, saved: Buffer, ranges: Array<[number, number]>): void {
+  const source = encodedVideoSamples(original);
+  const output = encodedVideoSamples(saved);
+  const elst = findBox(saved, 'elst')!.dataStart;
+  expect(saved[elst], 'this writer emits version-zero edit lists').toBe(0);
+  expect(saved.readUInt32BE(elst + 4)).toBe(ranges.length);
+  const identities = new Map<string, EncodedVideoSample[]>();
+  for (const sample of source.samples) {
+    const key = sample.data.toString('base64');
+    identities.set(key, [...(identities.get(key) ?? []), sample]);
+  }
+  for (const [index, [start, end]] of ranges.entries()) {
+    const entry = elst + 8 + index * 12;
+    const duration = saved.readUInt32BE(entry) / 1000;
+    const from = saved.readInt32BE(entry + 4) / output.timescale;
+    expect(saved.readUInt32BE(entry + 8), 'edit rate is one').toBe(0x10000);
+    expect(Math.abs(duration - (end - start))).toBeLessThanOrEqual(0.001);
+    const visible = output.samples.filter((sample) =>
+      (sample.pts + sample.duration) / output.timescale > from && sample.pts / output.timescale < from + duration);
+    expect(visible.length, `interval ${index} has encoded pictures`).toBeGreaterThan(1);
+    for (const sample of visible) {
+      const expectedTime = start + sample.pts / output.timescale - from;
+      const matches = identities.get(sample.data.toString('base64')) ?? [];
+      expect(matches.some((input) => Math.abs(input.pts / source.timescale - expectedTime)
+        < 2 / Math.min(source.timescale, output.timescale)),
+      `interval ${index} contains the original encoded frame at ${expectedTime}s`).toBe(true);
+    }
+  }
+}
+
 function colourDistance(a: number[], b: number[]): number {
   return Math.max(...a.map((value, channel) => Math.abs(value - b[channel])));
 }
@@ -451,14 +644,18 @@ test.describe('trim-video: keeping part of the time', () => {
     await page.locator('input[name="mode"][value="cut"]').check();
     const bytes = await saveCopiedVideo(page);
 
-    const expected = await savedVideoFrames(page, original, [0.20, 1.20, 2.20]);
-    const actual = await savedVideoFrames(page, bytes, [0.20, 0.70, 1.20]);
+    test.skip(!await page.evaluate(() => 'requestVideoFrameCallback' in HTMLVideoElement.prototype),
+      'this engine cannot report timestamps of sequentially presented frames');
+    const actual = await playedVideoFrames(page, bytes, [0.20, 0.70, 1.20]);
+    const sourceTimes = actual.frames.map(({ time }) => time < 0.5 ? time : time < 1 ? time + 0.5 : time + 1);
+    const expected = await savedVideoFrames(page, original, sourceTimes);
     const seconds = expected.duration - 1;
     expect(Math.abs(readMp4(bytes).seconds - seconds)).toBeLessThan(0.075);
     expect(Math.abs(actual.duration - seconds)).toBeLessThan(0.075);
-    for (let i = 0; i < actual.colours.length; i += 1) {
-      expect(colourDistance(actual.colours[i], expected.colours[i]),
-        `saved frame ${i} belongs to a retained interval`).toBeLessThan(40);
+    expectCopiedIntervals(original, bytes, [[0, 0.5], [1, 1.5], [2, expected.duration]]);
+    for (let i = 0; i < actual.frames.length; i += 1) {
+      expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
+        `saved frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
     }
   });
 

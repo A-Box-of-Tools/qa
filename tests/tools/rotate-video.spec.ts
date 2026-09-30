@@ -3,7 +3,7 @@ import { canEncodeAac, canEncodeVideo, recordVideo } from '../../lib/browser-vid
 import { audioTrack, isMp4, readMp4, videoTrack, type Mp4Track } from '../../lib/mp4';
 import { loadFile, loadTheExample, pressChip, runAndSave } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
-import { holdVideoFlush, holdVerificationRead, releaseHeldExport, waitForHeldExport } from '../../lib/held-video-flush';
+import { canEncodeH264, holdVideoFlush, holdVerificationRead, releaseHeldExport, waitForHeldExport } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the video rotator.
@@ -140,7 +140,7 @@ test.describe('rotate-video: retiring an export', () => {
   for (const action of ['clear', 'cancel'] as const) {
     test(`${action} at an export completion offers no retired file and can be retried`, async ({ page }) => {
       test.setTimeout(600_000);
-      test.skip(!await canEncodeVideo(page), 'this engine can write no video');
+      test.skip(!await canEncodeH264(page), 'this engine cannot encode H.264 with WebCodecs; this case needs that converter path');
       await page.goto(URL_PATH);
       const before = await loadARecording(page);
       await page.locator('#bake').check();

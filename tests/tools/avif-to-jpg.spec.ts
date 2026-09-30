@@ -68,9 +68,9 @@ test.describe('avif-to-jpg: the fixtures', () => {
   });
 
   test('a file that is not an AVIF is not evidence about the browser', async ({ page }) => {
-    // A PNG with the wrong name is not an AVIF. Its refusal must stay about
-    // the file rather than become a claim about the browser's decoder.
-    // True on every engine, so asked of every engine.
+    // The wrong-format refusal is about this file. A separate startup probe
+    // may still explain that an incapable engine cannot read genuine AVIFs.
+    const capable = await readsAvif(page);
     await page.goto(URL_PATH);
     await give(page, [avif('pretender.avif', encodePng(16, 16, () => [10, 20, 30]))], 0);
 
@@ -78,7 +78,12 @@ test.describe('avif-to-jpg: the fixtures', () => {
       name: 'pretender.avif',
       found: await sentence(page, 'found.png'),
     }));
-    await expect(page.locator('#support-error')).toBeHidden();
+    if (capable) {
+      await expect(page.locator('#support-error')).toBeHidden();
+    } else {
+      await expect(page.locator('#support-error'))
+        .toContainText(await sentence(page, 'support.noavif'));
+    }
     await expect(page.locator('#run-card')).toHaveAttribute('inert', '');
   });
 });

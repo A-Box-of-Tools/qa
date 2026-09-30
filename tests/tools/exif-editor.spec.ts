@@ -242,7 +242,9 @@ for (const kind of ['jpg', 'png', 'webp']) {
     await page.goto(URL_PATH);
     const original = kind === 'jpg' ? await realJpeg(page, 64, 48, 38)
       : kind === 'png' ? encodePng(64, 48, (x, y) => [x * 3, y * 4, 80])
-        : encodeWebp(64, 48, (x, y) => [x * 3, y * 4, 80, 255]);
+        // The independent lossless writer supports two values per channel;
+        // quadrants retain a varying picture for the byte-preservation oracle.
+        : encodeWebp(64, 48, (x, y) => [x < 32 ? 35 : 205, y < 24 ? 60 : 180, 80, 255]);
     const name = `editing.${kind}`;
     await load(page, original, name);
     await page.locator('#add-tag > summary').click();

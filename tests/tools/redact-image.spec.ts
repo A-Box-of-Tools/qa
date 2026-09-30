@@ -415,6 +415,34 @@ test.describe('redact-image: the editing controls', () => {
     await expect(page.locator('#result-facts li').nth(1)).toContainText('1 area:');
   });
 
+  for (const when of ['after saving', 'during encoding'] as const) {
+    test(`a row style change ${when} retires the file made with the earlier style`, async ({ page }) => {
+      await page.locator('#add-box').click();
+      await page.locator('#region-list .region-style').selectOption('pixelate');
+      if (when === 'after saving') {
+        await save(page);
+        expect((await analyse(page, BOX, { secret: SECRET })).boxIsFlat).toBe(false);
+      } else {
+        await holdEncoding(page);
+      }
+
+      // The row dropdown is a separate path from the page's style radios.
+      // A black-fill choice must not leave the weaker mosaic downloadable.
+      await page.locator('#region-list .region-style').selectOption('fill');
+      await expect(page.locator('#region-list .region-style')).toHaveValue('fill');
+      if (when === 'during encoding') await releaseEncoding(page);
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+
+      await save(page);
+      const result = await analyse(page, BOX, { secret: SECRET, keep: KEEP, black: [0, 0, 0] });
+      expect(result.boxIsFlat).toBe(true);
+      expect(result.counts).toMatchObject({
+        secret: 0, keep: KEEP_RECT.width * KEEP_RECT.height, black: BOX.width * BOX.height,
+      });
+    });
+  }
+
   for (const action of ['clear', 'replace'] as const) {
     test(`${action} during encoding cannot restore the retired picture's result`, async ({ page }) => {
       await page.locator('#add-box').click();

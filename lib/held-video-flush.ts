@@ -1,4 +1,41 @@
 import { expect, type Page } from '@playwright/test';
+import { ask, onAPageOfItsOwn } from './engine';
+
+/**
+ * These converters need the H.264 WebCodecs path, not merely MediaRecorder.
+ * Ask independently on a disposable page because some WebKit builds expose
+ * VideoEncoder but crash when its codec support is queried.
+ */
+export async function canEncodeH264(page: Page): Promise<boolean> {
+  return ask(page, 'encode-h264-webcodecs', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
+    const platform = globalThis as {
+      VideoEncoder?: { isConfigSupported(config: unknown): Promise<{ supported?: boolean }> };
+      VideoFrame?: unknown;
+    };
+    const encoder = platform.VideoEncoder;
+    if (!encoder?.isConfigSupported || typeof platform.VideoFrame !== 'function') return false;
+    // The same profiles and complete configuration that the converter may use,
+    // without consulting the tool's own result or importing its implementation.
+    const profiles = [
+      'avc1.640034', 'avc1.640033', 'avc1.640032', 'avc1.64002a', 'avc1.640028',
+      'avc1.4d0034', 'avc1.4d0028', 'avc1.42003e', 'avc1.42001f',
+    ];
+    for (const codec of profiles) {
+      try {
+        const supported = await Promise.race([
+          encoder.isConfigSupported({
+            codec, width: 320, height: 240, framerate: 30,
+            bitrate: 1_200_000, avc: { format: 'avc' },
+          }),
+          new Promise<undefined>((resolve) => { setTimeout(() => resolve(undefined), 2_000); }),
+        ]);
+        if (!supported) return false;
+        if (supported.supported) return true;
+      } catch { /* another profile may still be supported */ }
+    }
+    return false;
+  })), false);
+}
 
 /**
  * Hold the next real encoder flush after its bytes have been produced.

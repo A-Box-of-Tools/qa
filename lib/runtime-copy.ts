@@ -41,7 +41,11 @@ export async function expectLocalizedCopy(
     const rememberAddress = (value: string) => {
       for (const match of value.matchAll(/https?:\/\/[^\s<>"']+/g)) {
         try {
-          for (const token of new URL(match[0]).hostname.match(dotted) ?? []) sourceHosts.add(token);
+          const host = new URL(match[0]).hostname;
+          for (const token of host.match(dotted) ?? []) sourceHosts.add(token);
+          // Listings display a declared www address without that prefix.
+          // Keep the exemption tied to the source URL, not arbitrary domains.
+          if (host.startsWith('www.')) sourceHosts.add(host.slice(4));
         } catch { /* not an address the source declares */ }
       }
     };

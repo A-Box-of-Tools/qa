@@ -3,7 +3,103 @@ import type { AddressInfo } from 'node:net';
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../lib/tools';
 import { localeUrl } from '../lib/locales';
-import { withoutThirdParties } from '../lib/engine';
+import { ask, withoutThirdParties } from '../lib/engine';
+
+async function stopServer(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  });
+}
+
+type OfflineCapability = { supported: boolean; unsupported?: string; failure?: string };
+
+async function canEmulateOfflineWorkerNavigation(page: Page): Promise<OfflineCapability> {
+  // Playwright can reject a worker response before the worker handles it:
+  // https://github.com/microsoft/playwright/issues/42775. Ask with an unrelated
+  // cache-only worker, so a broken website can never remove its own checks.
+  return ask<OfflineCapability>(page, 'offline-worker-navigation', async () => {
+    const browser = page.context().browser();
+    if (!browser) return { supported: false, failure: 'the probe has no browser' };
+    const own = await browser.newContext({ serviceWorkers: 'allow' });
+    const scratch = await own.newPage();
+    scratch.setDefaultTimeout(5_000);
+    scratch.setDefaultNavigationTimeout(5_000);
+    const marker = 'independent cached worker response';
+    const server = createServer((req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.url === '/probe/sw.js') {
+        res.setHeader('Content-Type', 'application/javascript');
+        res.end(`self.addEventListener('install', event => event.waitUntil((async () => {
+          const cache = await caches.open('qa-offline-probe');
+          await cache.add('/probe/cached.html');
+          await self.skipWaiting();
+        })()));
+        self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+        self.addEventListener('fetch', event => {
+          if (event.request.mode === 'navigate') {
+            event.respondWith(caches.open('qa-offline-probe').then(cache => cache.match('/probe/cached.html')));
+          }
+        });`);
+      } else {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(`<!doctype html><title>Independent offline probe</title><main>${
+          req.url === '/probe/cached.html' ? marker : 'origin response'
+        }</main>`);
+      }
+    });
+    const deadline = setTimeout(() => {
+      void own.close().catch(() => {});
+      void stopServer(server).catch(() => {});
+    }, 20_000);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await scratch.goto(`${origin}/probe/`);
+      if (!await scratch.evaluate(() => 'serviceWorker' in navigator)) {
+        return { supported: false, unsupported: 'the engine exposes no service-worker API' };
+      }
+      await scratch.evaluate(async () => {
+        await navigator.serviceWorker.register('/probe/sw.js');
+        await navigator.serviceWorker.ready;
+      });
+      await scratch.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+      await scratch.goto(`${origin}/probe/online-check`);
+      if (await scratch.locator('main').textContent() !== marker) {
+        return { supported: false, failure: 'the independent worker did not serve its cache while online' };
+      }
+      await own.setOffline(true);
+      // A page outside the worker's scope must fail, or the browser was not
+      // actually taken offline and a successful worker result proves nothing.
+      const negative = await own.newPage();
+      let networkRefused = false;
+      try {
+        await negative.goto(`${origin}/no-worker`, { timeout: 5_000 });
+      } catch {
+        networkRefused = true;
+      } finally {
+        await negative.close();
+      }
+      if (!networkRefused) return { supported: false, failure: 'offline emulation still reached the origin without a worker' };
+      try {
+        await scratch.goto(`${origin}/probe/offline-check`);
+      } catch (error) {
+        return { supported: false, unsupported: `offline emulation rejected the independent cache-only worker: ${String(error)}` };
+      }
+      if (await scratch.locator('main').textContent() !== marker) {
+        return { supported: false, failure: 'offline emulation returned an unexpected independent response' };
+      }
+      return { supported: true };
+    } finally {
+      clearTimeout(deadline);
+      try { await own.close(); } finally { await stopServer(server); }
+    }
+  }, { supported: false, failure: 'the independent offline probe failed or exceeded its deadline' }, 25_000);
+}
 
 async function controlled(page: Page, scope: string): Promise<void> {
   await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL ?? ''),
@@ -15,6 +111,9 @@ test.describe('offline: every tool keeps its installed page', () => {
   for (const slug of discoverTools()) {
     test(`${slug} reloads its own shell and modules without the network`, async ({ page, context }) => {
       test.setTimeout(150_000);
+      const capability = await canEmulateOfflineWorkerNavigation(page);
+      expect(capability.failure, capability.failure).toBeUndefined();
+      test.skip(!capability.supported, capability.unsupported);
       await withoutThirdParties(page);
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
@@ -52,7 +151,7 @@ test.describe('offline: every tool keeps its installed page', () => {
 });
 
 test('offline: an unchanged worker refreshes HTML and preserves neighboring scope caches',
-  async ({ page, context, request }) => {
+  async ({ page, request }) => {
     test.setTimeout(150_000);
     const hub = '/es/';
     const tool = localeUrl('es', 'base64');
@@ -127,17 +226,23 @@ test('offline: an unchanged worker refreshes HTML and preserves neighboring scop
         const registration = await navigator.serviceWorker.getRegistration();
         const scope = new URL(registration!.scope).pathname;
         const name = (await caches.keys()).find((entry) => entry.startsWith(`abox:${scope}:`));
-        return (await (await caches.open(name!)).match(url))?.text();
+        const cached = await (await caches.open(name!)).match(url);
+        if (!cached) return undefined;
+        const html = new DOMParser().parseFromString(await cached.text(), 'text/html');
+        return html.querySelector('main')?.textContent;
       }, guide)).toBe('revision 2');
-      await context.setOffline(true);
+      // Stop this origin, including persistent sockets, rather than using
+      // Playwright's offline flag. This strict fallback case still runs when
+      // the independent probe finds that flag blocks worker navigation.
+      await stopServer(server);
+      expect(server.listening, 'the controlled origin must be stopped').toBe(false);
       await page.reload();
       await expect(page.locator('main')).toHaveText('revision 2');
       await page.goto(origin + tool);
       await expect(page.locator('main')).toHaveText('revision 1');
       expect(await page.evaluate(() => caches.keys())).toEqual(expect.arrayContaining([hubName, toolName]));
     } finally {
-      await context.setOffline(false);
       await page.close();
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await stopServer(server);
     }
   });

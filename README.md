@@ -27,7 +27,7 @@ remaining capability and scenario boundaries.
 | [`tests/localized-runtime.spec.ts`](tests/localized-runtime.spec.ts) | Spanish and Portuguese interface text and accessible attributes on every tool, plus real loaded/result journeys for 18 tools and representative malformed-file errors; catches unresolved phrases/placeholders and translated phrases falling back to English |
 | [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` serious/critical checks on every English tool, the English/Chinese hubs, a guide and the page types; representative loaded/error/dark states and Tab-reachability of every file picker |
 | [`tests/loaded-accessibility.spec.ts`](tests/loaded-accessibility.spec.ts) | Additional loaded/result and error states across text, checksum, PDF, GIF, data-URI and audio interfaces |
-| [`tests/offline.spec.ts`](tests/offline.spec.ts) | Every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML and independent nested caches. |
+| [`tests/offline.spec.ts`](tests/offline.spec.ts) | On engines passing an independent offline-emulation probe, every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML, independent nested caches and fallback after that origin is stopped. |
 | [`tests/handoff.spec.ts`](tests/handoff.spec.ts) | A generated PDF reaches the next tool byte-for-byte, is consumed once, and storage refusal opens the destination without partial input |
 
 `lib/tools.ts` and `lib/csp.ts` read the tool list and the CSP allowlist
@@ -101,7 +101,9 @@ browser. Capability probes can skip video/audio processing, camera input,
 AVIF or WebP support, or storing a File in IndexedDB when the test engine
 cannot perform them. Corresponding refusals have separate scenarios where the
 engine can remain alive long enough to show one. A missing service-worker API
-likewise produces an explicit offline skip. Counts of passed, flaky and
+or failed independent offline-emulation probe produces an explicit offline
+skip. The latter uses a cache-only worker unrelated to the website; a tool's
+own failure never skips its test. Counts of passed, flaky and
 skipped cases are reported separately on the website commit.
 
 WebKit's codec and storage capabilities differ from native Safari's. Firefox
@@ -110,10 +112,15 @@ checks remain useful for those boundaries; emulated phone viewports do not
 prove a hardware codec, camera or touch implementation.
 
 The offline matrix verifies installed page/module availability for every tool
-and a small real operation, not every export format without a connection.
+on engines supporting offline emulation, plus a small real operation, not
+every export format without a connection.
 Share-text's shell can reload offline; sharing itself deliberately needs the
 network. The controlled cache test uses the deployed worker's unchanged bytes
 on a local origin and never modifies the preview or production deployment.
+Its fallback checks stop that server and close its sockets, avoiding the
+[WebKit offline-emulation bug](https://github.com/microsoft/playwright/issues/42775)
+without skipping the actual generated-worker assertions. An origin outage is
+not the same condition as universal offline emulation.
 
 Localization checks cover structure and runtime copy, not linguistic quality.
 They allow technical identifiers and file content rather than calling those

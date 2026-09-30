@@ -42,13 +42,19 @@ async function save(page: Page, click: () => Promise<void>): Promise<Buffer> {
   return fs.readFileSync(path);
 }
 
-/** Pause only the next real decode; later decodes still use the browser. */
+/**
+ * Pause the next export decode, leaving any pending preview redraw alone. A
+ * palette change schedules a preview after 150 ms, which can beat a click on a
+ * busy runner. The export reveals Cancel synchronously before its first decode.
+ */
 async function holdNextDecode(page: Page): Promise<void> {
   await page.evaluate(() => {
     const decode = window.createImageBitmap.bind(window);
     const state = window as any;
     state.__qaGifDecodeHeld = false;
     window.createImageBitmap = (async (...args: Parameters<typeof createImageBitmap>) => {
+      const cancel = document.getElementById('cancel');
+      if (!cancel || cancel.hidden) return (decode as any)(...args);
       window.createImageBitmap = decode;
       state.__qaGifDecodeHeld = true;
       await new Promise<void>((resolve) => { state.__qaReleaseGifDecode = resolve; });

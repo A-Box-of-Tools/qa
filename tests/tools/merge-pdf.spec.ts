@@ -57,9 +57,9 @@ async function load(page: Page, documents: Array<{ name: string; pages: FixtureP
 /** Build the document and return the bytes the browser saved. */
 async function build(page: Page): Promise<Buffer> {
   await expect(page.locator('#run')).toBeEnabled();
-  const pending = page.waitForEvent('download');
   await page.locator('#run').click();
   await expect(page.locator('#result')).toBeVisible({ timeout: 30_000 });
+  const pending = page.waitForEvent('download');
   await page.locator('#download').click();
 
   const saved = await pending;

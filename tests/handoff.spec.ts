@@ -122,15 +122,31 @@ test('handoff: images-to-pdf carries the exact PDF into merge-pdf once', async (
   test.skip(!await keepsFilesInStorage(page), 'this engine cannot preserve a File in IndexedDB');
   const original = await makeCarriablePdf(page);
   expect(original.length).toBeGreaterThan(500);
+  await page.addInitScript(() => {
+    // The receiver clears the picker after taking its own File snapshot.
+    // Retain the actual delivered objects before that normal reset, without
+    // replacing the event, the files, or any step of the receiving tool.
+    const delivered: File[][] = [];
+    (window as unknown as { qaDeliveredFiles: File[][] }).qaDeliveredFiles = delivered;
+    document.addEventListener('change', (event) => {
+      const input = event.target;
+      if (input instanceof HTMLInputElement && input.id === 'file-input') {
+        delivered.push(Array.from(input.files ?? []));
+      }
+    }, true);
+  });
   await Promise.all([
     page.waitForURL('**/merge-pdf/'),
     page.locator('nav.handoff a[data-slug="merge-pdf"]').click(),
   ]);
   await expect(page.locator('#page-list li')).toHaveCount(2, { timeout: 30_000 });
-  const delivered = await page.locator('#file-input').evaluate(async (input) => {
-    const files = (input as HTMLInputElement).files!;
-    return { count: files.length, bytes: Array.from(new Uint8Array(await files[0].arrayBuffer())) };
+  const delivered = await page.evaluate(async () => {
+    const events = (window as unknown as { qaDeliveredFiles: File[][] }).qaDeliveredFiles;
+    const files = events.flat();
+    return { events: events.length, count: files.length, bytes: files.length === 1
+      ? Array.from(new Uint8Array(await files[0].arrayBuffer())) : [] };
   });
+  expect(delivered.events, 'the handoff must dispatch one delivery').toBe(1);
   expect(delivered.count).toBe(1);
   expect(delivered.bytes).toEqual(original);
   const pending = await page.evaluate(() => new Promise<unknown>((resolve, reject) => {
@@ -150,6 +166,8 @@ test('handoff: images-to-pdf carries the exact PDF into merge-pdf once', async (
   // document as though the visitor had just chosen it again.
   await page.reload();
   await expect(page.locator('#page-list li')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { qaDeliveredFiles: File[][] }).qaDeliveredFiles.length))
+    .toBe(0);
 });
 
 test('handoff: refused storage still opens the destination with no partial delivery', async ({ page }) => {

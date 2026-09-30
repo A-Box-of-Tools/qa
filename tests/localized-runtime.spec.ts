@@ -100,9 +100,14 @@ async function exercise(page: Page, slug: string, locale: string): Promise<void>
   if (['grab-frame', 'trim-video', 'crop-video'].includes(slug)) {
     const clip = await recordVideo(page, { width: 160, height: 120, seconds: 1, fps: 10 });
     test.skip(!await canDecodeVideo(page, clip.bytes, clip.mimeType), 'the engine cannot decode the video fixture; malformed-file messages have a separate case');
-    await upload(page, 'qa.mp4', clip.mimeType, clip.bytes);
     if (slug === 'trim-video') {
-      await expect(page.locator('#clip-list li')).toHaveCount(1);
+      // A single clip intentionally has no list or ordering controls.
+      const names = ['qa-first.mp4', 'qa-second.mp4'];
+      rememberFiles(page, names);
+      await page.locator('#file-input').setInputFiles(names.map((name) => ({
+        name, mimeType: clip.mimeType, buffer: clip.bytes,
+      })));
+      await expect(page.locator('#clip-list li')).toHaveCount(2);
       await segments(page);
       const buttons = page.locator('#clip-list button');
       for (const key of ['seg.up', 'seg.down', 'seg.remove']) {
@@ -110,6 +115,7 @@ async function exercise(page: Page, slug: string, locale: string): Promise<void>
         expect(await buttons.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label')))).toContain(text);
       }
     } else {
+      await upload(page, 'qa.mp4', clip.mimeType, clip.bytes);
       await expect(page.locator('#source')).toBeVisible();
       if (slug === 'grab-frame') {
         await page.locator('#grab').click();

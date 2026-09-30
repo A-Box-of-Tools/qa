@@ -205,8 +205,9 @@ test.describe('edit-audio: changing a recording', () => {
 
 /**
  * Each sample has a known value, rather than a repeated tone that could hide a
- * cut at the wrong cycle. PCM input and float output keep codec loss out of the
- * oracle: expected runs come straight from our fixture's decoded sample bytes.
+ * cut at the wrong cycle. Expected runs come from a separate native decode of
+ * the fixture: engines differ on PCM16's positive full-scale normalization.
+ * Float output must preserve those decoded samples exactly, with no tolerance.
  */
 async function loadSampleFixture(page: Page): Promise<Float32Array> {
   const samples = new Float32Array(144_000);
@@ -216,7 +217,21 @@ async function loadSampleFixture(page: Page): Promise<Float32Array> {
     samples[i] = ((state >>> 16) - 32768) / 65536;
   }
   const bytes = writeWav(samples, 48_000);
+  const declared = readWav(bytes);
   await page.goto(TRIMMER);
+  // The WAV reader supplies the declared rate and length; the independent
+  // decoder supplies only the native normalization, before the tool loads it.
+  const decoded = await page.evaluate(async ({ bytes, sampleRate }) => {
+    const context = new OfflineAudioContext(1, 1, sampleRate);
+    const audio = await context.decodeAudioData(new Uint8Array(bytes).buffer);
+    return {
+      sampleRate: audio.sampleRate, channels: audio.numberOfChannels,
+      frames: audio.length, samples: Array.from(audio.getChannelData(0)),
+    };
+  }, { bytes: Array.from(bytes), sampleRate: declared.sampleRate });
+  expect(decoded.sampleRate, 'native fixture decode must retain its declared rate').toBe(declared.sampleRate);
+  expect(decoded.channels, 'native fixture decode must retain its channels').toBe(declared.channels);
+  expect(decoded.frames, 'native fixture decode must retain every source sample').toBe(declared.frames);
   await page.locator('#file-input').setInputFiles({
     name: 'known-samples.wav', mimeType: 'audio/wav', buffer: bytes,
   });
@@ -224,7 +239,7 @@ async function loadSampleFixture(page: Page): Promise<Float32Array> {
   await expect(page.locator('#src-length')).not.toHaveText('—');
   await page.locator('#fade').selectOption('0');
   await page.locator('#depth').selectOption('32');
-  return readWav(bytes).samples;
+  return Float32Array.from(decoded.samples);
 }
 
 /** A blur rebuilds the table, so resolve each input again after committing. */
@@ -247,7 +262,8 @@ function expectSamples(wav: ReturnType<typeof readWav>, expected: Float32Array):
   for (let i = 0; i < expected.length; i += 1) {
     if (wav.samples[i] !== expected[i]) { mismatch = i; break; }
   }
-  expect(mismatch, 'every saved sample must be the requested source sample, in order').toBe(-1);
+  expect(mismatch, `every saved sample must be the requested source sample, in order; first mismatch ${mismatch}: `
+    + `saved ${wav.samples[mismatch]}, expected ${expected[mismatch]}`).toBe(-1);
 }
 
 test.describe('trim-audio: keeping part of a recording', () => {
