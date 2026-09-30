@@ -23,26 +23,37 @@ import { quiet } from '../../lib/engine';
 const URL_PATH = '/text-diff/';
 
 /**
- * Put both sides in and wait for a verdict.
+ * Wait for a fresh rendered comparison with both requested inputs present.
  *
- * Clearing first is not tidiness, it is the whole reliability of this file.
- * The note is never empty - with the boxes empty it asks you to paste
- * something - so "wait until it is not empty" returns instantly with whatever
- * the last comparison concluded. The first draft of this file read the
- * previous verdict every time and reported the tool as both blind to
- * differences and inventing them, neither of which was true.
- *
- * Cleared, the note returns to its resting text; a verdict is then anything
- * that is not that.
+ * Each fill starts a debounce. A slow second fill can leave a completed verdict
+ * for the first input versus an empty box, so a changed note alone is not a
+ * completion signal. Observe the result before filling and accept its next
+ * render only once both values match; no expected verdict is assumed here.
  */
 async function compare(page: Page, left: string, right: string): Promise<string> {
   const note = page.locator('#result-note');
   await page.locator('#clear').click();
-  const resting = (await note.textContent()) ?? '';
+  await page.evaluate(({ left, right }) => {
+    const original = document.querySelector<HTMLTextAreaElement>('#input')!;
+    const changed = document.querySelector<HTMLTextAreaElement>('#input-b')!;
+    const resultNote = document.querySelector('#result-note')!;
+    const state = window as Window & { qaTextDiffRendered?: boolean };
+    state.qaTextDiffRendered = false;
+    const observer = new MutationObserver(() => {
+      if (original.value !== left || changed.value !== right
+        || !document.querySelector('#diff-view .diff-table')) return;
+      state.qaTextDiffRendered = true;
+      observer.disconnect();
+    });
+    observer.observe(resultNote, { childList: true, characterData: true, subtree: true });
+  }, { left: left.replace(/\r\n?/g, '\n'), right: right.replace(/\r\n?/g, '\n') });
 
   await page.locator('#input').fill(left);
   await page.locator('#input-b').fill(right);
-  await expect(note).not.toHaveText(resting, { timeout: 20_000 });
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & { qaTextDiffRendered?: boolean }).qaTextDiffRendered),
+  { timeout: 20_000, message: 'the rendered comparison must include both current inputs' })
+    .toBe(true);
   return (await note.textContent()) ?? '';
 }
 

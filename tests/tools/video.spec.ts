@@ -4,7 +4,8 @@ import { canDecodeVideo, recordVideo, skipWithoutWebCodecs } from '../../lib/bro
 import { boxesIn, findBox, findBoxes, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
 import { decodedPixels, decodedSize, pixelAt } from '../../lib/browser-image';
-import { quiet } from '../../lib/engine';
+import { ask, onAPageOfItsOwn, quiet } from '../../lib/engine';
+import { canEncodeH264 } from '../../lib/held-video-flush';
 
 /**
  * Tool-level functional tests for the video tools: grabbing a frame, cropping,
@@ -557,6 +558,44 @@ function encodedVideoSamples(bytes: Buffer): { timescale: number; samples: Encod
   return { timescale, samples };
 }
 
+/** Probe the fixture's actual H.264 configuration without consulting the tool. */
+async function canDecodeFixtureWebCodecs(page: Page, bytes: Buffer): Promise<boolean> {
+  const stsd = findBox(bytes, 'stsd')!;
+  const entry = boxesIn(bytes, stsd.dataStart + 8, stsd.end)[0];
+  expect(['avc1', 'avc3']).toContain(entry.type);
+  const avcC = boxesIn(bytes, entry.dataStart + 78, entry.end).find((box) => box.type === 'avcC')!;
+  expect(avcC, 'the recording fixture must carry its H.264 decoder configuration').toBeDefined();
+  const description = bytes.subarray(avcC.dataStart, avcC.end);
+  const codec = `${entry.type}.${description.subarray(1, 4).toString('hex')}`;
+  const width = bytes.readUInt16BE(entry.dataStart + 24);
+  const height = bytes.readUInt16BE(entry.dataStart + 26);
+  const first = encodedVideoSamples(bytes).samples[0].data;
+  return ask(page, `decode-webcodecs:${codec}:${width}:${height}:${description.toString('hex')}`,
+    () => onAPageOfItsOwn(page, (own) => own.evaluate(async ({ codec, width, height, description, first }) => {
+      if (typeof VideoDecoder !== 'function' || typeof EncodedVideoChunk !== 'function') return false;
+      const config = { codec, codedWidth: width, codedHeight: height, description: new Uint8Array(description) };
+      let decoder: VideoDecoder | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (!(await VideoDecoder.isConfigSupported(config)).supported) return false;
+        let frames = 0;
+        let failed = false;
+        decoder = new VideoDecoder({ output: (frame) => { frames += 1; frame.close(); }, error: () => { failed = true; } });
+        decoder.configure(config);
+        decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, data: new Uint8Array(first) }));
+        const flushed = await Promise.race([
+          decoder.flush().then(() => true),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 5_000); }),
+        ]);
+        return flushed && !failed && frames > 0;
+      } catch { return false; }
+      finally {
+        clearTimeout(timer);
+        if (decoder && decoder.state !== 'closed') decoder.close();
+      }
+    }, { codec, width, height, description: Array.from(description), first: Array.from(first) })), false);
+}
+
 function expectCopiedIntervals(original: Buffer, saved: Buffer, ranges: Array<[number, number]>): void {
   const source = encodedVideoSamples(original);
   const output = encodedVideoSamples(saved);
@@ -601,14 +640,14 @@ async function saveCopiedVideo(page: Page): Promise<Buffer> {
 }
 
 test.describe('trim-video: keeping part of the time', () => {
-  test('the downloaded copy contains the two typed parts in their reordered order', async ({ page }) => {
+  test('the downloaded copy preserves reordered parts when only the first needs preroll', async ({ page }) => {
     test.setTimeout(240_000);
     const original = await loadClip(page, TRIM, '#section-card');
     test.skip(!isMp4(original), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
     test.skip(!await canDecodeVideo(page, original), 'this engine cannot decode the fixture for the pixel oracle');
     expect(await page.locator('#preview').evaluate((element) => (element as HTMLVideoElement).duration),
       'the recording fixture must extend beyond both typed parts').toBeGreaterThan(2.5);
-    await typeVideoPart(page, '0:00.250', '0:00.750');
+    await typeVideoPart(page, '0:00.000', '0:00.500');
     await typeVideoPart(page, '0:01.750', '0:02.500');
     await page.locator('#segment-rows tr').nth(1).getByRole('button', { name: 'Move up', exact: true }).click();
     await expect(page.locator('#segment-rows tr').first().locator('.segment-time').first())
@@ -621,18 +660,22 @@ test.describe('trim-video: keeping part of the time', () => {
     expect(file.seconds).toBeCloseTo(1.25, 2);
     expect(videoTrack(file)?.width).toBe(WIDTH);
     expect(videoTrack(file)?.height).toBe(HEIGHT);
-    const expected = await savedVideoFrames(page, original, [1.95, 2.30, 0.45]);
-    const actual = await savedVideoFrames(page, bytes, [0.20, 0.55, 0.95]);
+    test.skip(!await page.evaluate(() => 'requestVideoFrameCallback' in HTMLVideoElement.prototype),
+      'this engine cannot report timestamps of sequentially presented frames');
+    const actual = await playedVideoFrames(page, bytes, [0.20, 0.55, 0.95]);
+    const sourceTimes = actual.frames.map(({ time }) => time < 0.75 ? time + 1.75 : time - 0.75);
+    const expected = await savedVideoFrames(page, original, sourceTimes);
     expect(actual.duration).toBeCloseTo(1.25, 1);
+    expectCopiedIntervals(original, bytes, [[1.75, 2.5], [0, 0.5]]);
     expect(colourDistance(expected.colours[0], expected.colours[2]),
       'the fixture must distinguish the later and earlier parts').toBeGreaterThan(80);
-    for (let i = 0; i < actual.colours.length; i += 1) {
-      expect(colourDistance(actual.colours[i], expected.colours[i]),
-        `saved frame ${i} belongs to its requested source time`).toBeLessThan(40);
+    for (let i = 0; i < actual.frames.length; i += 1) {
+      expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
+        `saved Copy frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
     }
   });
 
-  test('cut mode removes both typed parts from the downloaded copy', async ({ page }) => {
+  test('cut mode refuses internal Copy preroll and explicitly exports Exact with the requested timing', async ({ page }) => {
     test.setTimeout(240_000);
     const original = await loadClip(page, TRIM, '#section-card');
     test.skip(!isMp4(original), 'the recording engine did not produce the MP4 needed for byte-copy trimming');
@@ -642,7 +685,23 @@ test.describe('trim-video: keeping part of the time', () => {
     await typeVideoPart(page, '0:00.500', '0:01.000');
     await typeVideoPart(page, '0:01.500', '0:02.000');
     await page.locator('input[name="mode"][value="cut"]').check();
-    const bytes = await saveCopiedVideo(page);
+    await expect(page.locator('#method option[value="copy"]')).toBeDisabled();
+    await expect(page.locator('#method')).toHaveValue('copy');
+    await expect(page.locator('#export')).toBeDisabled();
+    const exactLabel = (await page.locator('#method option[value="exact"]').textContent())!.trim();
+    await expect(page.locator('#copy-note')).toHaveText(
+      `These sections cannot be copied reliably in browsers. Choose ${exactLabel} to preserve their timing.`);
+    await expect(page.locator('#copy-note')).toBeVisible();
+    test.skip(!await canDecodeFixtureWebCodecs(page, original),
+      'an independent native WebCodecs decoder cannot decode the fixture');
+    test.skip(!await canEncodeH264(page),
+      'an independent native WebCodecs encoder does not support H.264');
+    await expect(page.locator('#method option[value="exact"]')).toBeEnabled();
+    await page.locator('#method').selectOption('exact');
+    await expect(page.locator('#export')).toBeEnabled();
+    await page.locator('#export').click();
+    await expect(page.locator('#download')).toBeVisible({ timeout: 120_000 });
+    const bytes = await save(page, () => page.locator('#download').click());
 
     test.skip(!await page.evaluate(() => 'requestVideoFrameCallback' in HTMLVideoElement.prototype),
       'this engine cannot report timestamps of sequentially presented frames');
@@ -652,7 +711,14 @@ test.describe('trim-video: keeping part of the time', () => {
     const seconds = expected.duration - 1;
     expect(Math.abs(readMp4(bytes).seconds - seconds)).toBeLessThan(0.075);
     expect(Math.abs(actual.duration - seconds)).toBeLessThan(0.075);
-    expectCopiedIntervals(original, bytes, [[0, 0.5], [1, 1.5], [2, expected.duration]]);
+    const written = readMp4(bytes);
+    expect(videoTrack(written)?.width).toBe(WIDTH);
+    expect(videoTrack(written)?.height).toBe(HEIGHT);
+    expect(findBox(bytes, 'elst'), 'silent Exact output contains no hidden video preroll').toBeNull();
+    const pictures = encodedVideoSamples(bytes);
+    expect(pictures.samples.length).toBeGreaterThan(25);
+    expect(pictures.samples[0].pts).toBe(0);
+    expect(pictures.samples.every((sample) => sample.pts / pictures.timescale < seconds + 0.075)).toBe(true);
     for (let i = 0; i < actual.frames.length; i += 1) {
       expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
         `saved frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
