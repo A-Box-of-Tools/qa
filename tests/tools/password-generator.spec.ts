@@ -394,3 +394,78 @@ test.describe('password-generator: batch, and the promise', () => {
     await expect(page.locator('input[type="text"], input[type="password"]')).toHaveCount(0);
   });
 });
+
+
+/** The platform promise is held so a real settings change can overtake it. */
+async function heldClipboard(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const state = {
+      writes: [] as string[],
+      release: null as null | ((succeed: boolean) => void),
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText(text: string) {
+        state.writes.push(text);
+        return new Promise<void>((resolve, reject) => {
+          state.release = (succeed) => succeed ? resolve() : reject(new Error('clipboard refused'));
+        });
+      },
+    } });
+    (window as unknown as { clipboardTest: typeof state }).clipboardTest = state;
+  });
+}
+
+async function finishClipboard(page: Page, succeed: boolean): Promise<void> {
+  await page.evaluate(async (ok) => {
+    const state = (window as unknown as {
+      clipboardTest: { release: null | ((value: boolean) => void) };
+    }).clipboardTest;
+    if (!state.release) throw new Error('No clipboard write is pending');
+    state.release(ok);
+    await Promise.resolve();
+  }, succeed);
+}
+
+for (const succeeds of [true, false]) {
+  test(`password-generator: a late clipboard ${succeeds ? 'success' : 'refusal'} cannot describe a new secret`, async ({ page }) => {
+    await heldClipboard(page);
+    await page.goto(URL_PATH);
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    const original = await secret(page);
+    await page.locator('#copy').click();
+    await setRange(page, 'length', original.length + 1);
+    await finishClipboard(page, succeeds);
+    await expect(page.locator('#copy-note')).toBeEmpty();
+    await expect(page.locator('#copy-fallback')).toBeHidden();
+    const writes = await page.evaluate(() => (window as unknown as {
+      clipboardTest: { writes: string[] };
+    }).clipboardTest.writes);
+    expect(writes).toEqual([original]);
+    expect((await secret(page)).length).toBe(original.length + 1);
+  });
+}
+
+test('password-generator: a refused batch copy selects every secret for manual copying', async ({ page }) => {
+  await heldClipboard(page);
+  await page.goto(URL_PATH);
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await setRange(page, 'count', 3);
+  const expected = (await allResults(page)).join('\n');
+  await page.locator('#copy-all').click();
+  await finishClipboard(page, false);
+  await expect(page.locator('#copy-fallback')).toBeVisible();
+  await expect(page.locator('#copy-fallback')).toBeFocused();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(expected);
+  await page.locator('#regenerate').click();
+  await expect(page.locator('#copy-fallback')).toBeHidden();
+  await expect(page.locator('#copy-fallback')).toBeEmpty();
+});
+
+test('password-generator: the secret is selectable from the keyboard', async ({ page }) => {
+  await page.goto(URL_PATH);
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await page.locator('#regenerate').focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.locator('#secret')).toBeFocused();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(await secret(page));
+});

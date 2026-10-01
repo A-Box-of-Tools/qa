@@ -377,3 +377,54 @@ test.describe('the sound tools: the promise', () => {
     }
   });
 });
+
+
+for (const path of [EDITOR, TRIMMER]) {
+  test(`${path.slice(1, -1)}: a pending replacement blocks export and an older decode cannot replace the latest file`, async ({ page }) => {
+    test.setTimeout(180_000);
+    await loadSound(page, path, 'original.wav');
+    await page.evaluate(() => {
+      const original = OfflineAudioContext.prototype.decodeAudioData;
+      const state = { held: false, ready: false, released: false, release: () => {} };
+      (window as unknown as { replacementDecode: typeof state }).replacementDecode = state;
+      OfflineAudioContext.prototype.decodeAudioData = async function (bytes) {
+        const decoded = await original.call(this, bytes);
+        if (!state.held) {
+          state.held = true;
+          await new Promise<void>((resolve) => { state.release = resolve; state.ready = true; });
+          state.released = true;
+        }
+        return decoded;
+      };
+    });
+    await page.locator('#file-input').setInputFiles({
+      name: 'older-replacement.wav', mimeType: 'audio/wav',
+      buffer: writeWav(new Float32Array(22_050).fill(-0.4), 22_050),
+    });
+    await page.waitForFunction(() => (window as unknown as { replacementDecode: { ready: boolean } }).replacementDecode.ready);
+    await expect(page.locator('#export')).toBeDisabled();
+    await page.locator('#depth').selectOption('32');
+    await expect(page.locator('#export'), 'editing a setting cannot enable export while a file is being decoded').toBeDisabled();
+
+    // A later file completes first. Its identity and rate must still win when
+    // the earlier decode finally returns, rather than just while it is pending.
+    await page.locator('#file-input').setInputFiles({
+      name: 'latest.wav', mimeType: 'audio/wav',
+      buffer: writeWav(new Float32Array(24_000).fill(0.25), 48_000),
+    });
+    await expect(page.locator('#src-name')).toHaveText('latest.wav');
+    await page.evaluate(async () => {
+      (window as unknown as { replacementDecode: { release: () => void } }).replacementDecode.release();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    await page.waitForFunction(() => (window as unknown as { replacementDecode: { released: boolean } }).replacementDecode.released);
+    await expect(page.locator('#src-name')).toHaveText('latest.wav');
+    const wav = readWav(await exportSound(page));
+    expect(wav.sampleRate).toBe(48_000);
+    expect(wav.frames).toBe(24_000);
+    expect(wav.bitsPerSample).toBe(32);
+    expect(wav.samples.every((sample) => Math.abs(sample - 0.25) < 0.0001),
+      'every sample must come from the latest recording, allowing only native PCM16 normalization').toBe(true);
+    await expect(page.locator('#download')).toHaveAttribute('download', /^latest-.*\.wav$/);
+  });
+}

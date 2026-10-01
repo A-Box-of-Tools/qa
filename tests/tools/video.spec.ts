@@ -812,25 +812,50 @@ test.describe('trim-video: keeping part of the time', () => {
     expect(shown.duration).toBeGreaterThan(SECONDS - 0.8);
   });
 
-  test('marking a section in and out records a segment of that length', async ({ page }) => {
-    // The arithmetic the whole tool rests on: what was marked is what gets
-    // kept. Checked on the page's own running total, which is what a reader
-    // uses to decide whether they have marked what they meant to.
+  test('marking a section snaps to the actual nearest frames and reports their exact length', async ({ page }) => {
+    // MediaRecorder may skip frames under load: a nominal 20 fps recording
+    // once jumped from .249 to .733 seconds. The nearest mark to .5 was .733,
+    // correctly, so a fixed 1.3–1.6s duration range accused the tool of a bug.
     test.setTimeout(180_000);
-    await loadClip(page, TRIM, '#section-card');
+    const original = await loadClip(page, TRIM, '#section-card');
     await expect(page.locator('#section-card')).toBeVisible({ timeout: 60_000 });
-
-    await seekTo(page, 0.5);
-    await page.locator('#mark-in').click();
-    await seekTo(page, 2.0);
-    await page.locator('#mark-out').click();
-
+    const encoded = encodedVideoSamples(original);
+    const times = encoded.samples.map(({ pts }) => pts / encoded.timescale).sort((a, b) => a - b);
+    expect(times.length, 'the fixture must contain actual picture timestamps').toBeGreaterThan(2);
+    expect(times.at(-1), 'the fixture must extend beyond the last mark').toBeGreaterThan(2);
+    // A linear distance comparison is independent of the timeline's binary
+    // search; earlier timestamps win an exact tie, as the control promises.
+    const nearest = (clock: number) => times.reduce((best, time) =>
+      Math.abs(time - clock) < Math.abs(best - clock) ? time : best);
+    const clockSeconds = (text: string) => text.split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0);
+    const mark = async (requested: number, button: string) => {
+      await seekTo(page, requested);
+      const clock = await page.locator('#preview').evaluate((element) => {
+        const video = element as HTMLVideoElement;
+        video.pause();
+        return video.currentTime;
+      });
+      expect(clock, 'the native clock must settle at the requested mark').toBeCloseTo(requested, 3);
+      await page.locator(button).click();
+      return { requested, clock, frame: nearest(clock) };
+    };
+    const start = await mark(0.5, '#mark-in');
+    const end = await mark(2, '#mark-out');
     await expect(page.locator('#segment-table')).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('#segment-rows tr')).toHaveCount(1);
-
-    const kept = (await page.locator('#total-kept').textContent()) ?? '';
-    // 1.5 seconds, give or take the frame the seek landed on.
-    expect(kept).toMatch(/0:01\.[3-6]/);
+    const inputs = page.locator('#segment-rows .segment-time');
+    const shownStart = clockSeconds(await inputs.nth(0).inputValue());
+    const shownEnd = clockSeconds(await inputs.nth(1).inputValue());
+    const kept = clockSeconds((await page.locator('#total-kept').textContent()) ?? '');
+    await test.info().attach('trim-mark-timestamps.json', {
+      body: JSON.stringify({ timescale: encoded.timescale, times, start, end, shownStart, shownEnd, kept }, null, 2),
+      contentType: 'application/json',
+    });
+    // The control rounds to the nearest millisecond; the oracle retains the
+    // original clock precision when subtracting the two endpoints.
+    expect(Math.abs(shownStart - start.frame)).toBeLessThanOrEqual(0.000501);
+    expect(Math.abs(shownEnd - end.frame)).toBeLessThanOrEqual(0.000501);
+    expect(Math.abs(kept - (end.frame - start.frame))).toBeLessThanOrEqual(0.000501);
   });
 
   test('undo takes the mark back', async ({ page }) => {
@@ -850,6 +875,48 @@ test.describe('trim-video: keeping part of the time', () => {
 });
 
 test.describe('video-to-gif: a clip as an animation', () => {
+  test('changing the selected end during capture preserves the started GIF duration and loop setting', async ({ page }) => {
+    test.setTimeout(300_000);
+    const original = await loadClip(page, TO_GIF);
+    test.skip(!isMp4(original), 'the fixture must be MP4 for this direct decoder regression');
+    test.skip(!await canDecodeFixtureWebCodecs(page, original),
+      'an independent native WebCodecs decoder cannot decode the fixture');
+    await page.locator('#end-time').fill('0:01.000');
+    await page.locator('#end-time').blur();
+    await page.locator('#width').selectOption('240');
+    await page.locator('#fps').selectOption('10');
+    await page.locator('#loop').check();
+    // Hold completion of the real decoder flush, after its frames have been
+    // delivered, without substituting invented frames for the fixture.
+    await page.evaluate(() => {
+      const original = VideoDecoder.prototype.flush;
+      const state = { held: false, ready: false, release: () => {} };
+      (window as unknown as { gifCapture: typeof state }).gifCapture = state;
+      VideoDecoder.prototype.flush = async function () {
+        await original.call(this);
+        if (state.held) return;
+        state.held = true;
+        await new Promise<void>((resolve) => { state.release = resolve; state.ready = true; });
+      };
+    });
+    // This case deliberately exercises the WebCodecs path; the fixture's own
+    // codec support is established independently before relying on that path.
+    await expect(page.locator('#src-path')).toContainText(/direct|reader|WebCodecs/i);
+    await page.locator('#export').click();
+    await page.waitForFunction(() => (window as unknown as { gifCapture: { ready: boolean } }).gifCapture.ready);
+    await page.locator('#end-time').fill('0:02.500');
+    await page.locator('#end-time').blur();
+    await page.locator('#loop').uncheck();
+    await page.evaluate(() => (window as unknown as { gifCapture: { release: () => void } }).gifCapture.release());
+    await expect(page.locator('#download')).toBeVisible({ timeout: 180_000 });
+    const bytes = await save(page, () => page.locator('#download').click());
+    const gif = readGif(bytes);
+    expect(gif.frames.reduce((sum, frame) => sum + frame.delayMs, 0)).toBe(1000);
+    expect(bytes.includes(Buffer.from('NETSCAPE2.0', 'ascii')), 'the started export keeps its loop extension').toBe(true);
+    await expect(page.locator('#end-time')).toHaveValue('0:02.500');
+    await expect(page.locator('#loop')).not.toBeChecked();
+  });
+
   test('the GIF covers the chosen second at 10 fps and a width of 240 pixels', async ({ page }) => {
     test.setTimeout(300_000);
     const original = await loadClip(page, TO_GIF);

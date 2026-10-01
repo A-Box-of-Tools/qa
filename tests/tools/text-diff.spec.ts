@@ -239,3 +239,72 @@ for (const [name, original, changed, ignore] of [
     }
   });
 }
+
+
+test('text-diff: editing retires the previous Copy and Download before the debounce', async ({ page }) => {
+  await page.goto('/text-diff/');
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await page.locator('#input').fill("old input");
+  await page.locator('#input-b').fill('another input');
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+  // Inspect in the input event's own turn, before a short debounce can expire.
+  const actions = await page.locator('#input').evaluate((node, value) => {
+    (node as HTMLTextAreaElement).value = value;
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+    return {
+      copyDisabled: (document.querySelector('#copy') as HTMLButtonElement).disabled,
+      downloadHidden: (document.querySelector('#download') as HTMLElement).hidden,
+    };
+  }, "new input");
+  expect(actions).toEqual({ copyDisabled: true, downloadHidden: true });
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+});
+
+
+for (const edit of ['untouched CRLF', 'edited text', 'swapped sides'] as const) {
+  test(`text-diff: a patch after changing language preserves ${edit}`, async ({ page }) => {
+    await page.goto(URL_PATH);
+    let original = 'keep\r\nbefore\r\n';
+    let changed = 'keep\r\nafter\r\n';
+    await page.locator('#file-input').setInputFiles([
+      { name: 'before.txt', mimeType: 'text/plain', buffer: Buffer.from(original) },
+      { name: 'after.txt', mimeType: 'text/plain', buffer: Buffer.from(changed) },
+    ]);
+    await expect(page.locator('#download')).toBeVisible();
+    if (edit === 'edited text') {
+      changed = 'keep\nedited\n';
+      await page.locator('#input-b').fill(changed);
+    } else if (edit === 'swapped sides') {
+      await page.locator('#swap').click();
+      [original, changed] = [changed, original];
+    }
+    await expect(page.locator('#download')).toBeVisible();
+    await page.locator('details.lang-pick summary').first().click();
+    const from = new URL(page.url()).pathname;
+    await Promise.all([
+      page.waitForURL((url) => url.pathname !== from),
+      page.locator('.lang-pick-menu a').first().click(),
+    ]);
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    await expect(page.locator('#download')).toBeVisible();
+    await expect(page.locator('#input')).toHaveValue(original.replaceAll('\r\n', '\n'));
+    await expect(page.locator('#input-b')).toHaveValue(changed.replaceAll('\r\n', '\n'));
+    const pending = page.waitForEvent('download');
+    await page.locator('#download').click();
+    const saved = await pending;
+    const patch = fs.readFileSync((await saved.path())!, 'utf8')
+      .replace(/^--- original$/m, '--- a/input.txt').replace(/^\+\+\+ changed$/m, '+++ b/input.txt');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abox-language-patch-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'input.txt'), original);
+      const patchFile = path.join(dir, 'changes.patch');
+      fs.writeFileSync(patchFile, patch);
+      execFileSync('git', ['apply', '--no-index', '--whitespace=nowarn', patchFile], { cwd: dir });
+      expect(fs.readFileSync(path.join(dir, 'input.txt'))).toEqual(Buffer.from(changed));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

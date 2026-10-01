@@ -326,3 +326,34 @@ test.describe('switching language keeps the settings too', () => {
       ).toBe(before.includes('abox-lang-keep'));
     });
 });
+
+
+for (const [slug, original, edited] of [["base64", "old input", "new input"], ["json-formatter", "{\"value\":\"old\"}", "{\"value\":\"new\"}"], ["xml-formatter", "<root>old</root>", "<root>new</root>"], ["yaml-to-json", "value: old", "value: new"], ["text-diff", "old input", "new input"]] as const) {
+  test(`${slug}: file edits survive a language switch`, async ({ page }) => {
+    await page.goto(`/${slug}/`);
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    await page.locator('#file-input').setInputFiles({
+      name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from(original),
+    });
+    await expect(page.locator('#input')).toHaveValue(original);
+    await page.locator('#input').fill(edited);
+    await expect(page.locator('#download')).toBeVisible();
+    await switchLanguage(page);
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    await expect(page.locator('#download')).toBeVisible();
+    await expect(page.locator('#input')).toHaveValue(edited);
+  });
+}
+
+test('json-formatter: a cleared imported file stays cleared after changing language', async ({ page }) => {
+  await page.goto('/json-formatter/');
+  await page.locator('#file-input').setInputFiles({
+    name: 'original.json', mimeType: 'application/json', buffer: Buffer.from('{"old":true}'),
+  });
+  await expect(page.locator('#download')).toBeVisible();
+  await page.locator('#clear').click();
+  await switchLanguage(page);
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await expect(page.locator('#input')).toHaveValue('');
+  await expect(page.locator('#download')).toBeHidden();
+});

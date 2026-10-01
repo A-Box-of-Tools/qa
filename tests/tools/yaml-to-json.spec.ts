@@ -192,3 +192,42 @@ test.describe('yaml-to-json: the promise', () => {
     }
   });
 });
+
+
+test('yaml-to-json: editing retires the previous Copy and Download before the debounce', async ({ page }) => {
+  await page.goto('/yaml-to-json/');
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await page.locator('#input').fill("value: old");
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+  // Inspect in the input event's own turn, before a short debounce can expire.
+  const actions = await page.locator('#input').evaluate((node, value) => {
+    (node as HTMLTextAreaElement).value = value;
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+    return {
+      copyDisabled: (document.querySelector('#copy') as HTMLButtonElement).disabled,
+      downloadHidden: (document.querySelector('#download') as HTMLElement).hidden,
+    };
+  }, "value: new");
+  expect(actions).toEqual({ copyDisabled: true, downloadHidden: true });
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+});
+
+
+for (const [locale, route, empty, oneLine, oneCharacter, manyLines, manyCharacters] of [["de", "/de/yaml-in-json-umwandeln/", "leer", "1 Zeile", "1 Zeichen", "2 Zeilen", "3 Zeichen"], ["es", "/es/convertir-yaml-a-json/", "vacío", "1 línea", "1 carácter", "2 líneas", "3 caracteres"], ["pt", "/pt/converter-yaml-para-json/", "vazio", "1 linha", "1 caractere", "2 linhas", "3 caracteres"], ["zh", "/zh/yaml-to-json/", "空的", "1 行", "1 个字符", "2 行", "3 个字符"]] as const) {
+  test(`yaml-to-json: ${locale} counters remain translated after input`, async ({ page }) => {
+    await page.goto(route);
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    const count = page.locator('#input-count');
+    await expect(count).toHaveText(empty);
+    await page.locator('#input').fill('x');
+    await expect(count).toContainText(oneLine);
+    await expect(count).toContainText(oneCharacter);
+    await page.locator('#input').fill('x\ny');
+    await expect(count).toContainText(manyLines);
+    await expect(count).toContainText(manyCharacters);
+    await page.locator('#clear').click();
+    await expect(count).toHaveText(empty);
+  });
+}
