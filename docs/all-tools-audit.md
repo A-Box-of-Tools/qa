@@ -9,7 +9,10 @@ All 53 tools have functional scenarios across 49 spec files. There are 457
 `test(...)` source declarations under `tests/tools/`, counted from the TypeScript
 syntax tree rather than regular-expression `.test()` calls; parameterized declarations
 expand when collected, and two declarations check fixtures rather than a tool.
-This source count is not a passed-test count. Shared checks are additional.
+The three formatter-counter declarations each cover six locales, producing 18
+cases per browser project; adding French and Japanese adds six cases without
+changing the declaration count. This source count is not a passed-test count.
+Shared checks are additional.
 Syntax and TypeScript checks passed during this review. The new browser cases
 must execute in CI against the website preview before they are treated as
 passing evidence; no local suites were run for this audit.
@@ -30,7 +33,7 @@ contents where that is the relevant result.
 | Audio and video | Compare every saved trim-audio sample for reordered Keep and Cut ranges; compare safe trim-video Copy output with its selected source ranges; refuse Copy when a later retained section needs keyframe preroll and verify the same selection's Exact-mode playback. |
 | Strengthened media assertions | Compare crop pixels with selected source coordinates; type a video-to-GIF range, width and frame rate and inspect saved timing and the first selected moment; probe the exact soundtrack fixture with the native decoder before testing extraction. |
 | GIF | Preserve a started Video to GIF capture's selected duration and loop setting when the controls change; keep an in-flight export's original frame order/delays for both palette modes; cancel at the final decode without publishing a result, then export successfully. |
-| Text UX | Retire stale Copy/Download actions in the input event before debounce; preserve file edits and edited-to-empty state across language switches; apply downloaded Text Diff patches byte-for-byte after untouched CRLF, editing and swapped sides. JSON/XML/YAML counters are checked after input in Spanish, Portuguese, German and Chinese. |
+| Text UX | Retire stale Copy/Download actions in the input event before debounce; preserve file edits and edited-to-empty state across language switches; apply downloaded Text Diff patches byte-for-byte after untouched CRLF, editing and swapped sides. JSON/XML/YAML counters are checked after input in Spanish, Portuguese, German, Chinese, French and Japanese. |
 | Password UX | Hold clipboard success/refusal across secret regeneration, select every batch secret on refusal, and select the current secret through keyboard focus. |
 | Audio replacement | Block export while a replacement decode is held, finish a newer file first, then prove the older completion cannot replace its name, sample rate or saved samples in Edit Audio and Trim Audio. |
 | Discovery | Search JPEG/JPG-to-PNG capabilities, reject an unsupported PNG-to-AVIF destination, clear the query, and follow Spanish/Portuguese results into a working format chooser. |
