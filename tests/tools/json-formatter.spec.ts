@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { quiet } from '../../lib/engine';
+import { declaredLang } from '../../lib/locales';
 import { afterSetting, mode, through } from '../../lib/text-panes';
 
 /**
@@ -228,9 +229,17 @@ test('json-formatter: editing retires the previous Copy and Download before the 
 });
 
 
-for (const [locale, route, empty, oneLine, oneCharacter, manyLines, manyCharacters] of [["de", "/de/json-formatieren/", "leer", "1 Zeile", "1 Zeichen", "2 Zeilen", "3 Zeichen"], ["es", "/es/formatear-json/", "vacío", "1 línea", "1 carácter", "2 líneas", "3 caracteres"], ["pt", "/pt/formatar-json/", "vazio", "1 linha", "1 caractere", "2 linhas", "3 caracteres"], ["zh", "/zh/json-formatter/", "空的", "1 行", "1 个字符", "2 行", "3 个字符"]] as const) {
+for (const [locale, route, empty, oneLine, oneCharacter, manyLines, manyCharacters] of [
+  ["de", "/de/json-formatieren/", "leer", "1 Zeile", "1 Zeichen", "2 Zeilen", "3 Zeichen"],
+  ["es", "/es/formatear-json/", "vacío", "1 línea", "1 carácter", "2 líneas", "3 caracteres"],
+  ["pt", "/pt/formatar-json/", "vazio", "1 linha", "1 caractere", "2 linhas", "3 caracteres"],
+  ["zh", "/zh/json-formatter/", "空", "1 行", "1 个字符", "2 行", "3 个字符"],
+  ["fr", "/fr/formater-du-json/", "vide", "1 ligne", "1 caractère", "2 lignes", "3 caractères"],
+  ["ja", "/ja/json-formatter/", "空", "1行", "1文字", "2行", "3文字"],
+] as const) {
   test(`json-formatter: ${locale} counters remain translated after input`, async ({ page }) => {
     await page.goto(route);
+    await expect(page.locator('html')).toHaveAttribute('lang', declaredLang(locale));
     await expect(page.locator('#boot-warning')).toHaveCount(0);
     const count = page.locator('#input-count');
     await expect(count).toHaveText(empty);

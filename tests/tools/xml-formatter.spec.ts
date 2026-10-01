@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { quiet } from '../../lib/engine';
+import { declaredLang } from '../../lib/locales';
 import { afterSetting, mode, through } from '../../lib/text-panes';
 
 /**
@@ -240,9 +241,17 @@ test('xml-formatter: editing retires the previous Copy and Download before the d
 });
 
 
-for (const [locale, route, empty, oneLine, oneCharacter, manyLines, manyCharacters] of [["de", "/de/xml-formatieren/", "leer", "1 Zeile", "1 Zeichen", "2 Zeilen", "3 Zeichen"], ["es", "/es/formatear-xml/", "vacío", "1 línea", "1 carácter", "2 líneas", "3 caracteres"], ["pt", "/pt/formatar-xml/", "vazio", "1 linha", "1 caractere", "2 linhas", "3 caracteres"], ["zh", "/zh/xml-formatter/", "空的", "1 行", "1 个字符", "2 行", "3 个字符"]] as const) {
+for (const [locale, route, empty, oneLine, oneCharacter, manyLines, manyCharacters] of [
+  ["de", "/de/xml-formatieren/", "leer", "1 Zeile", "1 Zeichen", "2 Zeilen", "3 Zeichen"],
+  ["es", "/es/formatear-xml/", "vacío", "1 línea", "1 carácter", "2 líneas", "3 caracteres"],
+  ["pt", "/pt/formatar-xml/", "vazio", "1 linha", "1 caractere", "2 linhas", "3 caracteres"],
+  ["zh", "/zh/xml-formatter/", "空的", "1 行", "1 个字符", "2 行", "3 个字符"],
+  ["fr", "/fr/formater-du-xml/", "vide", "1 ligne", "1 caractère", "2 lignes", "3 caractères"],
+  ["ja", "/ja/xml-formatter/", "空", "1行", "1文字", "2行", "3文字"],
+] as const) {
   test(`xml-formatter: ${locale} counters remain translated after input`, async ({ page }) => {
     await page.goto(route);
+    await expect(page.locator('html')).toHaveAttribute('lang', declaredLang(locale));
     await expect(page.locator('#boot-warning')).toHaveCount(0);
     const count = page.locator('#input-count');
     await expect(count).toHaveText(empty);
