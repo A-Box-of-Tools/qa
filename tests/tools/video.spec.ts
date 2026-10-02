@@ -456,6 +456,10 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
       let settled = target === undefined;
       let completed = false;
       let frame: ReturnType<typeof picture> | undefined;
+      let lastPresentation: {
+        mediaTime: number; clock: number; seeking: boolean;
+        readyState: number; width: number; height: number;
+      } | undefined;
       const cleanup = () => {
         clearTimeout(timer);
         if (hasFrameCallback) video.cancelVideoFrameCallback(callback);
@@ -481,6 +485,19 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
         resolve(frame);
       };
       const paint = (mediaTime: number) => {
+        if (completed) return;
+        lastPresentation = {
+          mediaTime, clock: video.currentTime, seeking: video.seeking,
+          readyState: video.readyState, width: video.videoWidth, height: video.videoHeight,
+        };
+        // A presentation queued before the seek can arrive while the new
+        // picture is still loading. It is not a readable frame at the target;
+        // keep the same deadline and wait for its replacement to be presented.
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
+          if (hasFrameCallback) arm();
+          else fallback();
+          return;
+        }
         try {
           frame = picture(mediaTime);
           if (target === undefined) video.pause();
@@ -514,7 +531,7 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
       };
       const failed = () => fail(new Error(`source video failed with native error ${video.error?.code}`));
       const timer = setTimeout(() => fail(new Error(`source presented frame did not arrive within 15s: ${JSON.stringify({
-        target, clock: video.currentTime, seeking: video.seeking, readyState: video.readyState, frame,
+        target, clock: video.currentTime, seeking: video.seeking, readyState: video.readyState, frame, lastPresentation,
       })}`)), 15_000);
       video.addEventListener('loadeddata', loaded);
       video.addEventListener('seeked', seeked);
