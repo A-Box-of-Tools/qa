@@ -447,7 +447,7 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
         Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
       ).data);
       return {
-        mediaTime,
+        mediaTime, clock: video.currentTime,
         colour: [0, 1, 2].map((channel) =>
           pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]),
       };
@@ -456,6 +456,9 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
       let settled = target === undefined;
       let completed = false;
       let frame: ReturnType<typeof picture> | undefined;
+      let presentation: number | undefined;
+      let painting = false;
+      let pausedForSample = false;
       let lastPresentation: {
         mediaTime: number; clock: number; seeking: boolean;
         readyState: number; width: number; height: number;
@@ -475,14 +478,33 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
         reject(error);
       };
       const finish = () => {
-        if (completed || !frame || !settled) return;
-        if (target !== undefined && (video.seeking || Math.abs(video.currentTime - target) > 0.0001)) {
-          fail(new Error(`source seek did not reach ${target}s: clock ${video.currentTime}s`));
-          return;
-        }
-        completed = true;
-        cleanup();
-        resolve(frame);
+        if (completed || presentation === undefined || !settled || painting) return;
+        painting = true;
+        const mediaTime = presentation;
+        let paints = 0;
+        // Chromium may report the seek's only presentation while readiness
+        // still says HAVE_METADATA. Retain that signal, then wait for seeked
+        // and two paints before reading the picture available to canvas.
+        const afterPaint = () => {
+          if (completed) return;
+          if (video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+              || !video.videoWidth || !video.videoHeight) {
+            paints = 0;
+          } else if (++paints >= 2) {
+            if (target !== undefined && Math.abs(video.currentTime - target) > 0.0001) {
+              fail(new Error(`source seek did not reach ${target}s: clock ${video.currentTime}s`));
+              return;
+            }
+            try { frame = picture(mediaTime); }
+            catch (error) { fail(error); return; }
+            completed = true;
+            cleanup();
+            resolve(frame);
+            return;
+          }
+          animation = requestAnimationFrame(afterPaint);
+        };
+        animation = requestAnimationFrame(afterPaint);
       };
       const paint = (mediaTime: number) => {
         if (completed) return;
@@ -490,25 +512,19 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
           mediaTime, clock: video.currentTime, seeking: video.seeking,
           readyState: video.readyState, width: video.videoWidth, height: video.videoHeight,
         };
-        // A presentation queued before the seek can arrive while the new
-        // picture is still loading. It is not a readable frame at the target;
-        // keep the same deadline and wait for its replacement to be presented.
-        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
-          if (hasFrameCallback) arm();
-          else fallback();
-          return;
+        presentation = mediaTime;
+        if (target === undefined) {
+          pausedForSample = true;
+          video.pause();
         }
-        try {
-          frame = picture(mediaTime);
-          if (target === undefined) video.pause();
-          finish();
-        }
-        catch (error) { fail(error); }
+        finish();
       };
       // Older engines cannot identify presented frames. After their native
       // load/seek event, allow two paint opportunities before reading canvas.
       const fallback = () => {
+        if (completed) return;
         animation = requestAnimationFrame(() => {
+          if (completed) return;
           animation = requestAnimationFrame(() => paint(video.currentTime));
         });
       };
@@ -522,16 +538,22 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
         // Start muted playback to obtain a real presentation, then pause in
         // paint(). A late play rejection must not cancel the following seek.
         arm();
-        void video.play().catch(fail);
+        void video.play().catch((error) => {
+          // Pausing on the first callback can interrupt play() before its
+          // promise settles. That intentional stop still has a picture.
+          if (pausedForSample && error?.name === 'AbortError') return;
+          fail(error);
+        });
       };
       const seeked = () => {
+        if (completed) return;
         settled = true;
         if (!hasFrameCallback) fallback();
         else finish();
       };
       const failed = () => fail(new Error(`source video failed with native error ${video.error?.code}`));
       const timer = setTimeout(() => fail(new Error(`source presented frame did not arrive within 15s: ${JSON.stringify({
-        target, clock: video.currentTime, seeking: video.seeking, readyState: video.readyState, frame, lastPresentation,
+        target, clock: video.currentTime, seeking: video.seeking, readyState: video.readyState, frame, presentation, lastPresentation,
       })}`)), 15_000);
       video.addEventListener('loadeddata', loaded);
       video.addEventListener('seeked', seeked);
@@ -555,6 +577,7 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
       return {
         duration: video.duration, width: video.videoWidth, height: video.videoHeight,
         colours: frames.map(({ colour }) => colour), presentedTimes: frames.map(({ mediaTime }) => mediaTime),
+        sampledTimes: frames.map(({ clock }) => clock),
       };
     } finally {
       if (hasFrameCallback) video.cancelVideoFrameCallback(callback);
