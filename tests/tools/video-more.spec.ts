@@ -4,6 +4,7 @@ import { canDecodeVideo, canEncodeVideo, recordVideo } from '../../lib/browser-v
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { encodePng } from '../../lib/image-fixtures';
 import { quiet } from '../../lib/engine';
+import { sampleVideoFrames } from '../../lib/presented-video';
 
 /**
  * Tool-level functional tests for the three remaining video tools: playing a
@@ -58,100 +59,18 @@ async function exportVideo(page: Page, wait = 180_000): Promise<Buffer> {
   return fs.readFileSync(path);
 }
 
-/**
- * Sample a presented picture, not just a completed seek. The decoder and
- * compositor can finish at different times. A detached video's seeked event
- * once yielded an all-black sample without evidence of frame presentation.
- */
+/** Keep the whole-frame average while waiting for a settled native picture. */
 async function frameColour(
   page: Page,
   bytes: Buffer,
   atSeconds: number,
 ): Promise<{ r: number; g: number; b: number; duration: number; mediaTime: number; clock: number }> {
-  return page.evaluate(async ({ base64, atSeconds }) => {
-    const binary = atob(base64);
-    const array = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) array[i] = binary.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([array], { type: 'video/mp4' }));
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    Object.assign(video.style, {
-      position: 'fixed', top: '0', right: '0', width: '160px', height: '120px',
-      zIndex: '2147483647', pointerEvents: 'none',
-    });
-    document.body.append(video);
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d')!;
-    let callback = 0;
-
-    const picture = (metadata: VideoFrameCallbackMetadata) => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0);
-      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-      let r = 0; let g = 0; let b = 0; let count = 0;
-      for (let at = 0; at < data.length; at += 4) {
-        // The fixture's sweeping black bar must not move the average away
-        // from its colorful background. A wholly black image is no control.
-        if (data[at] + data[at + 1] + data[at + 2] < 90) continue;
-        r += data[at]; g += data[at + 1]; b += data[at + 2];
-        count += 1;
-      }
-      const timing = {
-        duration: video.duration, mediaTime: metadata.mediaTime, clock: video.currentTime,
-      };
-      if (!count) throw new Error(`no colored pixels in a presented fixture frame: ${JSON.stringify({
-        ...timing, requested: atSeconds, readyState: video.readyState, width: canvas.width, height: canvas.height,
-      })}`);
-      return { r: r / count, g: g / count, b: b / count, ...timing };
-    };
-    const presented = (start: () => void, seeking: boolean) => new Promise<ReturnType<typeof picture>>((resolve, reject) => {
-      let frame: ReturnType<typeof picture> | undefined;
-      let settled = !seeking;
-      const cleanup = () => {
-        clearTimeout(timer);
-        video.cancelVideoFrameCallback(callback);
-        video.removeEventListener('seeked', seeked);
-        video.removeEventListener('error', failed);
-      };
-      const finish = () => { if (frame && settled) { cleanup(); resolve(frame); } };
-      const seeked = () => { settled = true; finish(); };
-      const failed = () => { cleanup(); reject(new Error(`native video error ${video.error?.code}`)); };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(`no presented video frame within 15s: ${JSON.stringify({
-          requested: atSeconds, clock: video.currentTime, duration: video.duration,
-          readyState: video.readyState, seeking: video.seeking, frame,
-        })}`));
-      }, 15_000);
-      video.addEventListener('seeked', seeked);
-      video.addEventListener('error', failed);
-      callback = video.requestVideoFrameCallback((_now, metadata) => {
-        try { frame = picture(metadata); finish(); }
-        catch (error) { cleanup(); reject(error); }
-      });
-      try { start(); }
-      catch (error) { cleanup(); reject(error); }
-    });
-
-    try {
-      // Finish the initial presentation before arming the seek callback, so
-      // an outstanding poster frame cannot masquerade as the sought frame.
-      const initial = await presented(() => { video.src = url; }, false);
-      const target = Math.min(Math.max(0, atSeconds), Math.max(0, video.duration - 0.05));
-      if (target === 0) return initial;
-      return await presented(() => { video.currentTime = target; }, true);
-    } finally {
-      video.cancelVideoFrameCallback(callback);
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
-      video.remove();
-      URL.revokeObjectURL(url);
-    }
-  }, { base64: bytes.toString('base64'), atSeconds });
+  const sampled = await sampleVideoFrames(page, bytes, [atSeconds], { average: true, clamp: true });
+  const [r, g, b] = sampled.colours[0];
+  return {
+    r, g, b, duration: sampled.duration,
+    mediaTime: sampled.presentedTimes[0], clock: sampled.sampledTimes[0],
+  };
 }
 
 /** How far apart two colours are, as a plain distance in RGB. */
@@ -200,8 +119,6 @@ test.beforeEach(async ({ page }) => {
  * it and the hub refuses.
  */
 async function needsToRead(page: Page): Promise<void> {
-  test.skip(!await page.evaluate(() => 'requestVideoFrameCallback' in HTMLVideoElement.prototype),
-    'this engine cannot report when a decoded video frame has been presented');
   const { bytes } = await recordVideo(page, {
     width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
   });
