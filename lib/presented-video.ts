@@ -203,4 +203,3 @@ export async function sampleVideoFrames(
     }
   }, { data: Array.from(bytes), times, options });
 }
-
