@@ -4,6 +4,7 @@ import { canDecodeVideo, canEncodeVideo, recordVideo } from '../../lib/browser-v
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { encodePng } from '../../lib/image-fixtures';
 import { quiet } from '../../lib/engine';
+import { sampleVideoFrames } from '../../lib/presented-video';
 
 /**
  * Tool-level functional tests for the three remaining video tools: playing a
@@ -58,60 +59,18 @@ async function exportVideo(page: Page, wait = 180_000): Promise<Buffer> {
   return fs.readFileSync(path);
 }
 
-/**
- * The average colour of a video's frame at a given time.
- *
- * Decoded in the page, because that is the only place there is a video
- * decoder. Only three numbers come back, so nothing large crosses the bridge.
- */
+/** Keep the whole-frame average while waiting for a settled native picture. */
 async function frameColour(
   page: Page,
   bytes: Buffer,
   atSeconds: number,
-): Promise<{ r: number; g: number; b: number; duration: number }> {
-  return page.evaluate(async ({ base64, atSeconds }) => {
-    const binary = atob(base64);
-    const array = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) array[i] = binary.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([array], { type: 'video/mp4' }));
-
-    const video = document.createElement('video');
-    video.muted = true;
-    video.src = url;
-
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error('the video would not load'));
-    });
-
-    const target = Math.min(Math.max(0, atSeconds), Math.max(0, video.duration - 0.05));
-    await new Promise<void>((resolve) => {
-      video.onseeked = () => resolve();
-      video.currentTime = target;
-    });
-
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext('2d')!;
-    context.drawImage(video, 0, 0);
-    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-
-    let r = 0; let g = 0; let b = 0; let count = 0;
-    for (let at = 0; at < data.length; at += 4) {
-      // The sweeping bar is black; skipping the very dark pixels keeps the
-      // average about the background colour, which is the thing that moves
-      // with time.
-      if (data[at] + data[at + 1] + data[at + 2] < 90) continue;
-      r += data[at]; g += data[at + 1]; b += data[at + 2];
-      count += 1;
-    }
-
-    const duration = video.duration;
-    URL.revokeObjectURL(url);
-    if (count === 0) return { r: 0, g: 0, b: 0, duration };
-    return { r: r / count, g: g / count, b: b / count, duration };
-  }, { base64: bytes.toString('base64'), atSeconds });
+): Promise<{ r: number; g: number; b: number; duration: number; mediaTime: number; clock: number }> {
+  const sampled = await sampleVideoFrames(page, bytes, [atSeconds], { average: true, clamp: true });
+  const [r, g, b] = sampled.colours[0];
+  return {
+    r, g, b, duration: sampled.duration,
+    mediaTime: sampled.presentedTimes[0], clock: sampled.sampledTimes[0],
+  };
 }
 
 /** How far apart two colours are, as a plain distance in RGB. */
@@ -202,9 +161,17 @@ test.describe('reverse-video: playing it backwards', () => {
     const reversed = await exportVideo(page);
     expect(isMp4(reversed), 'the reversed file is not an MP4').toBe(true);
 
+    await test.info().attach('reverse-source.mp4', { body: original, contentType: 'video/mp4' });
+    await test.info().attach('reverse-output.mp4', { body: reversed, contentType: 'video/mp4' });
     const originalStart = await frameColour(page, original, 0.1);
     const originalEnd = await frameColour(page, original, SECONDS - 0.3);
     const reversedStart = await frameColour(page, reversed, 0.1);
+
+    await test.info().attach('presented-frame-colours.json', {
+      body: JSON.stringify({ originalStart, originalEnd, reversedStart }, null, 2), contentType: 'application/json',
+    });
+    expect(colourGap(originalStart, originalEnd), 'the same recording must distinguish its two ends')
+      .toBeGreaterThan(60);
 
     // The start of the result should look like the end of the source...
     const toEnd = colourGap(reversedStart, originalEnd);

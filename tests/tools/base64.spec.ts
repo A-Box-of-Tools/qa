@@ -183,6 +183,10 @@ test.describe('base64: the promise', () => {
 
 
 test('base64: whitespace is input data, and decoded spaces are not trimmed', async ({ page }) => {
+  // Four round trips repeatedly move focus and scroll the mobile controls.
+  // WebKit can spend the default budget settling those actions even when
+  // every exact byte comparison passes; each assertion keeps its own limit.
+  test.setTimeout(60_000);
   await page.goto(URL_PATH);
   await codec(page, 'base64');
   for (const text of [' ', '\t', '\n', ' \t\n ']) {
