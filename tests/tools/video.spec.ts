@@ -454,6 +454,7 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
     };
     const presented = (start: () => void, target?: number) => new Promise<ReturnType<typeof picture>>((resolve, reject) => {
       let settled = target === undefined;
+      let completed = false;
       let frame: ReturnType<typeof picture> | undefined;
       const cleanup = () => {
         clearTimeout(timer);
@@ -463,18 +464,28 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
         video.removeEventListener('seeked', seeked);
         video.removeEventListener('error', failed);
       };
-      const fail = (error: unknown) => { cleanup(); reject(error); };
+      const fail = (error: unknown) => {
+        if (completed) return;
+        completed = true;
+        cleanup();
+        reject(error);
+      };
       const finish = () => {
-        if (!frame || !settled) return;
+        if (completed || !frame || !settled) return;
         if (target !== undefined && (video.seeking || Math.abs(video.currentTime - target) > 0.0001)) {
           fail(new Error(`source seek did not reach ${target}s: clock ${video.currentTime}s`));
           return;
         }
+        completed = true;
         cleanup();
         resolve(frame);
       };
       const paint = (mediaTime: number) => {
-        try { frame = picture(mediaTime); finish(); }
+        try {
+          frame = picture(mediaTime);
+          if (target === undefined) video.pause();
+          finish();
+        }
         catch (error) { fail(error); }
       };
       // Older engines cannot identify presented frames. After their native
@@ -484,7 +495,18 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
           animation = requestAnimationFrame(() => paint(video.currentTime));
         });
       };
-      const loaded = () => { if (target === undefined && !hasFrameCallback) fallback(); };
+      const arm = () => {
+        callback = video.requestVideoFrameCallback((_now, metadata) => paint(metadata.mediaTime));
+      };
+      const loaded = () => {
+        if (target !== undefined || completed) return;
+        if (!hasFrameCallback) { fallback(); return; }
+        // A paused, loaded player can show its poster without firing rVFC.
+        // Start muted playback to obtain a real presentation, then pause in
+        // paint(). A late play rejection must not cancel the following seek.
+        arm();
+        void video.play().catch(fail);
+      };
       const seeked = () => {
         settled = true;
         if (!hasFrameCallback) fallback();
@@ -497,15 +519,13 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
       video.addEventListener('loadeddata', loaded);
       video.addEventListener('seeked', seeked);
       video.addEventListener('error', failed);
-      if (hasFrameCallback) {
-        callback = video.requestVideoFrameCallback((_now, metadata) => paint(metadata.mediaTime));
-      }
+      if (hasFrameCallback && target !== undefined) arm();
       try { start(); }
       catch (error) { fail(error); }
     });
     try {
-      // Consume the poster presentation before arming any seek callback; an
-      // old initial frame must not satisfy the first requested source time.
+      // Brief playback presents the initial picture before any seek callback
+      // is armed; a poster cannot satisfy the first requested source time.
       let previous = await presented(() => { video.src = url; });
       const frames: Array<ReturnType<typeof picture>> = [];
       for (const time of times) {
