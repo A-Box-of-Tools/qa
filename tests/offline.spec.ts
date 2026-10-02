@@ -156,10 +156,19 @@ test('offline: an unchanged worker refreshes HTML and preserves neighboring scop
     const hub = '/es/';
     const tool = localeUrl('es', 'base64');
     const scripts = new Map<string, string>();
+    const versions = new Map<string, string>();
     for (const scope of [hub, tool]) {
       const response = await request.get(`${scope}sw.js`);
       expect(response.ok(), `${scope}sw.js is missing`).toBe(true);
-      scripts.set(`${scope}sw.js`, await response.text());
+      const worker = await response.text();
+      scripts.set(`${scope}sw.js`, worker);
+      // Older deployed workers have no page-generation contract. A worker
+      // that declares one needs a matching fixture shell before it can install.
+      if (/\bCACHE_VERSION\b/.test(worker)) {
+        const version = /CACHE_VERSION\s*=\s*(['"])([0-9a-f]{10})\1/.exec(worker)?.[2];
+        expect(version, `${scope}sw.js declares no valid offline generation`).toBeTruthy();
+        versions.set(scope, version!);
+      }
     }
 
     let revision = 1;
@@ -176,9 +185,12 @@ test('offline: an unchanged worker refreshes HTML and preserves neighboring scop
         res.end(worker);
       } else if (url.pathname.endsWith('/') || url.pathname.endsWith('index.html')) {
         const scope = url.pathname.startsWith(tool) ? tool : hub;
+        const version = versions.get(scope);
+        const marker = version ? ` data-offline-version="${version}"` : '';
+        const workerUrl = `${scope}sw.js${version ? `?v=${version}` : ''}`;
         res.setHeader('Content-Type', 'text/html');
-        res.end(`<!doctype html><html lang="en"><title>Cache fixture</title><main>revision ${revision}</main>`
-          + `<script>navigator.serviceWorker.register('${scope}sw.js', {scope:'${scope}'}).catch(() => {});</script></html>`);
+        res.end(`<!doctype html><html${marker} lang="en"><title>Cache fixture</title><main>revision ${revision}</main>`
+          + `<script>navigator.serviceWorker.register('${workerUrl}', {scope:'${scope}',updateViaCache:'none'}).catch(() => {});</script></html>`);
       } else {
         res.setHeader('Content-Type', 'text/plain');
         res.end(`network revision ${revision}`);
