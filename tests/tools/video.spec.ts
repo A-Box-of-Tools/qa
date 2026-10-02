@@ -6,6 +6,7 @@ import { readGif } from '../../lib/gif';
 import { decodedPixels, decodedSize, pixelAt } from '../../lib/browser-image';
 import { ask, onAPageOfItsOwn, quiet } from '../../lib/engine';
 import { canEncodeH264 } from '../../lib/held-video-flush';
+import { sampleVideoFrames } from '../../lib/presented-video';
 
 /**
  * Tool-level functional tests for the video tools: grabbing a frame, cropping,
@@ -415,56 +416,9 @@ async function typeVideoPart(page: Page, start: string, end: string): Promise<vo
   await row.locator('.segment-time').nth(1).blur();
 }
 
-/**
- * Decode the downloaded bytes in a fresh native video element. Nothing here
- * imports the trimmer or reads its result preview. Three separated pixels at
- * the same height let the median ignore the fixture's narrow moving black bar.
- */
+/** Use the shared presentation barrier without changing the trimmer's pixel oracle. */
 async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
-  return page.evaluate(async ({ data, times }) => {
-    const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: 'video/mp4' }));
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    const waitFor = (event: 'loadeddata' | 'seeked', action: () => void) =>
-      new Promise<void>((resolve, reject) => {
-        const clean = () => {
-          clearTimeout(timer);
-          video.removeEventListener(event, done);
-          video.removeEventListener('error', failed);
-        };
-        const done = () => { clean(); resolve(); };
-        const failed = () => { clean(); reject(new Error(`video failed before ${event}`)); };
-        const timer = setTimeout(() => { clean(); reject(new Error(`video never reached ${event}`)); }, 15_000);
-        video.addEventListener(event, done);
-        video.addEventListener('error', failed);
-        action();
-      });
-    try {
-      await waitFor('loadeddata', () => { video.src = url; });
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const context = canvas.getContext('2d', { willReadFrequently: true })!;
-      const colours: number[][] = [];
-      for (const time of times) {
-        if (time >= video.duration) throw new Error('the downloaded video ended before a requested frame');
-        await waitFor('seeked', () => { video.currentTime = time; });
-        context.drawImage(video, 0, 0);
-        const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
-          Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
-        ).data);
-        colours.push([0, 1, 2].map((channel) =>
-          pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]));
-      }
-      return { duration: video.duration, width: video.videoWidth, height: video.videoHeight, colours };
-    } finally {
-      video.removeAttribute('src');
-      video.load();
-      URL.revokeObjectURL(url);
-    }
-  }, { data: Array.from(bytes), times });
+  return sampleVideoFrames(page, bytes, times);
 }
 
 /**
