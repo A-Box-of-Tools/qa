@@ -34,6 +34,9 @@ test.describe('hub page', () => {
       await expect(converter).toBeVisible();
       await converter.click();
       await expect(page.locator('html')).toHaveAttribute('lang', declaredLang(lang));
+      // Markup arrives before nested imports finish; the tool removes this
+      // warning only after its picker and example listeners are attached.
+      await expect(page.locator('#boot-warning')).toHaveCount(0);
       await page.locator('#example-button').click();
       await expect(page.locator('#file-list li')).toHaveCount(1);
       await expect(page.locator('#format')).toBeVisible();

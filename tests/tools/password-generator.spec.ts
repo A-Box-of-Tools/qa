@@ -124,15 +124,26 @@ test.describe('password-generator: password mode', () => {
   test('avoiding look-alikes really drops Il1|O0', async ({ page }) => {
     await setRange(page, 'length', 128);
     await page.locator('#avoid-lookalikes').check();
+    await setRange(page, 'count', 10);
+    await expect(page.locator('#length-out')).toHaveText('128');
+    await expect(page.locator('#count-out')).toHaveText('10');
+    await expect(page.locator('#batch li')).toHaveCount(9);
 
-    // 128 characters over four classes, ten times over: if any of the six were
-    // still reachable this would find it.
-    for (let i = 0; i < 10; i += 1) {
-      const value = await secret(page);
+    // The real batch control keeps all ten 128-character draws while avoiding
+    // ten separate actionability waits, which exhausted Mobile Safari's test
+    // budget. One normal click still proves that regeneration produces a fresh
+    // batch through the page's own controls.
+    const previous = await secret(page);
+    await page.locator('#regenerate').click();
+    await expect(page.locator('#secret')).not.toHaveText(previous);
+    const values = await allResults(page);
+    expect(values).toHaveLength(10);
+    expect(new Set(values).size, 'a password repeated').toBe(10);
+    for (const value of values) {
+      expect(value).toHaveLength(128);
       for (const ch of LOOKALIKES) {
         expect(value, `look-alike ${JSON.stringify(ch)} survived`).not.toContain(ch);
       }
-      await page.locator('#regenerate').click();
     }
   });
 

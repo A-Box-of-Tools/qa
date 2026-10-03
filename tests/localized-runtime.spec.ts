@@ -26,7 +26,11 @@ function rememberFiles(page: Page, names: string[]): void {
 }
 
 const checkCopy = (page: Page, slug: string, locale: string) => expectLocalizedCopy(
-  page, slug, locale, { filenames: [...(uploadedNames.get(page) ?? [])] },
+  page, slug, locale, {
+    filenames: [...(uploadedNames.get(page) ?? [])],
+    // Random passwords can resemble phrase keys without being interface copy.
+    generatedTextSelectors: slug === 'password-generator' ? ['output#secret'] : [],
+  },
 );
 
 async function upload(page: Page, name: string, mimeType: string, buffer: Buffer): Promise<void> {
