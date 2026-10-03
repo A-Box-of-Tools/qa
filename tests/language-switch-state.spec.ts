@@ -310,11 +310,54 @@ test.describe('switching language keeps the settings too', () => {
       // checks before it intercepts: a reader who has only been reading pays
       // nothing for a feature they are not using, and the language menu is a
       // link that behaves like one.
+      const intercepted: boolean[] = [];
+      let parked = 0;
+      await page.exposeFunction('__qaLanguageClick', (prevented: boolean) => { intercepted.push(prevented); });
+      await page.exposeFunction('__qaLanguagePark', () => { parked += 1; });
+      await page.addInitScript(() => {
+        const state = window as typeof window & {
+          __qaLanguageOpenSettled?: boolean;
+          __qaLanguageClick: (prevented: boolean) => Promise<void>;
+          __qaLanguagePark: () => Promise<void>;
+        };
+        const open = IDBFactory.prototype.open;
+        IDBFactory.prototype.open = function (name, version) {
+          const request = version === undefined ? open.call(this, name) : open.call(this, name, version);
+          if (name === 'abox-lang-keep') {
+            const settled = () => { state.__qaLanguageOpenSettled = true; };
+            request.addEventListener('success', settled, { once: true });
+            request.addEventListener('error', settled, { once: true });
+          }
+          return request;
+        };
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) {
+          if (this.transaction.db.name === 'abox-lang-keep' && this.name === 'work') {
+            void state.__qaLanguagePark();
+          }
+          return put.apply(this, args);
+        };
+        // A window bubble listener observes the event after the app's document
+        // handler, while leaving the native link's default action untouched.
+        window.addEventListener('click', (event) => {
+          const link = event.target instanceof Element ? event.target.closest('a[hreflang]') : null;
+          if (link?.closest('.lang-switch, .lang-pick, .lang-auto')) {
+            void state.__qaLanguageClick(event.defaultPrevented);
+          }
+        });
+      });
       await page.goto('/json-formatter/');
+      // receive() opens the store at load even without work to restore. Its
+      // request can outlive goto(load); wait for that actual request instead of
+      // blaming a later click for whichever database creation won the race.
+      await expect.poll(() => page.evaluate(() => Boolean(
+        (window as typeof window & { __qaLanguageOpenSettled?: boolean }).__qaLanguageOpenSettled)),
+      { timeout: 20_000 }).toBe(true);
       const before = await page.evaluate(async () => {
         const names = await indexedDB.databases?.() ?? [];
         return names.map((one) => one.name).join(',');
       });
+      expect(parked, 'startup must not manufacture work to carry').toBe(0);
       await switchLanguage(page);
       const after = await page.evaluate(async () => {
         const names = await indexedDB.databases?.() ?? [];
@@ -324,6 +367,8 @@ test.describe('switching language keeps the settings too', () => {
         after.includes('abox-lang-keep'),
         'switching an untouched page opened the store anyway',
       ).toBe(before.includes('abox-lang-keep'));
+      expect(intercepted, 'the untouched language link must retain its native default action').toEqual([false]);
+      expect(parked, 'an untouched language switch must not park a carry record').toBe(0);
     });
 });
 
