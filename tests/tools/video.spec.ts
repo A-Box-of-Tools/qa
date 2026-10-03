@@ -4,7 +4,7 @@ import { canDecodeVideo, recordVideo, skipWithoutWebCodecs } from '../../lib/bro
 import { boxesIn, findBox, findBoxes, isMp4, readMp4, videoTrack } from '../../lib/mp4';
 import { readGif } from '../../lib/gif';
 import { decodedPixels, decodedSize, pixelAt } from '../../lib/browser-image';
-import { ask, onAPageOfItsOwn, quiet } from '../../lib/engine';
+import { ask, keepsFilesInStorage, onAPageOfItsOwn, quiet } from '../../lib/engine';
 import { canEncodeH264 } from '../../lib/held-video-flush';
 import { sampleVideoFrames } from '../../lib/presented-video';
 
@@ -131,6 +131,9 @@ async function scrubTo(page: Page, fraction: number): Promise<void> {
 // cannot be mistaken for a missing decoder.
 test.beforeEach(async ({ page }, testInfo) => {
   await page.goto('/');
+  // Replacement and joining inspect the saved MP4 packets; they do not need
+  // a native player or WebCodecs decoder to decide whether input was replaced.
+  if (testInfo.tags.includes('@copy-input')) return;
   if (testInfo.tags.includes('@native-playback')) {
     const { bytes } = await recordVideo(page, {
       width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
@@ -665,7 +668,222 @@ async function saveCopiedVideo(page: Page): Promise<Buffer> {
   return save(page, () => page.locator('#download').click());
 }
 
+interface TrimInput { name: string; bytes: Buffer }
+
+/** Deliver a real drop event through the public picker, rather than its callback. */
+async function dropTrimFiles(page: Page, files: TrimInput[]): Promise<void> {
+  await page.locator('#dropzone').evaluate((element, inputs) => {
+    const transfer = new DataTransfer();
+    for (const input of inputs) {
+      transfer.items.add(new File([new Uint8Array(input.data)], input.name, { type: 'video/mp4' }));
+    }
+    element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, files.map(({ name, bytes }) => ({ name, data: Array.from(bytes) })));
+}
+
+async function browseTrimFiles(page: Page, files: TrimInput[]): Promise<void> {
+  await page.locator('#file-input').setInputFiles(files.map(({ name, bytes }) => ({
+    name, mimeType: 'video/mp4', buffer: bytes,
+  })));
+}
+
+async function trimInputReady(page: Page): Promise<void> {
+  await expect(page.locator('#dropzone')).not.toHaveClass(/\bbusy\b/, { timeout: 60_000 });
+  await expect(page.locator('#export')).toBeEnabled({ timeout: 60_000 });
+}
+
+/** A full replacement must contain exactly the new file's encoded pictures. */
+function expectWholeVideoCopy(original: Buffer, saved: Buffer): void {
+  const expected = encodedVideoSamples(original).samples;
+  const actual = encodedVideoSamples(saved).samples;
+  expect(actual).toHaveLength(expected.length);
+  for (let index = 0; index < expected.length; index += 1) {
+    expect(actual[index].data.equals(expected[index].data),
+      `saved picture ${index} must belong to the replacement file`).toBe(true);
+  }
+  const input = readMp4(original);
+  const output = readMp4(saved);
+  expect(videoTrack(output)?.width).toBe(videoTrack(input)?.width);
+  expect(videoTrack(output)?.height).toBe(videoTrack(input)?.height);
+  expect(output.seconds).toBeCloseTo(input.seconds, 2);
+}
+
 test.describe('trim-video: keeping part of the time', () => {
+  test('dropping a new video clears old marks and export and copies only the replacement', { tag: '@copy-input' }, async ({ page }) => {
+    test.setTimeout(240_000);
+    const first = await recordVideo(page, { width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20 });
+    const second = await recordVideo(page, { width: 160, height: 120, seconds: 2, fps: 20 });
+    test.skip(!isMp4(first.bytes) || !isMp4(second.bytes),
+      'the fixture recorder did not produce the MP4 needed for byte-copy verification');
+    await page.goto(TRIM);
+    await browseTrimFiles(page, [{ name: 'first.mp4', bytes: first.bytes }]);
+    await trimInputReady(page);
+    await typeVideoPart(page, '0:00.000', '0:00.500');
+    await saveCopiedVideo(page);
+    await expect(page.locator('#result')).toBeVisible();
+
+    await dropTrimFiles(page, [{ name: 'replacement.mp4', bytes: second.bytes }]);
+    await trimInputReady(page);
+    await expect(page.locator('#clip-list .clip-name')).toHaveCount(0);
+    await expect(page.locator('#clip-list')).toBeHidden();
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    await expect(page.locator('#segment-table')).toBeHidden();
+    await expect(page.locator('#result')).toBeHidden();
+    await expect(page.locator('#download')).not.toHaveAttribute('href');
+    await expect(page.locator('#result-video')).not.toHaveAttribute('src');
+    await expect(page.locator('#tl-now')).toHaveText('0:00.000');
+    const saved = await saveCopiedVideo(page);
+    await expect(page.locator('#download')).toHaveAttribute('download', 'replacement-cut.mp4');
+    expectWholeVideoCopy(second.bytes, saved);
+
+    await test.step('only the replacement survives a language change', async (step) => {
+      step.skip(!await keepsFilesInStorage(page), 'this engine cannot store a File across navigation');
+      step.skip(await page.locator('.lang-pick-menu a').count() === 0,
+        'this page has no offered language destination');
+      const before = new URL(page.url()).pathname;
+      await page.locator('details.lang-pick summary').first().click();
+      await Promise.all([
+        page.waitForURL((url) => url.pathname !== before, { timeout: 30_000 }),
+        page.locator('.lang-pick-menu a').first().click(),
+      ]);
+      await page.waitForLoadState('domcontentloaded');
+      await trimInputReady(page);
+      await expect(page.locator('#clip-list .clip-name')).toHaveCount(0);
+      await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+      const restored = await saveCopiedVideo(page);
+      await expect(page.locator('#download')).toHaveAttribute('download', 'replacement-cut.mp4');
+      expectWholeVideoCopy(second.bytes, restored);
+    });
+
+    await typeVideoPart(page, '0:00.000', '0:00.500');
+    await expect(page.locator('#segment-rows tr')).toHaveCount(1);
+    await dropTrimFiles(page, [{ name: 'unreadable.mp4', bytes: Buffer.from('not an MP4 file') }]);
+    await expect(page.locator('#dropzone')).not.toHaveClass(/\bbusy\b/, { timeout: 60_000 });
+    await expect(page.locator('#error')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('#export-card')).not.toHaveAttribute('inert');
+    await expect(page.getByRole('alert').filter({ hasText: 'unreadable.mp4' })).toBeVisible();
+    await expect(page.locator('#export')).toBeDisabled();
+    await expect(page.locator('#preview')).not.toHaveAttribute('src');
+    await expect(page.locator('#still')).toBeHidden();
+    await expect(page.locator('#result')).toBeHidden();
+    await expect(page.locator('#download')).not.toHaveAttribute('href');
+    await expect(page.locator('#result-video')).not.toHaveAttribute('src');
+    await expect(page.locator('#clip-list .clip-name')).toHaveCount(0);
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    await expect(page.locator('#sum-start, #sum-size, #sum-picture, #sum-sound'))
+      .toHaveText(['—', '—', '—', '—']);
+    await expect(page.locator('#cut-note')).toBeHidden();
+
+    await browseTrimFiles(page, [{ name: 'replacement.mp4', bytes: second.bytes }]);
+    await trimInputReady(page);
+    await expect(page.locator('#error')).toBeHidden();
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    expectWholeVideoCopy(second.bytes, await saveCopiedVideo(page));
+  });
+
+  test('each browse delivery replaces the batch while files chosen together still join', { tag: '@copy-input' }, async ({ page }) => {
+    test.setTimeout(240_000);
+    const original = await recordVideo(page, { width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20 });
+    test.skip(!isMp4(original.bytes),
+      'the fixture recorder did not produce the MP4 needed for byte-copy verification');
+    await page.goto(TRIM);
+    await browseTrimFiles(page, [{ name: 'old.mp4', bytes: original.bytes }]);
+    await trimInputReady(page);
+    await typeVideoPart(page, '0:00.000', '0:00.250');
+
+    // Copies of one real recording guarantee matching codec descriptions.
+    // The new batch must join both copies, with no contribution from old.mp4.
+    const batch = [
+      { name: 'join-first.mp4', bytes: original.bytes },
+      { name: 'join-second.mp4', bytes: original.bytes },
+    ];
+    await browseTrimFiles(page, batch);
+    await trimInputReady(page);
+    await expect(page.locator('#clip-list .clip-name')).toHaveText(['join-first.mp4', 'join-second.mp4']);
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    await typeVideoPart(page, '0:00.000', '0:00.500');
+    await page.locator('#clip-list .clip-name').nth(1).click();
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    await typeVideoPart(page, '0:00.000', '0:00.750');
+    const joined = await saveCopiedVideo(page);
+    expect(readMp4(joined).seconds).toBeCloseTo(1.25, 2);
+    expectCopiedIntervals(original.bytes, joined, [[0, 0.5], [0, 0.75]]);
+
+    await browseTrimFiles(page, [batch[0]]);
+    await trimInputReady(page);
+    await expect(page.locator('#clip-list .clip-name')).toHaveCount(0);
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    await expect(page.locator('#result')).toBeHidden();
+    // Choosing this same file again must also begin fresh; resetting the native
+    // input is what permits a second change event for the identical filename.
+    await typeVideoPart(page, '0:00.000', '0:00.250');
+    await browseTrimFiles(page, [batch[0]]);
+    await trimInputReady(page);
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    expectWholeVideoCopy(original.bytes, await saveCopiedVideo(page));
+  });
+
+  test('a delayed obsolete load cannot append itself to the replacement batch', { tag: '@copy-input' }, async ({ page }) => {
+    test.setTimeout(240_000);
+    const pending = await recordVideo(page, { width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20 });
+    const replacement = await recordVideo(page, { width: 160, height: 120, seconds: 2, fps: 20 });
+    test.skip(!isMp4(pending.bytes) || !isMp4(replacement.bytes),
+      'the fixture recorder did not produce the MP4 needed for byte-copy verification');
+    await page.goto(TRIM);
+    await page.evaluate(() => {
+      const state = window as typeof window & {
+        heldTrimRead?: boolean; releaseTrimRead?: () => void;
+        pendingTrimUrl?: string; staleTrimUrlRevoked?: boolean;
+      };
+      const create = URL.createObjectURL;
+      const revoke = URL.revokeObjectURL;
+      URL.createObjectURL = function (object) {
+        const url = create.call(this, object);
+        if (object instanceof File && object.name === 'pending.mp4') state.pendingTrimUrl = url;
+        return url;
+      };
+      URL.revokeObjectURL = function (url) {
+        if (url === state.pendingTrimUrl) state.staleTrimUrlRevoked = true;
+        revoke.call(this, url);
+      };
+      const read = Blob.prototype.arrayBuffer;
+      Blob.prototype.arrayBuffer = async function () {
+        // Only the first file read is held; the replacement uses the original
+        // browser API and can finish while its predecessor is still pending.
+        Blob.prototype.arrayBuffer = read;
+        const bytes = await read.call(this);
+        await new Promise<void>((resolve) => {
+          state.releaseTrimRead = resolve;
+          state.heldTrimRead = true;
+        });
+        return bytes;
+      };
+    });
+    await browseTrimFiles(page, [{ name: 'pending.mp4', bytes: pending.bytes }]);
+    await expect.poll(() => page.evaluate(() => Boolean(
+      (window as typeof window & { heldTrimRead?: boolean }).heldTrimRead)), { timeout: 60_000 }).toBe(true);
+    try {
+      await dropTrimFiles(page, [{ name: 'latest.mp4', bytes: replacement.bytes }]);
+      await trimInputReady(page);
+    } finally {
+      await page.evaluate(() => {
+        (window as typeof window & { releaseTrimRead?: () => void }).releaseTrimRead?.();
+      });
+    }
+    // The discarded load releases its URL in its final cleanup. This observes
+    // the old read actually unwinding, rather than sleeping and hoping it did.
+    await expect.poll(() => page.evaluate(() => Boolean(
+      (window as typeof window & { staleTrimUrlRevoked?: boolean }).staleTrimUrlRevoked)),
+    { timeout: 60_000 }).toBe(true);
+    await expect(page.locator('#clip-list .clip-name')).toHaveCount(0);
+    await expect(page.locator('#segment-rows tr')).toHaveCount(0);
+    await expect(page.locator('#result')).toBeHidden();
+    await expect(page.locator('#error')).toBeHidden();
+    const saved = await saveCopiedVideo(page);
+    await expect(page.locator('#download')).toHaveAttribute('download', 'latest-cut.mp4');
+    expectWholeVideoCopy(replacement.bytes, saved);
+  });
+
   test('the downloaded copy preserves reordered parts when only the first needs preroll', { tag: '@native-playback' }, async ({ page }) => {
     test.setTimeout(240_000);
     const original = await loadClip(page, TRIM, '#section-card');
