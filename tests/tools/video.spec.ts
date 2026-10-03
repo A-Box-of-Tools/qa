@@ -738,8 +738,8 @@ test.describe('trim-video: keeping part of the time', () => {
 
     await test.step('only the replacement survives a language change', async (step) => {
       step.skip(!await keepsFilesInStorage(page), 'this engine cannot store a File across navigation');
-      step.skip(await page.locator('.lang-pick-menu a').count() === 0,
-        'this page has no offered language destination');
+      await expect(page.locator('.lang-pick-menu a').first(),
+        'the paired build must offer a maintained language destination').toHaveCount(1);
       const before = new URL(page.url()).pathname;
       await page.locator('details.lang-pick summary').first().click();
       await Promise.all([
@@ -810,14 +810,16 @@ test.describe('trim-video: keeping part of the time', () => {
     expectCopiedIntervals(original.bytes, joined, [[0, 0.5], [0, 0.75]]);
 
     await browseTrimFiles(page, [batch[0]]);
+    await expect(page.locator('#file-input')).toHaveValue('');
     await trimInputReady(page);
     await expect(page.locator('#clip-list .clip-name')).toHaveCount(0);
     await expect(page.locator('#segment-rows tr')).toHaveCount(0);
     await expect(page.locator('#result')).toBeHidden();
-    // Choosing this same file again must also begin fresh; resetting the native
-    // input is what permits a second change event for the identical filename.
+    // setInputFiles dispatches change even for the same file. The empty-value
+    // assertions separately prove the native chooser can select it again.
     await typeVideoPart(page, '0:00.000', '0:00.250');
     await browseTrimFiles(page, [batch[0]]);
+    await expect(page.locator('#file-input')).toHaveValue('');
     await trimInputReady(page);
     await expect(page.locator('#segment-rows tr')).toHaveCount(0);
     expectWholeVideoCopy(original.bytes, await saveCopiedVideo(page));
