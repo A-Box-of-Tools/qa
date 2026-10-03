@@ -14,6 +14,36 @@ test.describe('hub page', () => {
     await expect(page.locator('a.tool-card')).toHaveCount(tools.length);
   });
 
+  test('task search finds a real JPG-to-PNG converter and rejects an unsupported destination', async ({ page }) => {
+    const search = page.locator('#tool-filter-input');
+    await search.fill('JPEG to PNG');
+    await expect(page.locator('a.tool-card[data-tool="resize-image"]')).toBeVisible();
+    await expect(page.locator('#tool-filter-none')).toBeHidden();
+    await expect(page.locator('a.tool-card[data-tool="image-to-ico"]')).toBeHidden();
+    await search.fill('PNG to AVIF');
+    await expect(page.locator('#tool-filter-none')).toContainText('Try fewer words');
+    await search.press('Escape');
+    await expect(page.locator('a.tool-card:visible')).toHaveCount(tools.length);
+  });
+
+  for (const [lang, query] of [['es', 'jpeg a png'], ['pt', 'jpg para png']]) {
+    test(`task search in ${lang} follows capabilities across translated tool addresses`, async ({ page }) => {
+      await page.goto(`/${lang}/`);
+      await page.locator('#tool-filter-input').fill(query);
+      const converter = page.locator('a.tool-card[data-tool="resize-image"]');
+      await expect(converter).toBeVisible();
+      await converter.click();
+      await expect(page.locator('html')).toHaveAttribute('lang', declaredLang(lang));
+      // Markup arrives before nested imports finish; the tool removes this
+      // warning only after its picker and example listeners are attached.
+      await expect(page.locator('#boot-warning')).toHaveCount(0);
+      await page.locator('#example-button').click();
+      await expect(page.locator('#file-list li')).toHaveCount(1);
+      await expect(page.locator('#format')).toBeVisible();
+      await expect(page.locator('#format option[value="image/png"]')).toHaveCount(1);
+    });
+  }
+
   test('every tool card points at a slug that actually exists', async ({ page }) => {
     const hrefs = await page.locator('a.tool-card').evaluateAll((els) =>
       els.map((el) => el.getAttribute('href') ?? ''),

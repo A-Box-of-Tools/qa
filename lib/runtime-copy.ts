@@ -4,6 +4,8 @@ import { englishBody, localeBody } from './locales';
 interface RuntimeCopyInputs {
   /** Test-owned input data; the picker clears input.files after delivery. */
   filenames?: readonly string[];
+  /** Generated data is not prose; accessible attributes remain checked. */
+  generatedTextSelectors?: readonly string[];
 }
 
 /** Check the rendered interface, leaving file contents and code samples alone. */
@@ -14,7 +16,7 @@ export async function expectLocalizedCopy(
     .toHaveCount(0, { timeout: 30_000 });
   const translated = localeBody(locale, slug);
   expect(translated, `${locale}/${slug} has no translated source`).not.toBeNull();
-  const faults = await page.evaluate(({ english, local, filenames }) => {
+  const faults = await page.evaluate(({ english, local, filenames, generatedTextSelectors }) => {
     const normal = (text: string) => text.replace(/[\u2066-\u2069]/g, '').replace(/\s+/g, ' ').trim();
     const parse = (html: string) => {
       const template = document.createElement('template');
@@ -69,10 +71,13 @@ export async function expectLocalizedCopy(
       && getComputedStyle(el).visibility !== 'hidden';
     const entries: Array<{ text: string; attribute: boolean }> = [];
     const main = document.querySelector('#main')!;
+    const generatedOutputs = generatedTextSelectors.flatMap((selector) =>
+      Array.from(main.querySelectorAll(selector)));
     const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const parent = node.parentElement;
       if (!parent || !visible(parent) || parent.closest('script, style, pre, code, textarea, #phrases, #frame-phrases')) continue;
+      if (generatedOutputs.some((output) => output.contains(node))) continue;
       const text = normal(node.textContent ?? '');
       if (text) entries.push({ text, attribute: false });
     }
@@ -116,7 +121,10 @@ export async function expectLocalizedCopy(
       }
     }
     return [...new Set(failures)];
-  }, { english: englishBody(slug), local: translated!, filenames: [...(inputs.filenames ?? [])] });
+  }, {
+    english: englishBody(slug), local: translated!, filenames: [...(inputs.filenames ?? [])],
+    generatedTextSelectors: [...(inputs.generatedTextSelectors ?? [])],
+  });
   expect(faults, `${locale}/${slug}:\n${faults.join('\n')}`).toEqual([]);
 }
 

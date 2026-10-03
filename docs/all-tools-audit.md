@@ -1,14 +1,18 @@
 # All-tools coverage audit
 
-Audit date: 30 September 2026. This review covers the 53 tools in the website
-checkout and the corresponding QA source, starting from QA commit
-`3bb0c343683f6b68eef4bc6d02dc7b98e0e114be`. The table describes assertions in
+Updated: 1 October 2026. This review covers the 53 tools in the website
+checkout and the corresponding QA source. The latest functionality and UX
+regressions extend QA commit `a0f4215425b313c19542274b7d82fada697daa85`. The table describes assertions in
 the final authored specs, not a claim that every possible scenario exists.
 
-All 53 tools have functional scenarios across 48 spec files. There are 435
-`test(...)` source declarations under `tests/tools/`; parameterized declarations
+All 53 tools have functional scenarios across 49 spec files. There are 457
+`test(...)` source declarations under `tests/tools/`, counted from the TypeScript
+syntax tree rather than regular-expression `.test()` calls; parameterized declarations
 expand when collected, and two declarations check fixtures rather than a tool.
-This source count is not a passed-test count. Shared checks are additional.
+The three formatter-counter declarations each cover six locales, producing 18
+cases per browser project; adding French and Japanese adds six cases without
+changing the declaration count. This source count is not a passed-test count.
+Shared checks are additional.
 Syntax and TypeScript checks passed during this review. The new browser cases
 must execute in CI against the website preview before they are treated as
 passing evidence; no local suites were run for this audit.
@@ -23,18 +27,25 @@ contents where that is the relevant result.
 |---|---|
 | Text and data | Preserve whitespace through Base64; stop/replace a pending checksum read, including zero selected algorithms; retain distinct generated CSS names; snapshot scanner pages during export. |
 | Editing and inspection | Save and reopen edited EXIF in JPEG, PNG and WebP; preserve text-diff final newlines and copied/downloaded differences; inspect independent PDF-to-CSV tables and partially checkable ledger output. |
-| Sharing | Transfer binary and empty attachments, enforce admission, and offer no partial download after interruption. |
-| Images | Recover from a correctly branded corrupt AVIF; retire stale redaction results and ignore edit/clear/replace races during encoding, including the per-region style selector; inspect ICNS slots and website-pack contents. |
-| PDF | Type wrong then correct user passwords and a separate owner password; inspect every PDF in both split-ZIP modes. The encrypted fixture comes from an independent pypdf-produced file. |
+| Sharing | Transfer binary and empty attachments, enforce admission, and offer no partial download after interruption. Controlled peers additionally check first-message timeout/retry, already-open channels, pending human admission, a stale carried token and direct-connection failure. |
+| Images | Keep started ID-photo print dimensions, paper label and JPEG DPI when settings change during encoding; recover from a correctly branded corrupt AVIF; retire stale redaction results and ignore edit/clear/replace races during encoding, including the per-region style selector; inspect ICNS slots and website-pack contents. |
+| PDF | Type wrong then correct user passwords and a separate owner password; inspect every PDF in both split-ZIP modes. The encrypted fixture comes from an independent pypdf-produced file. Inspect stamp placement within an inherited rotated CropBox and preserve existing image/opacity resources when stamping twice. |
 | Audio and video | Compare every saved trim-audio sample for reordered Keep and Cut ranges; compare safe trim-video Copy output with its selected source ranges; refuse Copy when a later retained section needs keyframe preroll and verify the same selection's Exact-mode playback. |
 | Strengthened media assertions | Compare crop pixels with selected source coordinates; type a video-to-GIF range, width and frame rate and inspect saved timing and the first selected moment; probe the exact soundtrack fixture with the native decoder before testing extraction. |
-| GIF | Keep an in-flight export's original frame order/delays for both palette modes; cancel at the final decode without publishing a result, then export successfully. |
+| GIF | Preserve a started Video to GIF capture's selected duration and loop setting when the controls change; keep an in-flight export's original frame order/delays for both palette modes; cancel at the final decode without publishing a result, then export successfully. |
+| Text UX | Retire stale Copy/Download actions in the input event before debounce; preserve file edits and edited-to-empty state across language switches; apply downloaded Text Diff patches byte-for-byte after untouched CRLF, editing and swapped sides. JSON/XML/YAML counters are checked after input in Spanish, Portuguese, German, Chinese, French and Japanese. |
+| Password UX | Hold clipboard success/refusal across secret regeneration, select every batch secret on refusal, and select the current secret through keyboard focus. |
+| Audio replacement | Block export while a replacement decode is held, finish a newer file first, then prove the older completion cannot replace its name, sample rate or saved samples in Edit Audio and Trim Audio. |
+| Discovery | Search JPEG/JPG-to-PNG capabilities, reject an unsupported PNG-to-AVIF destination, clear the query, and follow Spanish/Portuguese results into a working format chooser. |
 | Converter lifecycle | For Compress Video, Convert to MP4, Rotate Video and GIF to MP4, Clear while a real encoder flush is held, and separately Cancel while the final output verification read is held. Require no retired output, then complete another export. The Cancel boundary follows every encode pass, including compressor retuning. |
 
 These regressions accompany website fixes for whitespace handling, stale
 checksum publication, generated-name collisions, mutable scanner/GIF exports,
 AVIF capability misclassification, stale redaction output and converter
-completion after Clear or Cancel. A missing scenario is not itself evidence
+completion after Clear or Cancel. The follow-up also covers language-switch text loss,
+stale actions and clipboard feedback, mutable print/video jobs, audio replacement
+races, PDF stamp placement/resource collisions, sharing recovery and offline
+generation coherence. A missing scenario is not itself evidence
 that a feature is broken.
 
 ## Shared coverage
@@ -53,14 +64,24 @@ that a feature is broken.
   attributes, unresolved phrase keys/blanks, copy feedback, DICOM dates,
   segment controls and PDF orientation labels. Six malformed-file families
   and invalid URL import have separate translated-error cases.
+- [Language-switch checks](../tests/language-switch-state.spec.ts) now include
+  file → edit → switch and cleared imports, alongside the existing typed-only
+  and unchanged-file journeys. Text Diff independently applies its saved patch
+  after switching, including CRLF preservation and swapped sides.
+- [Hub checks](../tests/hub.spec.ts) exercise directional format queries and
+  translated destinations. They verify supported controls after loading an
+  example; a search match alone does not establish a conversion result.
 - [Offline checks](../tests/offline.spec.ts) install each tool's worker and
   reload its shell and module graph without the network. Base64 additionally
   performs an operation. A controlled loopback server serves the preview's
   exact worker bytes to check fresh online HTML without a worker change,
   cached navigation after stopping that origin and isolated nested-scope
   caches. A separate cache-only worker probes offline emulation before the
-  per-tool matrix; an app failure cannot cause a skip. Neither check mutates
-  the preview or production.
+  per-tool matrix; an app failure cannot cause a skip. A second controlled
+  origin keeps the bare worker URL stale while serving fresh HTML, holds the
+  new versioned worker response, and requires no premature offline-ready claim.
+  After release it checks the saved generation/module and reloads both with
+  the origin stopped. None of these checks mutates the preview or production.
 - [Handoff checks](../tests/handoff.spec.ts) carry a generated PDF from Images
   to PDF into Merge PDF byte-for-byte, confirm one-time consumption and check
   that storage refusal still opens a usable empty destination.
@@ -93,12 +114,12 @@ omitted from the rows. The linked specs are the evidence for each claim.
 | [hash-checksum](../tests/tools/hash-checksum.spec.ts) | Independent digest values, comparisons, pending-read stop/replacement and zero-algorithm cancellation; localized clipboard refusal. | Large-file resource behavior on physical devices. |
 | [image-to-data-uri](../tests/tools/image-to-data-uri.spec.ts) | Exact decoded PNG bytes, MIME sniffing, CSS wrappers and collision-free multi-file names. | SVG percent/base64 wrappers and the metadata warning. |
 | [json-formatter](../tests/tools/json-formatter.spec.ts) | Indentation, minification, sorting, large integers, malformed input and conversions. | Downloaded duplicate-key/numeric-key ordering and valid-to-invalid edits. |
-| [password-generator](../tests/tools/password-generator.spec.ts) | Required classes, lookalikes, passphrases, batches, network/storage/autocomplete restrictions. | Saved batch equality and clipboard-refusal recovery. |
+| [password-generator](../tests/tools/password-generator.spec.ts) | Required classes, lookalikes, passphrases, batches, network/storage/autocomplete restrictions; late clipboard result retirement, complete batch selection on refusal and keyboard selection. | Downloaded batch equality and every passphrase option combination. |
 | [pdf-to-csv](../tests/tools/pdf-to-csv.spec.ts) | Statement arithmetic, independent nonstatement tables, sparse identifiers and partially checkable ledger output. | Scanned-only and encrypted documents are documented refusals, not OCR/decryption promises. |
 | [qr-barcode-reader](../tests/tools/qr-camera.spec.ts) | Generated-code round trips and camera lifecycle/refusal; see also [generator specs](../tests/tools/qr-barcode.spec.ts). | Independent damaged/blank fixtures and unsafe-URI display; fake-camera cases can skip. |
 | [qr-barcode](../tests/tools/qr-barcode.spec.ts) | Text, Unicode, URL, Wi-Fi, correction levels, EAN-13 and Code 128 images read back. | vCard punctuation and other supported barcode menu paths. |
-| [share-text](../tests/tools/share-text.spec.ts) | Two-browser live text/admission/close, signaling-content separation, exact binary/empty attachment transfer and interrupted-transfer refusal. | Rendezvous/peer connectivity is external; skipped or retried transfers are not clean first-pass evidence. |
-| [text-diff](../tests/tools/text-diff.spec.ts) | Display modes and patch/download behavior, including final newline and filtered-view differences. | Very large input and all combinations of display settings. |
+| [share-text](../tests/tools/share-text.spec.ts) | Two-browser live text/admission/close, signaling-content separation, exact binary/empty attachment transfer and interrupted-transfer refusal; [controlled recovery](../tests/tools/share-text-recovery.spec.ts) separates connection, introduction and human-admission stages. | Rendezvous/peer connectivity is external; skipped or retried transfers are not clean first-pass evidence. |
+| [text-diff](../tests/tools/text-diff.spec.ts) | Display modes and patch/download behavior, including final newline, filtered-view differences, immediate stale-action retirement and exact downloaded patches after language switches/edit/swap. | Very large input and all combinations of display settings. |
 | [xml-formatter](../tests/tools/xml-formatter.spec.ts) | Formatting, malformed XML and loss-sensitive structures/conversions. | Every namespace/DTD/CDATA combination through saved output. |
 | [yaml-to-json](../tests/tools/yaml-to-json.spec.ts) | Supported YAML forms, JSON output and refusal of unsupported/invalid constructs. | YAML features outside the documented subset remain unsupported. |
 
@@ -110,7 +131,7 @@ omitted from the rows. The linked specs are the evidence for each claim.
 | [compress-image](../tests/tools/compress-image.spec.ts) | Real target ceilings, target comparisons, aspect ratio, WebP and batch outputs. | Byte-identical under-target pass-through, impossible targets and partial-batch cancellation. |
 | [compress-pdf](../tests/tools/compress-pdf.spec.ts) | Text/page preservation, scan image shrinkage, preset differences, inventory and replacement. | Metadata toggles, custom DPI, encrypted/corrupt recovery and cancellation. |
 | [heic-to-jpg](../tests/tools/heic-to-jpg.spec.ts) | Tiled HEIC picture, JPEG/PNG/WebP formats, quality, EXIF retain/drop and privacy. | Multiple pictures, mixed corrupt/valid batches and engine-load failure. |
-| [id-photo](../tests/tools/id-photo.spec.ts) | Indian dimensions/byte range, ICAO/US print sizes and DPI, country selection and privacy. | Independent complete print-sheet layout, signature/custom rules and export-time edits. |
+| [id-photo](../tests/tools/id-photo.spec.ts) | Indian dimensions/byte range, ICAO/US print sizes and DPI, country selection and privacy; started print-sheet dimensions/label/JFIF DPI survive export-time setting edits. | Independent complete print-sheet layout and signature/custom rules. |
 | [image-to-ico](../tests/tools/image-to-ico.spec.ts) | ICO directory/size/picture integrity, all ten ICNS slots, website ZIP assets and references, alpha and opaque platform icons. | All storage-mode/scaling combinations and every source alpha edge. |
 | [image-to-svg](../tests/tools/image-to-svg.spec.ts) | Geometry at multiple scales, holes, single-path output, noisy-picture warning and privacy. | Wand edits, undo/reset/threshold interactions and manual subject extraction. |
 | [images-to-pdf](../tests/tools/images-to-pdf.spec.ts) | Byte-identical JPEG embedding, page count/order/sizing/orientation and Clear gate; real PDF handoff. | Alpha masks, EXIF-plus-user rotation, progressive/CMYK re-encoding and metadata. |
@@ -123,7 +144,7 @@ omitted from the rows. The linked specs are the evidence for each claim.
 | [stack-images](../tests/tools/stack-images.spec.ts) | Average/median/lighten/darken/add pixel arithmetic, output sizes, one-frame gate and capability refusal. | Sigma/focus modes, actual alignment, oriented RAW previews and worker cancellation. |
 | [svg-to-image](../tests/tools/svg-to-image.spec.ts) | Hostile scripts/remote references, dimensions/density, large-vector output, formats and privacy. | UTF-16/SVGZ, malformed plausible SVG and multi-scale ZIP boundary cases. |
 | [unlock-pdf](../tests/tools/unlock-pdf.spec.ts) | Restricted example and independent user/owner-password fixture, wrong-to-correct recovery, encryption removed and exact text/pages retained. | Metadata toggle, certificate encryption and asynchronous cancellation. |
-| [watermark-pdf](../tests/tools/watermark-pdf.spec.ts) | Empty-words gate, every/first/tiled placement, shared image/mask and retained source text/pages. | Independently rendered rotated/cropped pages, non-Latin text and async Clear. |
+| [watermark-pdf](../tests/tools/watermark-pdf.spec.ts) | Empty-words gate, every/first/tiled placement, shared image/mask and retained source text/pages; visible rotated CropBox placement matrices and collision-free repeated stamp resources. | Independent raster rendering, non-Latin text and async Clear. |
 | [webp-to-jpg](../tests/tools/webp-to-jpg.spec.ts) | JPEG quality/picture, duplicate ZIP names, matte/alpha, animation warning, renamed and mixed invalid inputs. | Correctly branded corrupt WebP, reset/re-add and encoder-null recovery. |
 
 ### Audio, video and animation tools
@@ -133,19 +154,19 @@ omitted from the rows. The linked specs are the evidence for each claim.
 | [compress-video](../tests/tools/compress-video.spec.ts) | Output under half/quarter target, size/duration, under-target refusal, AAC track presence; Clear during flush and Cancel during final verification, each followed by successful recovery. | Force overshoot/retuning outcomes, copied audio packet equality, long inputs and codec combinations. |
 | [convert-to-mp4](../tests/tools/convert-to-mp4.spec.ts) | VP8/Opus to H.264/AAC when available, explicit silence, H.264 copy-mode dimensions/sample count; Clear during flush and Cancel during final verification, each followed by successful recovery. | Copied packet equality, mixed track jobs/timestamps, broader containers and source replacement. |
 | [crop-video](../tests/tools/video.spec.ts) | Saved crop dimensions and pixels matching the selected source coordinates rather than whole-frame rescaling; playable output/duration and localized loaded/refusal states. | Rotated or off-centre crop pixel correctness, audio preservation and forced recorder fallback. |
-| [edit-audio](../tests/tools/audio.spec.ts) | Recording length/loud-quiet identity, reverse, speed duration, gain, bit depth and malformed inputs. | Frequency proof for keep-pitch, clipping/normalization and multi-channel combinations. |
+| [edit-audio](../tests/tools/audio.spec.ts) | Recording length/loud-quiet identity, reverse, speed duration, gain, bit depth and malformed inputs; pending replacement blocks export and saved PCM belongs to the latest completed file. | Frequency proof for keep-pitch, clipping/normalization and multi-channel combinations. |
 | [extract-audio-from-video](../tests/tools/extract-audio-from-video.spec.ts) | Exact PCM samples, stereo/mono handling, soundtrack duration/non-silence after an independent native decode of the exact fixture, empty-file/decode refusal and privacy. An app error fails the extraction case. | Genuinely silent video, wider containers and rapid replacement during decoding. |
 | [gif-maker](../tests/tools/gif.spec.ts) | Frame count/delay/rate/size, browser-playable output, in-flight palette-export timing/count consistency and final-decode cancellation/retry. | Browser pixel-order/alpha proof; new unit regressions separately prove snapshot RGB order. |
 | [gif-to-mp4](../tests/tools/gif-to-mp4.spec.ts) | One sample per frame, total/per-frame timing, short-delay policy, silence and wrong-file refusal; Clear during flush and Cancel during final verification, each followed by successful recovery. | Complex disposal/alpha content and codec-specific output behavior. |
 | [grab-frame](../tests/tools/video.spec.ts) | Source-sized images and different pictures at different times; translated result/refusal paths. | End-of-stream seeking, variable frame rate and rotation metadata. |
 | [images-to-video](../tests/tools/video-more.spec.ts) | Slideshow duration/dimensions/privacy, capability refusal, translated image-list and invalid-URL feedback. | Forced recorder export, URL download/CORS failures and transitions. |
-| [reverse-video](../tests/tools/video-more.spec.ts) | Reversed first picture, dimensions/duration, player-input path and usable bitrate. | Sound reversal, exact complete frame ordering and forced recorder export. |
+| [reverse-video](../tests/tools/video-more.spec.ts) | Reversed first picture after bounded native presentation, same-input color controls and saved-file/timestamp diagnostics; dimensions/duration, player-input path and usable bitrate. | Sound reversal, exact complete frame ordering and forced recorder export. |
 | [rotate-video](../tests/tools/rotate-video.spec.ts) | Quarter/half-turn matrices, copy-mode dimensions/frame count, baked dimensions and AAC present/omitted; Clear during flush and Cancel during final verification, each followed by successful recovery. | Baked pixel orientation, copied packet equality and pre-rotated/non-H.264 input. |
 | [split-gif](../tests/tools/gif.spec.ts) | Frame extraction, selection, saved pictures and invalid-input recovery; [sheet specs](../tests/tools/split-gif-sheet.spec.ts) inspect cell order, size and filename. | Complex disposal/partial frames and all selection/save combinations. |
 | [timelapse-video](../tests/tools/video-more.spec.ts) | Expected speed-to-duration relation at multiple speeds. | Saved frame sampling/order, soundtrack policy and fallback encoding. |
-| [trim-audio](../tests/tools/audio.spec.ts) | Mark/undo, duration/content, every saved float sample for reordered typed Keep ranges and Cut complement. | Fades, stereo/speed and every boundary overlap combination. |
-| [trim-video](../tests/tools/video.spec.ts) | Mark/undo and safe reordered Copy output; refuse Copy when a later retained section needs keyframe preroll, then explicitly select Exact and compare saved duration and source/output frame colors for the Cut complement. | Multi-clip joins, broader re-encode combinations, sound and recorder fallback. |
-| [video-to-gif](../tests/tools/video.spec.ts) | Typed 0.5–1.5-second range, 240-pixel width and 10 fps; saved dimensions, frame count, one-second total delay and first-frame color at the selected source moment; playability and separate decode refusal. | Complete sampled-frame sequence, palette/dither/disposal combinations, player fallback and cancellation. |
+| [trim-audio](../tests/tools/audio.spec.ts) | Mark/undo, duration/content, every saved float sample for reordered typed Keep ranges and Cut complement; held replacement decoding cannot re-enable export or overwrite a newer file. | Fades, stereo/speed and every boundary overlap combination. |
+| [trim-video](../tests/tools/video.spec.ts) | Mark/undo with exact endpoints and duration from independently read nearest source frame timestamps, plus safe reordered Copy output; refuse Copy when a later retained section needs keyframe preroll, then explicitly select Exact and compare saved duration and source/output frame colors for the Cut complement. | Multi-clip joins, broader re-encode combinations, sound and recorder fallback. |
+| [video-to-gif](../tests/tools/video.spec.ts) | Typed 0.5–1.5-second range, 240-pixel width and 10 fps; saved dimensions, frame count, one-second total delay and first-frame color at the selected source moment; playability, separate decode refusal and a started capture whose duration/loop survive setting changes. | Complete sampled-frame sequence, palette/dither/disposal combinations, player fallback and cancellation. |
 
 ## Capability and claim boundaries
 
@@ -160,6 +181,9 @@ mistaken for a missing decoder. Copy and its refusal guard do not require
 VideoDecoder. Exact separately probes fixture decoding and H.264 encoding after
 asserting the Copy refusal.
 Passed, flaky and skipped counts must be reported separately after CI.
+The controlled Share Text cases replace only the peer/signaling APIs to exercise
+state transitions and timers; the real two-browser suite still establishes
+network transfer and privacy behavior. Mock success is not connectivity proof.
 
 WebKit can expose APIs whose support probes stall. Those bounded probes may
 skip the affected path rather than claiming its refusal UI was exercised.

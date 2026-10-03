@@ -59,10 +59,14 @@ async function build(page: Page): Promise<Buffer> {
   await expect(page.locator('#run')).toBeEnabled();
   await page.locator('#run').click();
   await expect(page.locator('#result')).toBeVisible({ timeout: 30_000 });
-  const pending = page.waitForEvent('download');
-  await page.locator('#download').click();
-
-  const saved = await pending;
+  // A blob download is complete when its bytes arrive, not when a browser
+  // finishes a navigation it will never commit. Keep the real click and the
+  // independent PDF/ZIP checks, while avoiding that unrelated navigation wait.
+  const [saved] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#download').click({ noWaitAfter: true }),
+  ]);
+  expect(await saved.failure(), 'the browser reported a failed download').toBeNull();
   const path = await saved.path();
   if (!path) throw new Error('the browser saved no file');
   return fs.readFileSync(path);

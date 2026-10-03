@@ -204,3 +204,24 @@ test('base64: whitespace is input data, and decoded spaces are not trimmed', asy
   await expect(page.locator('#output')).toBeEmpty();
   await expect(page.locator('#copy')).toBeDisabled();
 });
+
+
+test('base64: editing retires the previous Copy and Download before the debounce', async ({ page }) => {
+  await page.goto('/base64/');
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await page.locator('#input').fill("old input");
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+  // Inspect in the input event's own turn, before a short debounce can expire.
+  const actions = await page.locator('#input').evaluate((node, value) => {
+    (node as HTMLTextAreaElement).value = value;
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+    return {
+      copyDisabled: (document.querySelector('#copy') as HTMLButtonElement).disabled,
+      downloadHidden: (document.querySelector('#download') as HTMLElement).hidden,
+    };
+  }, "new input");
+  expect(actions).toEqual({ copyDisabled: true, downloadHidden: true });
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+});

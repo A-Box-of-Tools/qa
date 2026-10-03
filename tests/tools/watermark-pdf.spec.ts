@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { allText, readImages, readPages } from '../../lib/pdf';
+import { allText, dictValue, readImages, readObjects, readPages } from '../../lib/pdf';
 import { loadTheExample, pressChip, runAndSave, runCard } from '../../lib/tool-frame';
 import { discoverTools } from '../../lib/tools';
 
@@ -123,4 +123,93 @@ test.describe('watermark-pdf: what it refuses', () => {
     await expect(page.locator('#load-error')).toContainText(/PDF/i);
     await expect(page.locator('#file-row')).toBeHidden();
   });
+});
+
+
+/** A cropped page with an inherited, offset viewport and a clockwise turn. */
+function croppedFixture(): Buffer {
+  const bodies = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 /CropBox [100 200 300 500] >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1000 1000] /Rotate 90 /Resources << >> >>',
+  ];
+  let text = '%PDF-1.4\n';
+  const offsets = bodies.map((body, index) => {
+    const offset = Buffer.byteLength(text, 'latin1');
+    text += `${index + 1} 0 obj\n${body}\nendobj\n`;
+    return offset;
+  });
+  const xref = Buffer.byteLength(text, 'latin1');
+  text += `xref\n0 4\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
+  text += `trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(text, 'latin1');
+}
+
+/** Resolve this page's named resource without consulting the site's parser. */
+function stampResource(bytes: Buffer, category: string, name: string) {
+  const objects = readObjects(bytes);
+  const page = [...objects.values()].find((object) => /\/Type\s*\/Page\b/.test(object.body))!;
+  const resolve = (value: string | null): string => {
+    const ref = /^(\d+)\s+\d+\s+R$/.exec(value?.trim() ?? '');
+    return ref ? objects.get(Number(ref[1]))!.body : value ?? '';
+  };
+  const resources = resolve(dictValue(page.body, 'Resources'));
+  const resource = dictValue(resolve(dictValue(resources, category)), name);
+  const ref = /^(\d+)\s+\d+\s+R$/.exec(resource?.trim() ?? '');
+  expect(ref, `${category}/${name} must name a saved resource`).not.toBeNull();
+  return objects.get(Number(ref![1]))!;
+}
+
+test('watermark-pdf: the stamp and preview use the rotated visible CropBox', async ({ page }) => {
+  test.setTimeout(180_000);
+  test.skip(!SHIPPED, NOT_YET);
+  await page.goto(URL_PATH);
+  await page.locator('#file-input').setInputFiles({ name: 'cropped.pdf', mimeType: 'application/pdf', buffer: croppedFixture() });
+  await expect(page.locator('#file-row')).toBeVisible();
+  await page.locator('#words').fill('VISIBLE WATERMARK');
+  await pressChip(page, '[data-diagonal="no"]');
+  const shape = await page.locator('#preview').evaluate((canvas) => {
+    const { width, height } = canvas as HTMLCanvasElement;
+    return width / height;
+  });
+  expect(shape).toBeCloseTo(1.5, 2);
+  const saved = await runAndSave(page);
+  expect(readPages(saved)[0].mediaBox).toEqual([0, 0, 1000, 1000]);
+  const drawing = [...readObjects(saved).values()].find((object) => object.stream?.includes(Buffer.from(`/${STAMP} Do`)))!.stream!.toString('latin1');
+  const matrices = [...drawing.matchAll(/^([\d. -]+) cm$/gm)].map((match) => match[1].split(' ').map(Number));
+  expect(matrices).toHaveLength(2);
+  const transform = ([a, b, c, d, e, f]: number[], x: number, y: number) => [a * x + c * y + e, b * x + d * y + f];
+  const local = transform(matrices[1], 0.5, 0.5);
+  const centre = transform(matrices[0], local[0], local[1]);
+  expect(centre[0]).toBeCloseTo(200, 3);
+  expect(centre[1]).toBeCloseTo(350, 3);
+});
+
+test('watermark-pdf: adding a second stamp preserves the first stamp image and opacity', async ({ page }) => {
+  test.setTimeout(240_000);
+  test.skip(!SHIPPED, NOT_YET);
+  await page.goto(URL_PATH);
+  await loadTheExample(page);
+  await page.locator('#words').fill('FIRST STAMP');
+  await pressChip(page, '[data-colour="red"]');
+  const first = await runAndSave(page);
+  const image = stampResource(first, 'XObject', STAMP);
+  const state = stampResource(first, 'ExtGState', 'AbxWmGs');
+  await page.locator('#file-input').setInputFiles({ name: 'stamped.pdf', mimeType: 'application/pdf', buffer: first });
+  await expect(page.locator('#file-name')).toHaveText('stamped.pdf');
+  await page.locator('#words').fill('SECOND STAMP');
+  await pressChip(page, '[data-colour="blue"]');
+  await page.locator('#opacity').evaluate((element) => {
+    (element as HTMLInputElement).value = '80';
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const second = await runAndSave(page);
+  expect(stampResource(second, 'XObject', STAMP).stream).toEqual(image.stream);
+  expect(dictValue(stampResource(second, 'ExtGState', 'AbxWmGs').body, 'ca')).toBe(dictValue(state.body, 'ca'));
+  for (const one of readPages(second)) {
+    expect(one.xobjects).toContain(STAMP);
+    expect(one.xobjects).toContain(`${STAMP}1`);
+  }
+  expect(stampResource(second, 'XObject', `${STAMP}1`).stream).not.toEqual(image.stream);
+  expect(dictValue(stampResource(second, 'ExtGState', 'AbxWmGs1').body, 'ca')).toBe('0.8');
 });

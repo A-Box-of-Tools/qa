@@ -129,6 +129,10 @@ interface Made {
 async function makeFiles(page: Page): Promise<Made[]> {
   await expect(page.locator('#make')).toBeEnabled({ timeout: 20_000 });
   await page.locator('#make').click();
+  return collectFiles(page);
+}
+
+async function collectFiles(page: Page): Promise<Made[]> {
   await expect(page.locator('#results')).toBeVisible({ timeout: 60_000 });
 
   const rows = page.locator('#result-list li');
@@ -346,4 +350,47 @@ test.describe('id-photo: the promise', () => {
       expect(entry, 'the photograph was sent').not.toContain(marker);
     }
   });
+});
+
+
+test('id-photo: changing DPI and paper during encoding cannot change the files already started', async ({ page }) => {
+  test.setTimeout(180_000);
+  await setup(page, 'icao');
+  await page.locator('#print-dpi').selectOption('300');
+  await page.locator('#paper').selectOption('4x6');
+  // Hold the real first JPEG's completion, rather than making the encoder
+  // fail or depending on how long the machine happens to take.
+  await page.evaluate(() => {
+    const original = HTMLCanvasElement.prototype.toBlob;
+    const state = { held: false, ready: false, release: () => {} };
+    (window as unknown as { printEncode: typeof state }).printEncode = state;
+    HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+      if (type !== 'image/jpeg' || state.held) return original.call(this, callback, type, quality);
+      state.held = true;
+      original.call(this, (blob) => {
+        state.release = () => callback(blob);
+        state.ready = true;
+      }, type, quality);
+    };
+  });
+  await page.locator('#make').click();
+  await page.waitForFunction(() => (window as unknown as { printEncode: { ready: boolean } }).printEncode.ready);
+  await page.locator('#print-dpi').selectOption('600');
+  await page.locator('#paper').selectOption('a4');
+  await expect(page.locator('#make')).toBeDisabled();
+  await page.evaluate(() => (window as unknown as { printEncode: { release: () => void } }).printEncode.release());
+  const made = await collectFiles(page);
+  const sheet = made.find((item) => /sheet/i.test(item.title));
+  expect(sheet, 'the started job must produce its print sheet').toBeDefined();
+  const dimensions = await decodedSize(page, sheet!.bytes, 'image/jpeg');
+  expect([dimensions.width, dimensions.height].sort((a, b) => a - b)).toEqual([1200, 1800]);
+  const jfif = sheet!.bytes.indexOf(Buffer.from('JFIF\0', 'ascii'));
+  expect(jfif).toBeGreaterThanOrEqual(0);
+  expect(sheet!.bytes[jfif + 7], 'JPEG density is in dots per inch').toBe(1);
+  expect(sheet!.bytes.readUInt16BE(jfif + 8)).toBe(300);
+  expect(sheet!.bytes.readUInt16BE(jfif + 10)).toBe(300);
+  expect(sheet!.title).toMatch(/4\s*[x×]\s*6/i);
+  // The user's edits stay available for the next set of files.
+  await expect(page.locator('#print-dpi')).toHaveValue('600');
+  await expect(page.locator('#paper')).toHaveValue('a4');
 });

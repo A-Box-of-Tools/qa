@@ -124,15 +124,26 @@ test.describe('password-generator: password mode', () => {
   test('avoiding look-alikes really drops Il1|O0', async ({ page }) => {
     await setRange(page, 'length', 128);
     await page.locator('#avoid-lookalikes').check();
+    await setRange(page, 'count', 10);
+    await expect(page.locator('#length-out')).toHaveText('128');
+    await expect(page.locator('#count-out')).toHaveText('10');
+    await expect(page.locator('#batch li')).toHaveCount(9);
 
-    // 128 characters over four classes, ten times over: if any of the six were
-    // still reachable this would find it.
-    for (let i = 0; i < 10; i += 1) {
-      const value = await secret(page);
+    // The real batch control keeps all ten 128-character draws while avoiding
+    // ten separate actionability waits, which exhausted Mobile Safari's test
+    // budget. One normal click still proves that regeneration produces a fresh
+    // batch through the page's own controls.
+    const previous = await secret(page);
+    await page.locator('#regenerate').click();
+    await expect(page.locator('#secret')).not.toHaveText(previous);
+    const values = await allResults(page);
+    expect(values).toHaveLength(10);
+    expect(new Set(values).size, 'a password repeated').toBe(10);
+    for (const value of values) {
+      expect(value).toHaveLength(128);
       for (const ch of LOOKALIKES) {
         expect(value, `look-alike ${JSON.stringify(ch)} survived`).not.toContain(ch);
       }
-      await page.locator('#regenerate').click();
     }
   });
 
@@ -393,4 +404,79 @@ test.describe('password-generator: batch, and the promise', () => {
     await expect(page.locator('#secret')).toHaveJSProperty('tagName', 'OUTPUT');
     await expect(page.locator('input[type="text"], input[type="password"]')).toHaveCount(0);
   });
+});
+
+
+/** The platform promise is held so a real settings change can overtake it. */
+async function heldClipboard(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const state = {
+      writes: [] as string[],
+      release: null as null | ((succeed: boolean) => void),
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText(text: string) {
+        state.writes.push(text);
+        return new Promise<void>((resolve, reject) => {
+          state.release = (succeed) => succeed ? resolve() : reject(new Error('clipboard refused'));
+        });
+      },
+    } });
+    (window as unknown as { clipboardTest: typeof state }).clipboardTest = state;
+  });
+}
+
+async function finishClipboard(page: Page, succeed: boolean): Promise<void> {
+  await page.evaluate(async (ok) => {
+    const state = (window as unknown as {
+      clipboardTest: { release: null | ((value: boolean) => void) };
+    }).clipboardTest;
+    if (!state.release) throw new Error('No clipboard write is pending');
+    state.release(ok);
+    await Promise.resolve();
+  }, succeed);
+}
+
+for (const succeeds of [true, false]) {
+  test(`password-generator: a late clipboard ${succeeds ? 'success' : 'refusal'} cannot describe a new secret`, async ({ page }) => {
+    await heldClipboard(page);
+    await page.goto(URL_PATH);
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    const original = await secret(page);
+    await page.locator('#copy').click();
+    await setRange(page, 'length', original.length + 1);
+    await finishClipboard(page, succeeds);
+    await expect(page.locator('#copy-note')).toBeEmpty();
+    await expect(page.locator('#copy-fallback')).toBeHidden();
+    const writes = await page.evaluate(() => (window as unknown as {
+      clipboardTest: { writes: string[] };
+    }).clipboardTest.writes);
+    expect(writes).toEqual([original]);
+    expect((await secret(page)).length).toBe(original.length + 1);
+  });
+}
+
+test('password-generator: a refused batch copy selects every secret for manual copying', async ({ page }) => {
+  await heldClipboard(page);
+  await page.goto(URL_PATH);
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await setRange(page, 'count', 3);
+  const expected = (await allResults(page)).join('\n');
+  await page.locator('#copy-all').click();
+  await finishClipboard(page, false);
+  await expect(page.locator('#copy-fallback')).toBeVisible();
+  await expect(page.locator('#copy-fallback')).toBeFocused();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(expected);
+  await page.locator('#regenerate').click();
+  await expect(page.locator('#copy-fallback')).toBeHidden();
+  await expect(page.locator('#copy-fallback')).toBeEmpty();
+});
+
+test('password-generator: the secret is selectable from the keyboard', async ({ page }) => {
+  await page.goto(URL_PATH);
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await page.locator('#regenerate').focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.locator('#secret')).toBeFocused();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(await secret(page));
 });

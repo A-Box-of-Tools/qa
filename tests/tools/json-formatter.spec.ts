@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { quiet } from '../../lib/engine';
+import { declaredLang } from '../../lib/locales';
 import { afterSetting, mode, through } from '../../lib/text-panes';
 
 /**
@@ -205,3 +206,50 @@ test.describe('json-formatter: the promise', () => {
     }
   });
 });
+
+
+test('json-formatter: editing retires the previous Copy and Download before the debounce', async ({ page }) => {
+  await page.goto('/json-formatter/');
+  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await page.locator('#input').fill("{\"value\":\"old\"}");
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+  // Inspect in the input event's own turn, before a short debounce can expire.
+  const actions = await page.locator('#input').evaluate((node, value) => {
+    (node as HTMLTextAreaElement).value = value;
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+    return {
+      copyDisabled: (document.querySelector('#copy') as HTMLButtonElement).disabled,
+      downloadHidden: (document.querySelector('#download') as HTMLElement).hidden,
+    };
+  }, "{\"value\":\"new\"}");
+  expect(actions).toEqual({ copyDisabled: true, downloadHidden: true });
+  await expect(page.locator('#download')).toBeVisible();
+  await expect(page.locator('#copy')).toBeEnabled();
+});
+
+
+for (const [locale, route, empty, oneLine, oneCharacter, manyLines, manyCharacters] of [
+  ["de", "/de/json-formatieren/", "leer", "1 Zeile", "1 Zeichen", "2 Zeilen", "3 Zeichen"],
+  ["es", "/es/formatear-json/", "vacío", "1 línea", "1 carácter", "2 líneas", "3 caracteres"],
+  ["pt", "/pt/formatar-json/", "vazio", "1 linha", "1 caractere", "2 linhas", "3 caracteres"],
+  ["zh", "/zh/json-formatter/", "空", "1 行", "1 个字符", "2 行", "3 个字符"],
+  ["fr", "/fr/formater-du-json/", "vide", "1 ligne", "1 caractère", "2 lignes", "3 caractères"],
+  ["ja", "/ja/json-formatter/", "空", "1行", "1文字", "2行", "3文字"],
+] as const) {
+  test(`json-formatter: ${locale} counters remain translated after input`, async ({ page }) => {
+    await page.goto(route);
+    await expect(page.locator('html')).toHaveAttribute('lang', declaredLang(locale));
+    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    const count = page.locator('#input-count');
+    await expect(count).toHaveText(empty);
+    await page.locator('#input').fill('x');
+    await expect(count).toContainText(oneLine);
+    await expect(count).toContainText(oneCharacter);
+    await page.locator('#input').fill('x\ny');
+    await expect(count).toContainText(manyLines);
+    await expect(count).toContainText(manyCharacters);
+    await page.locator('#clear').click();
+    await expect(count).toHaveText(empty);
+  });
+}
