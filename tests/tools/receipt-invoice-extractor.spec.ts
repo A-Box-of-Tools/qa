@@ -136,7 +136,7 @@ test.describe('receipt-invoice-extractor: reading, review and attached exports',
     for (const document of await documents(page).all()) {
       await expect(document.locator('[data-currency-choice]')).toHaveValue('CAD');
       await expect(field(document, 'confirmed')).not.toBeChecked();
-      await expect(document.locator('.ocr-text')).not.toHaveValue('');
+      await expect(document.locator('textarea.ocr-text:not([readonly])')).not.toHaveValue('');
     }
     await expect(page.locator('#checked-count')).toHaveText('0');
     await expect(page.locator('#email-report')).toBeDisabled();
