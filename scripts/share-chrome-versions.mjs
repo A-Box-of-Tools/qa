@@ -87,10 +87,15 @@ export function describeManifest(manifest, cacheDir) {
 async function responseFor(url, limit, timeoutMs) {
   const signal = AbortSignal.timeout(timeoutMs);
   const response = await fetch(url, { signal, redirect: 'error' });
-  assert(response.status === 200 && response.body, `Official asset request failed with HTTP ${response.status}: ${url}`);
-  const length = response.headers.get('content-length');
-  if (length !== null) assert(/^\d+$/.test(length) && BigInt(length) <= BigInt(limit), `Official response exceeds ${limit} bytes`);
-  return { response, signal };
+  try {
+    assert(response.status === 200 && response.body, `Official asset request failed with HTTP ${response.status}: ${url}`);
+    const length = response.headers.get('content-length');
+    if (length !== null) assert(/^\d+$/.test(length) && BigInt(length) <= BigInt(limit), `Official response exceeds ${limit} bytes`);
+    return { response, signal };
+  } catch (error) {
+    await response.body?.cancel().catch(() => {});
+    throw error;
+  }
 }
 async function metadata(name) {
   const { response } = await responseFor(`${METADATA_ROOT}${name}`, MAX_JSON_BYTES, 30000);
@@ -264,7 +269,7 @@ export async function installManifest(manifest, cacheDir) {
 }
 function options(command, args) {
   const keys = { resolve: ['output'], install: ['manifest', 'cache-dir'], validate: ['manifest'], describe: ['manifest', 'cache-dir'] }[command];
-  assert(keys, 'Use resolve, install, validate, or describe');
+  assert(Array.isArray(keys), 'Use resolve, install, validate, or describe');
   const result = {};
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i]?.replace(/^--/, '');
