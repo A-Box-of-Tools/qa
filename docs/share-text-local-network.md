@@ -31,12 +31,13 @@ length and SHA-256:
 
 ```powershell
 $qaBytes = [byte[]]::new(131072)
+$qaFixturePath = Join-Path (Get-Location).Path 'qa-local-share.bin'
 for ($qaIndex = 0; $qaIndex -lt $qaBytes.Length; $qaIndex++) {
     $qaBytes[$qaIndex] = ($qaIndex * 73 + 19) % 251
 }
-[IO.File]::WriteAllBytes('qa-local-share.bin', $qaBytes)
-(Get-Item -LiteralPath 'qa-local-share.bin').Length
-Get-FileHash -Algorithm SHA256 -LiteralPath 'qa-local-share.bin'
+[IO.File]::WriteAllBytes($qaFixturePath, $qaBytes)
+(Get-Item -LiteralPath $qaFixturePath).Length
+Get-FileHash -Algorithm SHA256 -LiteralPath $qaFixturePath
 ```
 
 ## Run and record each stage
