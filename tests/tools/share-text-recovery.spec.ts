@@ -123,6 +123,36 @@ test('share-text: a peer that never opens offers the direct-connection failure a
   await expect(page.locator('#relayrow')).toBeVisible();
 });
 
+test('share-text: a local peer that never opens times out without a relay and can retry', async ({ page }) => {
+  await controlledPeer(page);
+  await page.clock.install();
+  await page.goto('/share-text/?local=1#qa-controlled');
+  await page.locator('#connect').click();
+  await page.evaluate(() => {
+    const peer = (window as any).__shareRecovery.peer;
+    peer.iceConnectionState = 'new';
+    peer.connectionState = 'new';
+  });
+  await page.clock.fastForward(20_100);
+  await expect(page.locator('#view-status')).toContainText('Could not reach the sharer in Local network mode');
+  await expect(page.locator('#retry')).toBeVisible();
+  await expect(page.locator('#relayrow')).toBeHidden();
+  await expect(page.locator('#panel')).toBeHidden();
+  expect(await page.evaluate(() => (window as any).__shareRecovery.peer.connectionState)).toBe('closed');
+  await page.locator('#retry').click();
+  expect(new URL(page.url()).searchParams.getAll('local')).toEqual(['1']);
+  await expect(page.locator('#consent')).toBeVisible();
+  await page.locator('#connect').click();
+  await page.evaluate(() => {
+    const channel = (window as any).__shareRecovery.channel;
+    channel.open();
+    channel.receive({ type: 'text', body: 'local retry arrived' });
+  });
+  await expect(page.locator('#panel')).toContainText('local retry arrived');
+  await expect(page.locator('#relayrow')).toBeHidden();
+  await expect(page.locator('#retry')).toBeHidden();
+});
+
 test('share-text: an old carried admission token can wait for a new human decision', async ({ page }) => {
   await controlledPeer(page);
   await page.addInitScript(() => {
