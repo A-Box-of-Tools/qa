@@ -29,6 +29,7 @@ remaining capability and scenario boundaries.
 | [`tests/loaded-accessibility.spec.ts`](tests/loaded-accessibility.spec.ts) | Additional loaded/result and error states across text, checksum, PDF, GIF, data-URI and audio interfaces |
 | [`tests/offline.spec.ts`](tests/offline.spec.ts) | On engines passing an independent offline-emulation probe, every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML, independent nested caches and fallback after that origin is stopped. |
 | [`tests/handoff.spec.ts`](tests/handoff.spec.ts) | A generated PDF reaches the next tool byte-for-byte, is consumed once, and storage refusal opens the destination without partial input |
+| [`tests/tools/share-text-local-network.spec.ts`](tests/tools/share-text-local-network.spec.ts) | Discover a Local network share, connect two separate Chromium processes, require private approval, deliver exact text and binary bytes, propagate live edits and clear content on Stop; record browser versions and address-free connection counts |
 
 `lib/tools.ts` and `lib/csp.ts` read the tool list and the CSP allowlist
 straight out of the `etoolbox` checkout at test time, the same way its own
@@ -110,6 +111,14 @@ WebKit's codec and storage capabilities differ from native Safari's. Firefox
 and physical devices are not projects in this suite. Native Safari/device
 checks remain useful for those boundaries; emulated phone viewports do not
 prove a hardware codec, camera or touch implementation.
+
+Local network sharing runs on one CI machine, using bundled Chromium in two
+separate processes. It does not prove that multicast name lookup crosses a
+router or that two Windows Chrome installations can connect. The
+[two-PC Local network checklist](docs/share-text-local-network.md) records that
+separate check, including exact browser versions and restart/update recovery.
+Different versions need not match. A failed connection must remain recorded
+even if updating and relaunching makes the next attempt work.
 
 The offline matrix verifies installed page/module availability for every tool
 on engines supporting offline emulation, plus a small real operation, not
