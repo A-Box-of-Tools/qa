@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 import path from 'node:path';
 import { BASE_URL, ETOOLBOX_DIR, PORT } from './lib/site';
 
+const chromeCompatibilitySpec = /share-text-browser-versions\.spec\.ts$/;
+
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
@@ -28,6 +30,7 @@ export default defineConfig({
     {
       name: 'Desktop Chrome',
       use: { ...devices['Desktop Chrome'] },
+      testIgnore: chromeCompatibilitySpec,
     },
     // Safari's engine, which is not Chromium and is not optional: on iOS every
     // browser is WebKit, Chrome included, so a fault here is a fault for every
@@ -45,14 +48,14 @@ export default defineConfig({
       // in it can vary by engine any more than by viewport - so it runs once,
       // under Desktop Chrome, rather than twice. Seven hundred and twenty-seven
       // tests that took two minutes and proved the same files twice.
-      testIgnore: /tests[\/]locales[\/]/,
+      testIgnore: [/tests[\/]locales[\/]/, chromeCompatibilitySpec],
     },
     {
       name: 'Mobile Safari',
       use: { ...devices['iPhone 13'] },
       // Same reasoning as Mobile Chrome below: tests/locales reads the
       // checkout and makes HTTP requests, and neither varies by engine.
-      testIgnore: /tests[\/]locales[\/]/,
+      testIgnore: [/tests[\/]locales[\/]/, chromeCompatibilitySpec],
     },
     {
       name: 'Mobile Chrome',
@@ -62,8 +65,17 @@ export default defineConfig({
       // under this project too would add five hundred and eighty-nine skipped
       // entries to the published report to prove the filesystem is the same
       // shape on a narrower screen.
-      testIgnore: /tests[\/]locales[\/]/,
+      testIgnore: [/tests[\/]locales[\/]/, chromeCompatibilitySpec],
     },
+    // These cases launch both explicit Chrome executables themselves. An
+    // ordinary local run needs no CfT installation; the dedicated CI slice
+    // supplies a frozen manifest and fails if it cannot provision it.
+    ...(process.env.SHARE_CROSS_VERSION_MANIFEST ? [{
+      name: 'Windows Chrome compatibility',
+      testMatch: chromeCompatibilitySpec,
+      use: { ...devices['Desktop Chrome'] },
+      retries: 0,
+    }] : []),
   ],
 
   // Builds and serves ETOOLBOX_DIR with its own scripts (python build.py,
