@@ -251,7 +251,7 @@ jobs:
           done
 
           PLAYWRIGHT_JSON_OUTPUT_NAME=merged.json \
-            npx playwright merge-reports --reporter json ./all-blob-reports > /dev/null
+            npx playwright merge-reports --config merge.config.ts --reporter json ./all-blob-reports > /dev/null
           node scripts/failed-cases.mjs merged.json --out last-failed.json \
             > projects.json 2> cases.txt
 
@@ -308,8 +308,11 @@ jobs:
 
   test:
     needs: announce
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     name: test (${{ matrix.slice }})
+    defaults:
+      run:
+        shell: bash
     strategy:
       # One slice failing must not cancel the others: the report is only
       # worth publishing if it describes the whole suite.
@@ -335,6 +338,9 @@ jobs:
           - { slice: mobile-safari-4, project: Mobile Safari, part: 4/6 }
           - { slice: mobile-safari-5, project: Mobile Safari, part: 5/6 }
           - { slice: mobile-safari-6, project: Mobile Safari, part: 6/6 }
+          # Part of the same matrix so provisioning or compatibility failure
+          # reaches the merged report and the website's qa/preview status.
+          - { slice: windows-chrome-compatibility, project: Windows Chrome compatibility, part: compatibility, runner: windows-latest, compatibility: true }
     steps:
       # A rerun does no work in the projects that had no failure - eight or ten
       # of these sixteen, each of which would otherwise spend a minute checking
@@ -351,12 +357,19 @@ jobs:
           RERUN: ${{ needs.announce.outputs.rerun }}
           PROJECTS: ${{ needs.announce.outputs.projects }}
           PROJECT: ${{ matrix.project }}
+          TOOLS: ${{ needs.announce.outputs.tools }}
+          COMPATIBILITY: ${{ matrix.compatibility }}
         run: |
           set -euo pipefail
           wanted=yes
           if [ -n "$RERUN" ] && ! printf '%s' "$PROJECTS" | grep -qF "\"$PROJECT\""; then
             wanted=no
             echo "::notice::Nothing failed in $PROJECT in run $RERUN, so this slice has nothing to re-run."
+          fi
+          if [ -z "$RERUN" ] && [ "$COMPATIBILITY" = 'true' ] && [ -n "$TOOLS" ] \
+              && ! printf '%s' "$TOOLS" | tr ', ' '\n\n' | grep -qx 'share-text'; then
+            wanted=no
+            echo '::notice::This tool scope does not include share-text compatibility.'
           fi
           echo "wanted=$wanted" >> "$GITHUB_OUTPUT"
 
@@ -409,7 +422,7 @@ jobs:
       # and skips the download, but --with-deps also puts the OS packages
       # WebKit needs on to a fresh runner, and those are not in the cache.
       - name: Remember the browsers between runs
-        if: steps.slice.outputs.wanted == 'yes'
+        if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -421,8 +434,49 @@ jobs:
       # WebKit, Chrome included, so the WebKit slices are not a luxury - they
       # are what an iPhone visitor actually gets - but a Chrome slice has no
       # use for a WebKit download, and each engine is a minute of setup.
-      - if: steps.slice.outputs.wanted == 'yes'
+      - if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
         run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
+
+      # A failure-only rerun must use the original full versions, even if
+      # Stable has moved since then. Missing metadata is an error, not a
+      # reason to replace the failed browser with a newer one.
+      - name: Recover the original Chrome versions for a rerun
+        if: steps.slice.outputs.wanted == 'yes' && matrix.compatibility && needs.announce.outputs.rerun != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: chrome-versions
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.announce.outputs.rerun }}
+
+      - name: Freeze the historical and current Chrome version pairs
+        if: steps.slice.outputs.wanted == 'yes' && matrix.compatibility && needs.announce.outputs.rerun == ''
+        run: node scripts/share-chrome-versions.mjs resolve --output chrome-versions.json
+
+      - name: Keep the exact version manifest for diagnostics and reruns
+        if: steps.slice.outputs.wanted == 'yes' && matrix.compatibility
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-versions
+          path: chrome-versions.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Remember the exact Windows Chrome binaries
+        if: steps.slice.outputs.wanted == 'yes' && matrix.compatibility
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/share-chrome
+          key: share-chrome-win64-${{ hashFiles('chrome-versions.json') }}
+
+      - name: Install the exact Windows Chrome binaries
+        if: steps.slice.outputs.wanted == 'yes' && matrix.compatibility
+        env:
+          SHARE_CROSS_VERSION_CACHE_DIR: ${{ runner.temp }}/share-chrome
+        run: node scripts/share-chrome-versions.mjs install --manifest chrome-versions.json --cache-dir "$SHARE_CROSS_VERSION_CACHE_DIR"
+
+      - name: Install the diagnostic video encoder
+        if: steps.slice.outputs.wanted == 'yes' && matrix.compatibility
+        run: npx playwright install ffmpeg
 
       - name: Fetch the cases this run is limited to
         if: steps.slice.outputs.wanted == 'yes' && needs.announce.outputs.rerun != ''
@@ -477,6 +531,9 @@ jobs:
           ETOOLBOX_DIR: ${{ github.workspace }}/etoolbox-src
           RERUN: ${{ needs.announce.outputs.rerun }}
           TOOLS: ${{ needs.announce.outputs.tools }}
+          COMPATIBILITY: ${{ matrix.compatibility }}
+          SHARE_CROSS_VERSION_MANIFEST: ${{ matrix.compatibility && format('{0}/chrome-versions.json', github.workspace) || '' }}
+          SHARE_CROSS_VERSION_CACHE_DIR: ${{ runner.temp }}/share-chrome
         run: |
           set -euo pipefail
           only=''
@@ -497,9 +554,16 @@ jobs:
           # tool scope's --grep both narrow within these; neither can reach a
           # case another slice holds, and between them the slices hold every
           # file on disk.
-          files=$(node scripts/slice-files.mjs "${{ matrix.project }}" "${{ matrix.part }}")
+          if [ "$COMPATIBILITY" = 'true' ]; then
+            files='tests/tools/share-text-browser-versions.spec.ts'
+            # This slice has one file. Empty selection means lost coverage,
+            # whereas the normal sharded projects can validly have no cases.
+            only="${only/--pass-with-no-tests/}"
+          else
+            files=$(node scripts/slice-files.mjs "${{ matrix.project }}" "${{ matrix.part }}")
+          fi
           npx playwright test --project="${{ matrix.project }}" \
-            $files $only --reporter=blob,github
+            $files $only --reporter=blob,github ${{ matrix.compatibility && '--workers=1 --retries=0' || '' }}
 
       # The traces this slice kept for its failures. Out of git and expiring,
       # for the reasons in the header.
@@ -568,7 +632,7 @@ jobs:
       - name: Stitch them into one report
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: merged.json
-        run: npx playwright merge-reports --reporter html,json ./all-blob-reports
+        run: npx playwright merge-reports --config merge.config.ts --reporter html,json ./all-blob-reports
 
       # Production's report only: gh-pages holds one report, and a preview's
       # would replace it. A preview's report is kept below instead.

@@ -30,6 +30,7 @@ remaining capability and scenario boundaries.
 | [`tests/offline.spec.ts`](tests/offline.spec.ts) | On engines passing an independent offline-emulation probe, every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML, independent nested caches and fallback after that origin is stopped. |
 | [`tests/handoff.spec.ts`](tests/handoff.spec.ts) | A generated PDF reaches the next tool byte-for-byte, is consumed once, and storage refusal opens the destination without partial input |
 | [`tests/tools/share-text-local-network.spec.ts`](tests/tools/share-text-local-network.spec.ts) | Discover a Local network share, connect two separate Chromium processes, require private approval, deliver exact text and binary bytes, propagate live edits and clear content on Stop; record browser versions and address-free connection counts |
+| [`tests/tools/share-text-browser-versions.spec.ts`](tests/tools/share-text-browser-versions.spec.ts) | Run that complete Local network journey between exact Chrome 153 and 154 builds, and current Stable and the previous major, in both directions on Windows; require actual differing runtime versions and sent mDNS candidates |
 
 `lib/tools.ts` and `lib/csp.ts` read the tool list and the CSP allowlist
 straight out of the `etoolbox` checkout at test time, the same way its own
@@ -93,7 +94,7 @@ already running needs nothing but Node.
 
 **https://a-box-of-tools.github.io/qa/**
 
-It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). The suite is split across sixteen slices and stitched back into one report by `merge-reports`. The workflow still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
+It runs on a schedule, on every push to `main`, and on demand (`workflow_dispatch`, optionally against a different `base_url`). Sixteen ordinary slices and one Windows Chrome compatibility slice are stitched back into one report by `merge-reports`. The workflow still fails visibly when the suite fails - only after the report is published, so a red run always has a page to point at.
 
 ## What a passing run proves
 
@@ -112,9 +113,19 @@ and physical devices are not projects in this suite. Native Safari/device
 checks remain useful for those boundaries; emulated phone viewports do not
 prove a hardware codec, camera or touch implementation.
 
-Local network sharing runs on one CI machine, using bundled Chromium in two
-separate processes. It does not prove that multicast name lookup crosses a
-router or that two Windows Chrome installations can connect. The
+Local network sharing uses bundled Chromium in two separate processes, plus a
+Windows slice using real versioned Chrome for Testing executables. The Windows
+slice runs **153.0.8010.53 ↔ 154.0.8037.98** and **current Stable ↔ previous
+major** in both directions against the same production or preview page as the
+rest of the run. It verifies actual runtime versions, sent mDNS candidates,
+private approval, exact binary download, live text and Stop. Missing binaries,
+wrong versions, empty selection or a failed journey fail the workflow;
+compatibility cases have no automatic retries. Their frozen version manifest
+is retained with the run and reused by failure-only reruns. Stable/prior
+versions come from the [official Chrome for Testing metadata](https://github.com/GoogleChromeLabs/chrome-for-testing#json-api-endpoints).
+
+These processes still share one runner. Their pass does not prove multicast
+name lookup across a router or installed Chrome profile/policy behavior. The
 [two-PC Local network checklist](docs/share-text-local-network.md) records that
 separate check, including exact browser versions and restart/update recovery.
 Different versions need not match. A failed connection must remain recorded

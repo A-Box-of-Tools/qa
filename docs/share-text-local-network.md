@@ -6,10 +6,21 @@ tab visible and both PCs awake throughout each connection and transfer.
 Leave normal firewall, privacy and browser security settings in place; this
 check needs no camera or microphone permission.
 
-CI complements this check with native connections between two browser
-processes using bundled Chromium on one host, plus a controlled Local mode
-timeout and retry. It cannot certify multicast/mDNS across two PCs, router
-isolation, Windows firewall rules or installed Chrome profiles and policies.
+CI complements this check with native connections using bundled Chromium,
+a controlled Local mode timeout and retry, and a Windows compatibility slice.
+The latter launches separate, exact Chrome for Testing builds for
+**153.0.8010.53 ↔ 154.0.8037.98** and **current Stable ↔ previous major**, in
+both sharing directions. It runs against the production or preview origin
+selected for that run, checks full runtime versions and sent mDNS candidates,
+and requires private approval, exact binary bytes, live text and Stop. It has
+no automatic retries and cannot pass by skipping a missing version.
+
+The `chrome-versions` artifact freezes the official download URLs and full
+versions; failure-only reruns recover it rather than resolve a newer Stable.
+`local-network-connection.json` records actual versions and address-free
+connection/signaling counts for each case. These checks still run on one
+host. They cannot certify multicast/mDNS across two PCs, router isolation,
+Windows firewall rules or installed Chrome profiles and policies.
 
 ## Record the environment first
 
