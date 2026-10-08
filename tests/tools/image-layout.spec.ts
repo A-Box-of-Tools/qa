@@ -162,7 +162,8 @@ test.describe('image-layout: the finished image', () => {
     await move.focus();
     await page.keyboard.press('Enter');
     await expect(page.locator('#result')).toBeHidden();
-    await expect(page.locator('#download')).not.toHaveAttribute('href', /.+/);
+    await expect(page.locator('#download')).toBeHidden();
+    await expect(page.locator('#download')).toHaveJSProperty('hidden', true);
     await expect(page.locator('#image-list li').first()).toContainText('green.png');
     const reordered = await decodedPixels(page, await save(page));
     expect(pixelAt(reordered, 55, 55)).toEqual([...GREEN, 255]);
