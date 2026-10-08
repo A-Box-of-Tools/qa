@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { localeUrl } from '../lib/locales';
+import { localeBody, localeUrl } from '../lib/locales';
 import { expectLocalizedCopy, phraseText } from '../lib/runtime-copy';
 import { encodePng } from '../lib/image-fixtures';
 import { animationFixture } from '../lib/gif';
@@ -174,6 +174,10 @@ for (const locale of ['es', 'pt']) {
   test.describe(`${locale}: translated runtime controls and results`, () => {
     for (const slug of discoverTools()) {
       test(`${slug} keeps interface text and accessible labels translated${SLUGS.includes(slug) ? ' after use' : ' at rest'}`, async ({ page }) => {
+        // A new tool can ship in English before its page is translated. The
+        // locale parity and page checks still guard how that fallback is offered.
+        test.skip(localeBody(locale, slug) === null,
+          'not translated; fallback pages are covered by the locale parity and page tests');
         test.setTimeout(180_000);
         await withoutThirdParties(page);
         await page.goto(localeUrl(locale, slug));
