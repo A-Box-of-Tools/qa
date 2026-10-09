@@ -169,7 +169,7 @@ test.describe('gif-maker: the animation it writes', () => {
   });
 
   for (const palette of ['per-frame', 'shared']) {
-    test(`an in-flight ${palette} palette export preserves its plan and cancellation permits same-page edits`, async ({ page }) => {
+    test(`an in-flight ${palette} palette export keeps the selected frames and delays`, async ({ page }) => {
       await loadFrames(page, [[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
       const delays = page.locator('#frame-list input[type="number"]');
       for (let i = 0; i < 3; i++) {
@@ -181,9 +181,8 @@ test.describe('gif-maker: the animation it writes', () => {
       await page.locator('#export').click();
       await expect.poll(() => page.evaluate(() =>
         Boolean((window as any).__qaGifDecodeHeld))).toBe(true);
-      // Edits now retire their export rather than publishing a result for an
-      // obsolete plan. First verify unchanged native work writes the selected
-      // frames, then use explicit Cancel before editing on either live version.
+      // An unchanged export must write the selected plan. Cancellation and its
+      // same-page retry receive a separate fixed-budget case below.
       await page.evaluate(() => (window as any).__qaReleaseGifDecode());
       await expect(page.locator('#download')).toBeVisible();
       const bytes = await save(page, () => page.locator('#download').click());
@@ -194,7 +193,13 @@ test.describe('gif-maker: the animation it writes', () => {
         .toBe(160);
       expect(gif.frames.every((frame) => frame.localPalette)).toBe(palette === 'per-frame');
       expect(gif.globalPalette > 0).toBe(palette === 'shared');
+    });
 
+    test(`cancelling an in-flight ${palette} palette export permits same-page edits and retry`, async ({ page }) => {
+      await loadFrames(page, [[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
+      await page.locator('#palette-mode').selectOption(palette);
+      // Keep retired native work, edits and retry in one document. A separate
+      // completed export would spend this case's budget on an unrelated phase.
       await holdNextDecode(page);
       await page.locator('#export').click();
       await expect.poll(() => page.evaluate(() =>
@@ -231,7 +236,7 @@ test.describe('gif-maker: the animation it writes', () => {
       expect(retry.frames.every((frame) => frame.localPalette)).toBe(palette === 'per-frame');
       expect(retry.globalPalette > 0).toBe(palette === 'shared');
       expect((await decodedSize(page, retryBytes, 'image/gif')).width).toBe(160);
-      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
       expect(await save(page, () => page.locator('#download').click())).toEqual(retryBytes);
     });
   }
