@@ -134,7 +134,7 @@ test.describe('compare-heights: feet and inches', () => {
 
       // And the page says what it read that back as, in centimetres, which is
       // the arithmetic made checkable: 3 ft 3 in is 99.1 cm.
-      await expect(rows.nth(0).locator('.row-reads')).toContainText('99');
+      await expect(rows.nth(0).locator('.row-height + .row-reads')).toContainText('99');
 
       // The people did not change height. Whole inches are coarser than whole
       // centimetres, so the drawing moves a little - but not by more than the

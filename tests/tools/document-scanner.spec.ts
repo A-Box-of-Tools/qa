@@ -200,7 +200,7 @@ test.describe('document-scanner: the promise', () => {
 
 
 for (const output of ['pdf', 'images']) {
-  test(`document-scanner: ${output} export keeps its original pages while the strip is edited`, async ({ page }) => {
+  test(`document-scanner: ${output} export preserves selected pages across its native encoder boundary`, async ({ page }) => {
     test.setTimeout(180_000);
     await page.goto(URL_PATH);
     const colours: Rgb[] = [[220, 30, 30], [30, 210, 30], [30, 30, 220]];
@@ -209,11 +209,12 @@ for (const output of ['pdf', 'images']) {
     })));
     await expect(page.locator('#page-strip li')).toHaveCount(3);
     await page.locator('input[name="mode"][value="photo"]').check();
-    // Suspend the first actual image encoder, so edits happen after the export
-    // starts regardless of how quickly this browser would otherwise finish it.
+    // Only the photo export's JPEG encoder is suspended; thumbnail work must
+    // not consume the gate before the selected pages begin to be written.
     await page.evaluate(() => {
       const original = HTMLCanvasElement.prototype.toBlob;
       HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+        if (type !== 'image/jpeg') return original.call(this, callback, type, quality);
         HTMLCanvasElement.prototype.toBlob = original;
         original.call(this, (blob) => {
           (window as any).releaseExport = () => callback(blob);
@@ -223,16 +224,44 @@ for (const output of ['pdf', 'images']) {
     });
     await page.locator(output === 'pdf' ? '#save-pdf' : '#save-images').click();
     await expect.poll(() => page.evaluate(() => Boolean((window as any).exportHeld))).toBe(true);
-    await page.locator('#page-strip li').first().locator('.tile-actions button').nth(1).click();
-    await page.locator('#page-strip li').last().locator('.tile-actions button').last().click();
-    await page.locator('#clear-all').click();
+    const locksExportSettings = await page.locator('#save-settings').count() === 1;
+    if (locksExportSettings) {
+      // The owned exporter exposes an inert settings group, keeping the selected
+      // document stable while Cancel remains outside every locked group.
+      for (const id of ['dropzone', 'strip-toolbar', 'page-strip', 'edit-controls',
+        'clean-controls', 'save-settings', 'example-button']) {
+        await expect(page.locator(`#${id}`)).toHaveJSProperty('inert', true);
+      }
+      await expect(page.locator('#file-input')).toBeDisabled();
+      await expect(page.locator('#mode-group')).toHaveJSProperty('disabled', true);
+      for (const control of await page.locator('#save-settings input, #save-settings select').all()) {
+        await expect(control).toBeDisabled();
+      }
+      await expect(page.locator('#cancel')).toBeVisible();
+      await expect(page.locator('#cancel')).toBeEnabled();
+      await expect(page.locator('#page-strip li')).toHaveCount(3);
+    } else {
+      // The live predecessor permits strip edits and must still complete the
+      // already selected document from its captured pages.
+      await page.locator('#page-strip li').first().locator('.tile-actions button').nth(1).click();
+      await page.locator('#page-strip li').last().locator('.tile-actions button').last().click();
+      await page.locator('#clear-all').click();
+    }
     await page.evaluate(() => (window as any).releaseExport());
     await expect(page.locator('#busy')).toBeHidden({ timeout: 90_000 });
     await expect(page.locator('#result')).toBeVisible();
     await expect(page.locator('#load-error')).toBeHidden();
-    const pending = page.waitForEvent('download');
-    await page.locator('#download').click();
-    const saved = await pending;
+    if (locksExportSettings) {
+      await expect(page.locator('#cancel')).toBeHidden();
+      await expect(page.locator('#save-settings')).toHaveJSProperty('inert', false);
+      await expect(page.locator('#file-input')).toBeEnabled();
+      await expect(page.locator('#mode-group')).toHaveJSProperty('disabled', false);
+      await expect(page.locator('#clear-all')).toBeEnabled();
+      await expect(page.locator('#page-strip li')).toHaveCount(3);
+    }
+    const [saved] = await Promise.all([
+      page.waitForEvent('download'), page.locator('#download').click(),
+    ]);
     const bytes = fs.readFileSync((await saved.path())!);
     const pictures = output === 'pdf' ? readImages(bytes).map((image) => image.data)
       : zipEntries(bytes).map((entry) => entry.data);

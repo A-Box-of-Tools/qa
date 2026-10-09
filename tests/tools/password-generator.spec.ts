@@ -88,7 +88,7 @@ test.describe('password-generator: password mode', () => {
   test('the length slider sets the length exactly', async ({ page }) => {
     for (const length of [6, 20, 64, 128]) {
       await setRange(page, 'length', length);
-      await expect(page.locator('#length-out')).toHaveText(String(length));
+      await expect(page.locator('#length-out')).toHaveJSProperty('value', String(length));
       expect(await secret(page), `at length ${length}`).toHaveLength(length);
     }
   });
@@ -125,8 +125,8 @@ test.describe('password-generator: password mode', () => {
     await setRange(page, 'length', 128);
     await page.locator('#avoid-lookalikes').check();
     await setRange(page, 'count', 10);
-    await expect(page.locator('#length-out')).toHaveText('128');
-    await expect(page.locator('#count-out')).toHaveText('10');
+    await expect(page.locator('#length-out')).toHaveJSProperty('value', '128');
+    await expect(page.locator('#count-out')).toHaveJSProperty('value', '10');
     await expect(page.locator('#batch li')).toHaveCount(9);
 
     // The real batch control keeps all ten 128-character draws while avoiding
@@ -251,7 +251,7 @@ test.describe('password-generator: passphrase mode', () => {
   test('the word slider sets the number of words exactly', async ({ page }) => {
     for (const words of [3, 6, 12]) {
       await setRange(page, 'words', words);
-      await expect(page.locator('#words-out')).toHaveText(String(words));
+      await expect(page.locator('#words-out')).toHaveJSProperty('value', String(words));
       expect((await secret(page)).split(' '), `at ${words} words`).toHaveLength(words);
     }
   });
