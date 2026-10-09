@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { test, expect, type Browser, type Page } from '@playwright/test';
+import { test, expect, type Browser, type Locator, type Page } from '@playwright/test';
 import { ETOOLBOX_DIR, onProductionDomain } from '../../lib/site';
 
 /**
@@ -154,6 +154,14 @@ async function readerFor(browser: Browser, link: string): Promise<{ page: Page; 
   await page.goto(link);
   await expect(page.locator('#view')).toBeVisible({ timeout: 20_000 });
   return { page, frames };
+}
+
+async function rowDownload(row: Locator): Promise<Locator> {
+  const taggedDownload = row.locator('[data-file-download]');
+  const action = await taggedDownload.count() > 0
+    ? taggedDownload : row.getByRole('button', { name: 'Download', exact: true });
+  await expect(action, 'one Download action must be available for the offered file').toHaveCount(1);
+  return action;
 }
 
 test.describe('share-text: the share itself', () => {
@@ -417,9 +425,11 @@ test('share-text: private attachments arrive intact only after admission, includ
     await sharer.locator('#requests button').first().click();
     await expect(reader.locator('#filelist .filerow')).toHaveCount(2, { timeout: 60_000 });
     for (const file of files) {
-      const pending = reader.waitForEvent('download');
-      await reader.locator('#filelist .filerow').filter({ hasText: file.name }).locator('button').click();
-      const saved = await pending;
+      const action = await rowDownload(reader.locator('#filelist .filerow').filter({ hasText: file.name }));
+      const [saved] = await Promise.all([
+        reader.waitForEvent('download'),
+        action.click(),
+      ]);
       expect(saved.suggestedFilename()).toBe(file.name);
       expect(fs.readFileSync((await saved.path())!)).toEqual(file.buffer);
     }
@@ -443,7 +453,8 @@ test('share-text: stopping a share during a file read never offers a partial dow
     const opened = await readerFor(browser, link);
     reader = opened.page;
     await reader.locator('#connect').click();
-    await expect(reader.locator('#filelist button')).toHaveCount(1, { timeout: 60_000 });
+    await expect(reader.locator('#filelist .filerow')).toHaveCount(1, { timeout: 60_000 });
+    const action = await rowDownload(reader.locator('#filelist .filerow'));
     await sharer.evaluate(() => {
       const original = Blob.prototype.arrayBuffer;
       Blob.prototype.arrayBuffer = async function () {
@@ -455,7 +466,7 @@ test('share-text: stopping a share during a file read never offers a partial dow
     });
     const downloads: string[] = [];
     reader.on('download', (download) => downloads.push(download.suggestedFilename()));
-    await reader.locator('#filelist button').click();
+    await action.click();
     await expect.poll(() => sharer.evaluate(() => Boolean((window as any).fileReadHeld))).toBe(true);
     await sharer.locator('#stop').click();
     await sharer.evaluate(() => (window as any).releaseFileRead());
