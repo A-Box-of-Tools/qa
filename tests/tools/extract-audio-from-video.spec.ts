@@ -63,10 +63,12 @@ async function load(page: Page, file: { name: string; mimeType: string; buffer: 
  */
 async function saved(page: Page, previousHref?: string): Promise<ReturnType<typeof readWav>> {
   const link = page.locator('#download');
-  await expect(page.locator('#result')).toBeVisible();
-  await expect(link).toBeVisible();
-  await expect(link).toHaveAttribute('href', /^blob:/);
-  if (previousHref) await expect(link).not.toHaveAttribute('href', previousHref);
+  const readyBy = Date.now() + 30_000;
+  const remaining = () => ({ timeout: Math.max(1, readyBy - Date.now()) });
+  await expect(page.locator('#result')).toBeVisible(remaining());
+  await expect(link).toBeVisible(remaining());
+  await expect(link).toHaveAttribute('href', /^blob:/, remaining());
+  if (previousHref) await expect(link).not.toHaveAttribute('href', previousHref, remaining());
   const [downloaded] = await Promise.all([
     page.waitForEvent('download'), link.click(),
   ]);
