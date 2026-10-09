@@ -52,13 +52,16 @@ async function holdNextDecode(page: Page): Promise<void> {
     const decode = window.createImageBitmap.bind(window);
     const state = window as any;
     state.__qaGifDecodeHeld = false;
+    state.__qaGifDecodeReturned = false;
     window.createImageBitmap = (async (...args: Parameters<typeof createImageBitmap>) => {
       const cancel = document.getElementById('cancel');
       if (!cancel || cancel.hidden) return (decode as any)(...args);
       window.createImageBitmap = decode;
       state.__qaGifDecodeHeld = true;
       await new Promise<void>((resolve) => { state.__qaReleaseGifDecode = resolve; });
-      return (decode as any)(...args);
+      const bitmap = await (decode as any)(...args);
+      state.__qaGifDecodeReturned = true;
+      return bitmap;
     }) as typeof createImageBitmap;
   });
 }
@@ -166,7 +169,7 @@ test.describe('gif-maker: the animation it writes', () => {
   });
 
   for (const palette of ['per-frame', 'shared']) {
-    test(`an in-flight ${palette} palette export keeps the original frames and delays`, async ({ page }) => {
+    test(`an in-flight ${palette} palette export preserves its plan and cancellation permits same-page edits`, async ({ page }) => {
       await loadFrames(page, [[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
       const delays = page.locator('#frame-list input[type="number"]');
       for (let i = 0; i < 3; i++) {
@@ -178,11 +181,9 @@ test.describe('gif-maker: the animation it writes', () => {
       await page.locator('#export').click();
       await expect.poll(() => page.evaluate(() =>
         Boolean((window as any).__qaGifDecodeHeld))).toBe(true);
-      await page.locator('[data-sort="reverse"]').click();
-      await page.locator('#bulk-unit').selectOption('seconds');
-      await page.locator('#bulk-amount').fill('2');
-      await page.locator('#apply-bulk').click();
-      await page.locator('#clear-all').click();
+      // Edits now retire their export rather than publishing a result for an
+      // obsolete plan. First verify unchanged native work writes the selected
+      // frames, then use explicit Cancel before editing on either live version.
       await page.evaluate(() => (window as any).__qaReleaseGifDecode());
       await expect(page.locator('#download')).toBeVisible();
       const bytes = await save(page, () => page.locator('#download').click());
@@ -191,6 +192,47 @@ test.describe('gif-maker: the animation it writes', () => {
       expect(gif.frames).toHaveLength(3);
       expect((await decodedSize(page, bytes, 'image/gif')).width)
         .toBe(160);
+      expect(gif.frames.every((frame) => frame.localPalette)).toBe(palette === 'per-frame');
+      expect(gif.globalPalette > 0).toBe(palette === 'shared');
+
+      await holdNextDecode(page);
+      await page.locator('#export').click();
+      await expect.poll(() => page.evaluate(() =>
+        Boolean((window as any).__qaGifDecodeHeld))).toBe(true);
+      await page.locator('#cancel').click();
+      await page.locator('[data-sort="reverse"]').click();
+      await page.locator('#bulk-unit').selectOption('seconds');
+      await page.locator('#bulk-amount').fill('2');
+      await page.locator('#apply-bulk').click();
+      await page.locator('#clear-all').click();
+      await page.evaluate(() => (window as any).__qaReleaseGifDecode());
+      await expect.poll(() => page.evaluate(() =>
+        Boolean((window as any).__qaGifDecodeReturned))).toBe(true);
+      await expect(page.locator('#cancel')).toBeHidden();
+      await expect(page.locator('#result')).toBeHidden();
+      await expect(page.locator('#error')).toBeHidden();
+      await expect(page.locator('#frame-list li')).toHaveCount(0);
+
+      // Retry in this document with distinguishable bytes, so a retired callback
+      // cannot be hidden by navigation or mistaken for the new plan's result.
+      await page.locator('#file-input').setInputFiles([[255, 255, 0], [0, 255, 255]].map((rgb, index) => ({
+        name: `retry-${index}.png`, mimeType: 'image/png',
+        buffer: framePng(160, 120, rgb as [number, number, number]),
+      })));
+      await expect(page.locator('#frame-list li')).toHaveCount(2);
+      await expect(page.locator('#load-error')).toBeHidden();
+      await page.locator('#bulk-amount').fill('0.4');
+      await page.locator('#apply-bulk').click();
+      await expect(page.locator('#palette-mode')).toHaveValue(palette);
+      const retryBytes = await makeGif(page);
+      const retry = readGif(retryBytes);
+      expect(retry.frames).toHaveLength(2);
+      expect(retry.frames.map((frame) => frame.delayMs)).toEqual([400, 400]);
+      expect(retry.frames.every((frame) => frame.localPalette)).toBe(palette === 'per-frame');
+      expect(retry.globalPalette > 0).toBe(palette === 'shared');
+      expect((await decodedSize(page, retryBytes, 'image/gif')).width).toBe(160);
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      expect(await save(page, () => page.locator('#download').click())).toEqual(retryBytes);
     });
   }
 

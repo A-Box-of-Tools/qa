@@ -179,18 +179,34 @@ test.describe('avif-to-jpg: where the browser reads AVIF', () => {
     // the press is also the test that the fetch is allowed and works.
     test.setTimeout(120_000);
     await page.goto(URL_PATH);
+    // The original photographs remain; newer pages also ship a transparent
+    // logo. Read this page's versioned factory before waiting,
+    // so a missing or unfinished input cannot set its own expected count.
+    const factory = page.locator('link[rel="modulepreload"][href*="src/example.js"]');
+    await expect(factory).toHaveCount(1);
+    const example = await page.request.get(await factory.evaluate((link) =>
+      (link as HTMLLinkElement).href));
+    expect(example.ok(), 'the shipped example factory is unavailable').toBe(true);
+    const withLogo = (await example.text()).includes('example-logo.avif');
+    const expected = ['example-landscape.jpg', 'example-square.jpg'];
+    if (withLogo) expected.push('example-logo.jpg');
+
     await page.locator('#example-button').click();
-    await expect(page.locator('#file-list li')).toHaveCount(2, { timeout: 60_000 });
+    await expect(page.locator('#file-list li')).toHaveCount(expected.length, { timeout: 60_000 });
     await expect(page.locator('#load-error')).toBeHidden();
 
     const made = await convert(page);
-    expect(made.map((one) => one.name)).toEqual(['example-landscape.jpg', 'example-square.jpg']);
+    expect(made.map((one) => one.name)).toEqual(expected);
 
     const landscape = await decodedSize(page, made[0].bytes, 'image/jpeg');
     const square = await decodedSize(page, made[1].bytes, 'image/jpeg');
     expect(landscape.width).toBeGreaterThan(landscape.height);
     expect(square.width).toBeGreaterThan(0);
     expect(square.width).toBe(square.height);
+    if (withLogo) {
+      const logo = await decodedSize(page, made[2].bytes, 'image/jpeg');
+      expect([logo.width, logo.height]).toEqual([256, 256]);
+    }
   });
 
   test('the picture never leaves the page', async ({ page }) => {

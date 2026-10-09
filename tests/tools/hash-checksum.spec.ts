@@ -319,9 +319,16 @@ test('hash-checksum: a superseded file cannot overwrite the new file checksum', 
   await holdNextRead(page);
   await page.locator('#file-input').setInputFiles({ name: 'old.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('old') });
   await expect.poll(() => page.evaluate(() => Boolean((window as any).readHeld))).toBe(true);
-  await hash(page, Buffer.from('new'), 'new.bin');
-  await expect.poll(() => shown(page, 'sha256')).toBe(digestOf('sha256', Buffer.from('new')));
+  await page.locator('#file-input').setInputFiles({
+    name: 'new.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('new'),
+  });
+  await expect(page.locator('#file-name')).toHaveText('new.bin');
+  await expect(page.locator('#digests')).not.toContainText(digestOf('sha256', Buffer.from('old')));
+  // A browser may wait for the retired native read before starting the new one.
+  // Releasing it must not allow its checksum to become the selected result.
   await releaseRead(page);
+  await expect.poll(() => shown(page, 'sha256')).toBe(digestOf('sha256', Buffer.from('new')));
+  await expect(page.locator('#progress')).toBeHidden({ timeout: 60_000 });
   await expect(page.locator('#file-name')).toHaveText('new.bin');
   // Another browser turn lets the released reader finish its promise chain.
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
