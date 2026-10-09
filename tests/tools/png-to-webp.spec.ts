@@ -133,23 +133,28 @@ test.describe('png-to-webp: where the browser writes WebP', () => {
     const webp = await openWebp(page, made.bytes);
     const coding = webpFacts(made.bytes).coding;
 
+    expect(['VP8L', 'VP8 '], 'the output has no recognised WebP pixel coding').toContain(coding);
     if (await canvasWritesLosslessWebp(page)) {
-      // This browser writes the lossless coding when asked for it properly,
-      // so a lossy file here is the page not asking - whatever the row says
-      // about whose fault it was.
+      // A positive independent probe still forbids blaming the browser for
+      // a tool that failed to ask for lossless encoding.
       expect(coding, 'the browser can write lossless WebP and the tool did not get one').toBe('VP8L');
+    }
+
+    // A negative bounded probe can mean silence. The actual file decides its
+    // row and pixel checks, including when it disproves that cautious answer.
+    if (coding === 'VP8L') {
       expect(made.says).toContain(await sentence(page, 'result.lossless'));
+      expect(made.says).not.toContain(await sentence(page, 'result.askedlossless'));
       const difference = compare(webp, busy);
+      expect(difference.alpha, 'a lossless WebP changed the opaque alpha channel').toBe(0);
       expect(difference.solid, `a "lossless" WebP changed ${difference.solid} pixels: ${difference.first}`)
         .toBe(0);
     } else {
-      // The engine does not switch codings at 1.0. Not the site's doing - but
-      // then the site has to say so, which is what its readback is for.
       test.info().annotations.push({
         type: 'engine',
         description: `asked for lossless, and this browser's canvas writes ${coding} at quality 1`,
       });
-      expect(coding).not.toBe('VP8L');
+      expect(coding).toBe('VP8 ');
       expect(made.says).toContain(await sentence(page, 'result.askedlossless'));
       expect(made.says).not.toContain(await sentence(page, 'result.lossless'));
     }
@@ -187,12 +192,20 @@ test.describe('png-to-webp: where the browser writes WebP', () => {
     expect(difference.alpha, 'the alpha channel changed').toBe(0);
 
     expect(made.says).toContain(await sentence(page, 'result.alpha'));
-    if (await canvasWritesLosslessWebp(page)) {
-      expect(webpFacts(made.bytes).coding).toBe('VP8L');
+    const coding = webpFacts(made.bytes).coding;
+    expect(['VP8L', 'VP8 '], 'the output has no recognised WebP pixel coding').toContain(coding);
+    if (await canvasWritesLosslessWebp(page)) expect(coding).toBe('VP8L');
+    if (coding === 'VP8L') {
       expect(difference.solid, `solid pixels changed: ${difference.first}`).toBe(0);
       // The qualified sentence, because this is the file the qualification
       // is about; the unqualified one would be claiming too much.
       expect(made.says).toContain(await sentence(page, 'result.lossless.alpha'));
+      expect(made.says).not.toContain(await sentence(page, 'result.lossless'));
+      expect(made.says).not.toContain(await sentence(page, 'result.askedlossless'));
+    } else {
+      expect(coding).toBe('VP8 ');
+      expect(made.says).toContain(await sentence(page, 'result.askedlossless'));
+      expect(made.says).not.toContain(await sentence(page, 'result.lossless.alpha'));
       expect(made.says).not.toContain(await sentence(page, 'result.lossless'));
     }
   });
