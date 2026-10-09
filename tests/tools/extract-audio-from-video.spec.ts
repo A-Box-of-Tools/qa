@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import fs from 'node:fs';
 import { canDecodeAudio, quiet } from '../../lib/engine';
 import { recordVideo } from '../../lib/browser-video';
 import { peakBetween, readWav, writeWav } from '../../lib/wav';
@@ -56,24 +57,24 @@ async function load(page: Page, file: { name: string; mimeType: string; buffer: 
 }
 
 /**
- * The file the download link points at, read back as a WAV.
- *
- * Fetched from the page rather than clicked, because the assertion is about
- * the bytes behind the link - a page whose Download offers something other
- * than what it just showed is the failure worth catching.
+ * Read the current file through the same Download action a visitor uses.
+ * An asynchronous rewrite retires its href until new bytes are published;
+ * polling must wait for that result rather than fetch a missing or old URL.
  */
-async function saved(page: Page): Promise<ReturnType<typeof readWav>> {
-  const base64 = await page.evaluate(async () => {
-    const link = document.getElementById('download') as HTMLAnchorElement;
-    const blob = await (await fetch(link.href)).blob();
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    let binary = '';
-    for (let at = 0; at < bytes.length; at += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-    }
-    return btoa(binary);
-  });
-  return readWav(Buffer.from(base64, 'base64'));
+async function saved(page: Page, previousHref?: string): Promise<ReturnType<typeof readWav>> {
+  const link = page.locator('#download');
+  const readyBy = Date.now() + 30_000;
+  const remaining = () => ({ timeout: Math.max(1, readyBy - Date.now()) });
+  await expect(page.locator('#result')).toBeVisible(remaining());
+  await expect(link).toBeVisible(remaining());
+  await expect(link).toHaveAttribute('href', /^blob:/, remaining());
+  if (previousHref) await expect(link).not.toHaveAttribute('href', previousHref, remaining());
+  const [downloaded] = await Promise.all([
+    page.waitForEvent('download'), link.click(),
+  ]);
+  const path = await downloaded.path();
+  if (!path) throw new Error('the browser saved no file');
+  return readWav(fs.readFileSync(path));
 }
 
 test.describe('extract-audio-from-video: the sound that comes out', () => {
@@ -117,13 +118,15 @@ test.describe('extract-audio-from-video: the sound that comes out', () => {
     async ({ page }) => {
       await load(page, { name: 'stereo.wav', mimeType: 'audio/wav', buffer: tone(2) });
       const stereo = await saved(page);
+      const stereoHref = await page.locator('#download').evaluate((link) =>
+        (link as HTMLAnchorElement).href);
 
       await page.locator('#channels').selectOption('mono');
       await expect
-        .poll(async () => (await saved(page)).channels, { timeout: 30_000 })
+        .poll(async () => (await saved(page, stereoHref)).channels, { timeout: 30_000 })
         .toBe(1);
 
-      const mono = await saved(page);
+      const mono = await saved(page, stereoHref);
       expect(Math.abs(mono.seconds - stereo.seconds)).toBeLessThan(0.05);
       expect(mono.frames).toBe(stereo.frames);
 
