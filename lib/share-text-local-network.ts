@@ -152,7 +152,9 @@ export async function runLocalShareJourney(
     reader = await readerContext.newPage();
     readerSignaling = signalingFor(reader);
     await observePeers(reader);
-    await reader.goto('/share-text/');
+    const readerResponse = await reader.goto('/share-text/');
+    expect(readerResponse?.status(), 'the reader page must load before discovery is checked').toBe(200);
+    await expect(reader.locator('#text'), 'the reader tool must load before discovery is checked').toBeVisible();
     const listedShare = reader.locator(`#discovery-list a[href$="#${code}"]`);
     await expect(listedShare, 'being listed alone must not count as a working share')
       .toBeVisible({ timeout: 30_000 });
@@ -173,9 +175,16 @@ export async function runLocalShareJourney(
     await sharer.locator('#requests button').first().click();
     await expect(reader.locator('#panel')).toContainText(TEXT, { timeout: 15_000 });
     await expect(reader.locator('#filelist .filerow')).toHaveCount(1);
-    const pendingDownload = reader.waitForEvent('download');
-    await reader.locator('#filelist .filerow button').click();
-    const download = await pendingDownload;
+    const fileRow = reader.locator('#filelist .filerow');
+    const taggedDownload = fileRow.locator('[data-file-download]');
+    const downloadButton = await taggedDownload.count() > 0
+      ? taggedDownload : fileRow.getByRole('button', { name: 'Download', exact: true });
+    await expect(downloadButton, 'one Download action must be available for the offered file').toHaveCount(1);
+    // Observing both rejections immediately keeps context cleanup from masking a failed click.
+    const [download] = await Promise.all([
+      reader.waitForEvent('download'),
+      downloadButton.click(),
+    ]);
     expect(download.suggestedFilename()).toBe('qa-local-network.bin');
     expect(fs.readFileSync((await download.path())!)).toEqual(file);
 
