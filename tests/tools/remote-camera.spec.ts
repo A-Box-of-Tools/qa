@@ -161,9 +161,14 @@ function localRendezvous() {
 async function requestCamera(viewer: Page, code: string, name: string, invitation?: string) {
   await viewer.goto(`${TOOL}#${code}`); await expect(viewer.locator('#viewer-code')).toHaveValue(code);
   expect(await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/') && socket.readyState < 2).length)).toBe(0);
+  const previousRooms = await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/')).length);
   if (invitation) await viewer.locator('#viewer-code').fill(invitation);
   await viewer.locator('#viewer-name').fill(name); await viewer.locator('#viewer-connect').click();
-  await expect.poll(() => viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/')).map((socket: any) => new URL(socket.url).searchParams.get('tool')))).toEqual(['remote-camera']);
+  // Returning to the same fragment can preserve the closed, denied attempt.
+  await expect.poll(() => viewer.evaluate((previousRooms) => [...(window as any).__remoteCameraSockets.values()]
+    .filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/')).slice(previousRooms)
+    .map((socket: any) => { const url = new URL(socket.url); return { tool: url.searchParams.get('tool'), role: url.searchParams.get('role'), code: url.pathname.split('/').pop() }; }), previousRooms))
+    .toEqual([{ tool: 'remote-camera', role: 'viewer', code }]);
 }
 async function approveCamera(source: Page, viewer: Page) {
   await expect(source.locator('[data-action=approve]')).toBeVisible({ timeout: 20_000 });
