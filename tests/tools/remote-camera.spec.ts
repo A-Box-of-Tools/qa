@@ -26,12 +26,22 @@ async function cameraHooks(page: Page, mode: CameraMode = 'allow', socketMode = 
       });
       return stream;
     };
-    if (navigator.mediaDevices) Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async (constraints: MediaStreamConstraints) => {
+    const getUserMedia = async (constraints: MediaStreamConstraints) => {
       state.calls.push(constraints);
       if (mode === 'deny') throw new DOMException('Permission denied', 'NotAllowedError');
       if (mode === 'pending') await new Promise<void>((resolve) => { state.release = resolve; });
       return makeStream();
-    } });
+    };
+    // A WebKit init script can run before the native mediaDevices getter is
+    // available. Bind the permission shim to navigator itself so navigation
+    // cannot silently leave the real permission prompt in place.
+    const media = navigator.mediaDevices;
+    const supplied = media ? new Proxy(media, { get(target, property) {
+      if (property === 'getUserMedia') return getUserMedia;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } }) : { getUserMedia };
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: supplied });
     if (socketMode === 'broker' || socketMode === 'live') return;
     class QuietSocket extends EventTarget {
       readyState = 0;
