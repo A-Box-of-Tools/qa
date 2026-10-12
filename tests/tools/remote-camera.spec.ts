@@ -14,13 +14,15 @@ type CameraMode = 'allow' | 'deny' | 'pending';
  * The live worker contract is checked separately against an admitted origin. */
 async function cameraHooks(page: Page, mode: CameraMode = 'allow', socketMode = 'open') {
   await page.addInitScript(({ mode, socketMode }) => {
-    const state = (window as any).__cameraQA = { calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[], sockets: [] as any[], release: null as null | (() => void) };
-    const makeStream = () => {
-      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 480;
+    const state = (window as any).__cameraQA = { calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[], sockets: [] as any[], release: null as null | (() => void), holdNext: false };
+    const devices = [{ kind: 'videoinput', deviceId: 'qa-camera-1', label: 'QA camera one' }, { kind: 'videoinput', deviceId: 'qa-camera-2', label: 'QA camera two' }];
+    const makeStream = (deviceId: string) => {
+      const canvas = document.createElement('canvas'); canvas.width = deviceId === 'qa-camera-2' ? 320 : 640; canvas.height = deviceId === 'qa-camera-2' ? 240 : 480;
       const ctx = canvas.getContext('2d')!; let frame = 0;
       const paint = () => { ctx.fillStyle = `hsl(${frame++ % 360},70%,45%)`; ctx.fillRect(0, 0, 640, 480); ctx.fillStyle = '#fff'; ctx.fillRect(frame % 500, 150, 100, 100); };
       paint(); const timer = setInterval(paint, 50); const stream = canvas.captureStream(20);
       stream.getTracks().forEach((track) => {
+        const settings = track.getSettings.bind(track); track.getSettings = () => ({ ...settings(), deviceId });
         state.tracks.push(track); const stop = track.stop.bind(track);
         track.stop = () => { stop(); clearInterval(timer); };
       });
@@ -29,8 +31,11 @@ async function cameraHooks(page: Page, mode: CameraMode = 'allow', socketMode = 
     const getUserMedia = async (constraints: MediaStreamConstraints) => {
       state.calls.push(constraints);
       if (mode === 'deny') throw new DOMException('Permission denied', 'NotAllowedError');
-      if (mode === 'pending') await new Promise<void>((resolve) => { state.release = resolve; });
-      return makeStream();
+      if (mode === 'pending' || state.holdNext) { state.holdNext = false; await new Promise<void>((resolve) => { state.release = resolve; }); }
+      const video = constraints.video as MediaTrackConstraints;
+      const deviceId = typeof video?.deviceId === 'object' ? String(video.deviceId.exact ?? 'qa-camera-1') : 'qa-camera-1';
+      if (!devices.some((device) => device.deviceId === deviceId)) throw new DOMException('No such camera', 'OverconstrainedError');
+      return makeStream(deviceId);
     };
     // A WebKit init script can run before the native mediaDevices getter is
     // available. Bind the permission shim to navigator itself so navigation
@@ -38,6 +43,7 @@ async function cameraHooks(page: Page, mode: CameraMode = 'allow', socketMode = 
     const media = navigator.mediaDevices;
     const supplied = media ? new Proxy(media, { get(target, property) {
       if (property === 'getUserMedia') return getUserMedia;
+      if (property === 'enumerateDevices') return async () => devices;
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
     } }) : { getUserMedia };
@@ -45,23 +51,32 @@ async function cameraHooks(page: Page, mode: CameraMode = 'allow', socketMode = 
     if (socketMode === 'broker' || socketMode === 'live') return;
     class QuietSocket extends EventTarget {
       readyState = 0;
+      discovery: boolean;
       constructor(public url: string) {
-        super(); state.sockets.push(this);
+        super(); this.discovery = new URL(url).pathname === '/discover'; state.sockets.push(this);
         queueMicrotask(() => {
           if (this.readyState !== 0) return;
-          this.readyState = socketMode === 'fail' ? 3 : 1;
-          this.dispatchEvent(new Event(socketMode === 'fail' ? 'error' : 'open'));
+          const failed = !this.discovery && socketMode === 'fail';
+          this.readyState = failed ? 3 : 1;
+          this.emit(new Event(failed ? 'error' : 'open'));
+          if (this.discovery) this.emit(new MessageEvent('message', { data: JSON.stringify({
+            type: 'shares', tool: new URL(this.url).searchParams.get('tool'), list: socketMode === 'listed' ? [{ code: 'qa-listed-camera', local: true }] : [],
+          }) }));
         });
       }
+      emit(event: Event) { this.dispatchEvent(event); (this as any)[`on${event.type}`]?.(event); }
       send(_data: string) {}
-      close() { if (this.readyState === 3) return; this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code: 1000 })); }
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.emit(new CloseEvent('close', { code: 1000 })); }
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: QuietSocket });
   }, { mode, socketMode });
 }
-async function sourcePage(page: Page) { await page.goto(TOOL); await page.locator('#role-camera').click(); }
+async function sourcePage(page: Page) { await page.goto(TOOL); await expect(page.locator('#camera-panel')).toBeVisible(); }
 async function tracksStopped(page: Page) {
-  await expect.poll(() => page.evaluate(() => (window as any).__cameraQA.tracks.map((track: MediaStreamTrack) => track.readyState))).toEqual(['ended']);
+  await expect.poll(() => page.evaluate(() => {
+    const tracks: MediaStreamTrack[] = (window as any).__cameraQA.tracks;
+    return tracks.length > 0 && tracks.every((track) => track.readyState === 'ended');
+  })).toBe(true);
   await expect.poll(() => page.locator('#camera-preview').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
 }
 
@@ -126,18 +141,25 @@ function localRendezvous() {
       } });
       let serial = 0;
       class BrokerSocket extends EventTarget {
-        readyState = 0; id = ++serial; url: string;
+        readyState = 0; id = ++serial; url: string; discovery: boolean;
         constructor(address: string | URL) {
-          super(); this.url = String(address); socketMap.set(this.id, this);
+          super(); this.url = String(address); this.discovery = new URL(this.url).pathname === '/discover'; socketMap.set(this.id, this);
           queueMicrotask(async () => {
+            // Discovery has its own lifetime and must never join a media room.
+            if (this.discovery) {
+              if (this.readyState !== 0) return;
+              this.readyState = 1; this.emit(new Event('open'));
+              this.receive({ type: 'shares', tool: new URL(this.url).searchParams.get('tool'), list: [] }); return;
+            }
             await (window as any).__cameraBrokerOpen(this.id, this.url); if (this.readyState !== 0) return;
-            this.readyState = 1; this.dispatchEvent(new Event('open')); await (window as any).__cameraBrokerReady(this.id);
+            this.readyState = 1; this.emit(new Event('open')); await (window as any).__cameraBrokerReady(this.id);
           });
         }
-        send(data: string) { if (this.readyState !== 1) throw new Error('Socket closed'); void (window as any).__cameraBrokerSend(this.id, data).catch(() => {}); }
-        receive(data: unknown) { if (this.readyState === 1) this.dispatchEvent(new MessageEvent('message', { data: typeof data === 'string' ? data : JSON.stringify(data) })); }
-        remoteClose(code: number) { if (this.readyState === 3) return; this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code })); }
-        close(code = 1000) { if (this.readyState === 3) return; this.remoteClose(code); void (window as any).__cameraBrokerClose(this.id).catch(() => {}); }
+        emit(event: Event) { this.dispatchEvent(event); (this as any)[`on${event.type}`]?.(event); }
+        send(data: string) { if (this.readyState !== 1) throw new Error('Socket closed'); if (!this.discovery) void (window as any).__cameraBrokerSend(this.id, data).catch(() => {}); }
+        receive(data: unknown) { if (this.readyState === 1) this.emit(new MessageEvent('message', { data: typeof data === 'string' ? data : JSON.stringify(data) })); }
+        remoteClose(code: number) { if (this.readyState === 3) return; this.readyState = 3; this.emit(new CloseEvent('close', { code })); }
+        close(code = 1000) { if (this.readyState === 3) return; this.remoteClose(code); if (!this.discovery) void (window as any).__cameraBrokerClose(this.id).catch(() => {}); }
       }
       Object.defineProperty(window, 'WebSocket', { configurable: true, value: BrokerSocket });
     });
@@ -145,10 +167,17 @@ function localRendezvous() {
   return { install };
 }
 
-async function requestCamera(viewer: Page, code: string, name: string) {
+async function requestCamera(viewer: Page, code: string, name: string, invitation?: string) {
   await viewer.goto(`${TOOL}#${code}`); await expect(viewer.locator('#viewer-code')).toHaveValue(code);
-  expect(await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => socket.readyState < 2).length)).toBe(0);
+  expect(await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/') && socket.readyState < 2).length)).toBe(0);
+  const previousRooms = await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/')).length);
+  if (invitation) await viewer.locator('#viewer-code').fill(invitation);
   await viewer.locator('#viewer-name').fill(name); await viewer.locator('#viewer-connect').click();
+  // Returning to the same fragment can preserve the closed, denied attempt.
+  await expect.poll(() => viewer.evaluate((previousRooms) => [...(window as any).__remoteCameraSockets.values()]
+    .filter((socket: any) => new URL(socket.url).pathname.startsWith('/ws/')).slice(previousRooms)
+    .map((socket: any) => { const url = new URL(socket.url); return { tool: url.searchParams.get('tool'), role: url.searchParams.get('role'), code: url.pathname.split('/').pop() }; }), previousRooms))
+    .toEqual([{ tool: 'remote-camera', role: 'viewer', code }]);
 }
 async function approveCamera(source: Page, viewer: Page) {
   await expect(source.locator('[data-action=approve]')).toBeVisible({ timeout: 20_000 });
@@ -173,13 +202,32 @@ async function approveCamera(source: Page, viewer: Page) {
 
 test.describe('remote-camera: camera lifecycle', () => {
   test.beforeEach(async ({ page }) => { test.skip(!exists, 'Remote Camera is awaiting the website release.'); await withoutThirdParties(page); });
-  test('a viewer link waits for consent without capture or signaling', async ({ page }) => {
+  test('a viewer link waits for consent without capture or room signaling', async ({ page }) => {
     await cameraHooks(page, 'deny'); await page.goto('/remote-camera/#cam-abcdefghijkl');
     await expect(page.locator('#viewer-code')).toHaveValue('cam-abcdefghijkl'); await expect(page.locator('#viewer-code')).toBeVisible();
-    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.length])).toEqual([0, 0]);
-    await page.locator('#viewer-code').fill('invalid'); await page.locator('#viewer-connect').click();
+    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+    await page.locator('#viewer-code').fill('invalid code!'); await page.locator('#viewer-connect').click();
     await expect(page.locator('#viewer-status')).toContainText('complete camera code');
-    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.length)).toBe(0);
+    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length)).toBe(0);
+  });
+  test('a listed camera opens the viewing form and waits for Connect', async ({ page }) => {
+    await cameraHooks(page, 'deny', 'listed'); await page.goto(TOOL);
+    await expect(page.locator('#discovery-list a')).toHaveText('qa-listed-camera');
+    await page.locator('#discovery-list a').click();
+    await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
+    await expect(page.locator('#viewer-panel')).toBeVisible();
+    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => socket.discovery && socket.readyState === 1).map((socket: any) => new URL(socket.url).searchParams.get('tool')))).toEqual(['remote-camera']);
+  });
+  test('pairing tools display the shipped JavaScript version', async ({ page }) => {
+    await cameraHooks(page, 'deny'); await page.goto(TOOL);
+    const version = page.locator('[data-pairing-version]'); await expect(version).toBeVisible();
+    const fingerprint = await version.getAttribute('data-pairing-version'); expect(fingerprint).toMatch(/^[a-f0-9]{10}$/);
+    expect(await page.locator('script[src^="src/main.js?"]').getAttribute('src')).toContain(`v=${fingerprint}`);
+    await expect(page.locator('#camera-require-approval')).toBeChecked();
+    await page.goto('/share-text/'); await expect(page.locator('[data-pairing-version]')).toBeVisible();
+    const textVersion = await page.locator('[data-pairing-version]').getAttribute('data-pairing-version');
+    expect(await page.locator('script[src^="src/main.js?"]').getAttribute('src')).toContain(`v=${textVersion}`);
   });
   test('an unavailable camera interface explains HTTPS and browser support', async ({ page }) => {
     await page.addInitScript(() => Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined }));
@@ -190,23 +238,25 @@ test.describe('remote-camera: camera lifecycle', () => {
     test.skip(!await hasCameraInterface(page), 'This test engine has no camera interface.');
     await cameraHooks(page, 'deny'); await sourcePage(page); await page.locator('#camera-start').click();
     await expect(page.locator('#camera-status')).toContainText('not allowed'); await expect(page.locator('#camera-start')).toBeEnabled();
-    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.tracks.length, (window as any).__cameraQA.sockets.length])).toEqual([1, 0, 0]);
+    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.tracks.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([1, 0, 0]);
   });
   test('Stop cancels pending permission and closes a late grant', async ({ page }) => {
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.');
     await cameraHooks(page, 'pending'); await sourcePage(page); await page.locator('#camera-start').click();
     await expect.poll(() => page.evaluate(() => Boolean((window as any).__cameraQA.release))).toBe(true);
     await page.locator('#camera-stop').click(); await page.evaluate(() => (window as any).__cameraQA.release());
-    await tracksStopped(page); expect(await page.evaluate(() => (window as any).__cameraQA.sockets.length)).toBe(0);
+    await tracksStopped(page); expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length)).toBe(0);
     await expect(page.locator('#camera-start')).toBeEnabled();
   });
   test('Stop releases video and never requests the microphone', async ({ page }) => {
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.');
     await cameraHooks(page); await sourcePage(page); await page.locator('#camera-start').click();
     await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/);
-    expect(await page.evaluate(() => (window as any).__cameraQA.calls[0].audio)).toBe(false);
+    expect(await page.evaluate(() => (window as any).__cameraQA.calls[0])).toEqual({ video: true, audio: false });
+    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery && socket.readyState === 1).map((socket: any) => new URL(socket.url).searchParams.get('tool')))).toEqual(['remote-camera']);
     await page.locator('#camera-stop').click(); await tracksStopped(page);
-    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.every((socket: any) => socket.readyState === 3))).toBe(true);
+    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).every((socket: any) => socket.readyState === 3))).toBe(true);
+    expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => socket.discovery && socket.readyState === 1).length)).toBe(1);
   });
   test('signaling failure releases an already granted camera', async ({ page }) => {
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.');
@@ -222,14 +272,54 @@ test.describe('remote-camera: native WebRTC media', () => {
     test.skip(browserName !== 'chromium', 'This test build supplies native flowing media reliably in Chromium. Physical Safari remains an acceptance check.');
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.'); await withoutThirdParties(page);
   });
+  test('optional approval and camera switching preserve the invitation and active peer', async ({ page, context, browser }) => {
+    test.setTimeout(60_000); const broker = localRendezvous();
+    const viewerContext = await browser.newContext({ baseURL: BASE_URL });
+    try {
+      await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext);
+      const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page);
+      await page.locator('#camera-require-approval').uncheck(); await expect(page.locator('#camera-approval-policy')).toContainText('Anyone');
+      await page.locator('#camera-start').click(); await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/);
+      const code = (await page.locator('#camera-code').textContent())!, invite = await page.locator('#camera-link').inputValue();
+      await requestCamera(viewer, code, 'Automatic viewer');
+      await expect.poll(() => viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 20_000 }).toBe(640);
+      await expect(page.locator('#camera-approval')).toBeHidden();
+      await page.evaluate(() => {
+        (window as any).__originalCameraPeer = (window as any).__remoteCameraRTC.peers[0];
+        (window as any).__originalCameraTrack = (document.querySelector('#camera-preview') as HTMLVideoElement).srcObject && ((document.querySelector('#camera-preview') as HTMLVideoElement).srcObject as MediaStream).getVideoTracks()[0];
+        (window as any).__originalSocketCount = (window as any).__remoteCameraSockets.size;
+      });
+      await expect(page.locator('#camera-device-field')).toBeVisible(); await page.locator('#camera-device').selectOption('qa-camera-2');
+      await expect(page.locator('#camera-switch-status')).toContainText('Camera switched');
+      await expect.poll(() => viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 20_000 }).toBe(320);
+      expect(await page.evaluate(() => (window as any).__originalCameraTrack.readyState)).toBe('ended');
+      expect(await page.evaluate(() => (window as any).__remoteCameraRTC.peers.length === 1 && (window as any).__remoteCameraRTC.peers[0] === (window as any).__originalCameraPeer && (window as any).__remoteCameraSockets.size === (window as any).__originalSocketCount)).toBe(true);
+      await expect(page.locator('#camera-link')).toHaveValue(invite);
+      const first = await viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.getVideoPlaybackQuality().totalVideoFrames);
+      await expect.poll(() => viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(first + 2);
+      await page.locator('#camera-require-approval').check();
+      expect(await viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.srcObject !== null)).toBe(true);
+      await viewer.locator('#viewer-stop').click(); await requestCamera(viewer, code, 'Approval required again');
+      await expect(page.locator('[data-action=approve]')).toBeVisible({ timeout: 20_000 });
+      expect(await viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.srcObject)).toBeNull();
+      await page.locator('[data-action=deny]').click(); await expect(viewer.locator('#viewer-status')).toContainText('turned away');
+      await page.evaluate(() => { (window as any).__cameraQA.holdNext = true; });
+      await page.locator('#camera-device').selectOption('qa-camera-1');
+      await expect.poll(() => page.evaluate(() => Boolean((window as any).__cameraQA.release))).toBe(true);
+      await page.locator('#camera-stop').click(); await page.evaluate(() => (window as any).__cameraQA.release());
+      await tracksStopped(page); await expect(page.locator('#camera-start')).toBeEnabled();
+    } finally { await viewerContext.close(); }
+  });
   test('approval gates video, denial sends none, and one viewer excludes another', async ({ page, context, browser }) => {
     test.setTimeout(60_000); const broker = localRendezvous();
     const viewerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext);
-      const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page); await page.locator('#camera-start').click();
-      await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/); const code = (await page.locator('#camera-code').textContent())!;
-      await requestCamera(viewer, code, '<img src=x onerror=alert(1)>'); await expect(page.locator('[data-action=deny]')).toBeVisible({ timeout: 20_000 });
+      const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page);
+      await page.locator('#camera-name').fill('QA Camera Room'); await page.locator('#camera-start').click();
+      await expect(page.locator('#camera-code')).toHaveText('qa-camera-room'); const code = (await page.locator('#camera-code').textContent())!;
+      const invitation = await page.locator('#camera-link').inputValue(); expect(new URL(invitation).hash).toBe(`#${code}`);
+      await requestCamera(viewer, code, '<img src=x onerror=alert(1)>', invitation); await expect(page.locator('[data-action=deny]')).toBeVisible({ timeout: 20_000 });
       await expect(page.locator('#camera-requests')).toContainText('<img src=x onerror=alert(1)>'); await expect(page.locator('#camera-requests img')).toHaveCount(0);
       expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
       await page.locator('[data-action=deny]').click(); await expect(viewer.locator('#viewer-status')).toContainText('turned away');
