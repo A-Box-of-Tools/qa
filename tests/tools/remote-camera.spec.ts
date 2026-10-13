@@ -83,6 +83,46 @@ async function tracksStopped(page: Page) {
   await expect.poll(() => page.locator('#camera-preview').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
 }
 
+/** The dialog is absent on production until the confirmation release lands. */
+async function cancelCameraStop(source: Page, viewer: Page, pending = false) {
+  const dialog = source.locator('#camera-stop-dialog');
+  if (await dialog.count() === 0) return;
+  const invitation = await source.locator('#camera-link').inputValue();
+  for (const dismiss of ['button', 'Escape']) {
+    await source.locator('#camera-stop').click();
+    await expect(dialog).toBeVisible();
+    await expect(source.locator('#camera-stop-cancel')).toBeFocused();
+    if (dismiss === 'button') await source.locator('#camera-stop-cancel').click();
+    else await source.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(source.locator('#camera-stop')).toBeFocused();
+    await expect(source.locator('#camera-link')).toHaveValue(invitation);
+    expect(await source.locator('#camera-preview').evaluate((video: HTMLVideoElement) => {
+      const tracks = (video.srcObject as MediaStream | null)?.getVideoTracks() ?? [];
+      return tracks.length > 0 && tracks.every((track) => track.readyState === 'live');
+    })).toBe(true);
+    if (pending) {
+      await expect(source.locator('[data-action=deny]')).toBeVisible();
+      expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject)).toBeNull();
+      expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
+    } else {
+      const first = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
+      await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(first + 2);
+      expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.at(-1).connectionState)).toBe('connected');
+    }
+  }
+}
+
+async function stopSharedCamera(source: Page) {
+  await source.locator('#camera-stop').click();
+  const dialog = source.locator('#camera-stop-dialog');
+  if (await dialog.count() === 0) return;
+  await expect(dialog).toBeVisible();
+  await expect(source.locator('#camera-stop-cancel')).toBeFocused();
+  await source.locator('#camera-stop-confirm').click();
+  await expect(dialog).toBeHidden();
+}
+
 /** The broker forwards opaque envelopes; no WebRTC or media object is mocked. */
 function localRendezvous() {
   type Client = { page: Page; socket: number; role: string; code: string; peer: string; ready: boolean };
@@ -367,6 +407,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await cameraHooks(viewer, 'deny', 'broker'); await requestListedCamera(viewer, code, '<img src=x onerror=alert(1)>'); await expect(page.locator('[data-action=deny]')).toBeVisible({ timeout: 20_000 });
       await expect(page.locator('#camera-requests')).toContainText('<img src=x onerror=alert(1)>'); await expect(page.locator('#camera-requests img')).toHaveCount(0);
       expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
+      await cancelCameraStop(page, viewer, true);
       await page.locator('[data-action=deny]').click(); await expect(viewer.locator('#viewer-status')).toContainText('turned away');
       expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject)).toBeNull();
       await requestCamera(viewer, code, 'QA approved viewer', invitation); await approveCamera(page, viewer);
@@ -423,8 +464,10 @@ test.describe('remote-camera: native WebRTC media', () => {
       expect(frames.some((frame) => frame.includes('"description"')), 'The captured traffic must contain actual negotiation.').toBe(true);
       expect(frames.length).toBeGreaterThan(4);
       expect(frames.every((frame) => !frame.includes(note)), 'The note must travel the encrypted peer channel.').toBe(true);
-      await page.locator('#camera-stop').click(); await tracksStopped(page);
+      await cancelCameraStop(page, viewer);
+      await stopSharedCamera(page); await tracksStopped(page);
       await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
+      await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
     } finally { await viewerContext.close(); }
   });
 });
