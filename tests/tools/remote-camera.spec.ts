@@ -494,7 +494,9 @@ test.describe('remote-camera: native WebRTC media', () => {
           await expect(viewer.locator('#viewer-alert-options')).toBeHidden();
         } else {
           await expect(viewer.locator('#viewer-alert-options')).toBeVisible({ timeout: 20_000 });
-          await viewer.locator('#viewer-motion-alert').check();
+          // Permission denial intentionally clears the checkbox during the click.
+          if (permission === 'denied') await viewer.locator('#viewer-motion-alert').click();
+          else await viewer.locator('#viewer-motion-alert').check();
           await expect.poll(() => viewer.evaluate(() => (window as any).__cameraNotifications.requests)).toBe(1);
         }
         if (permission === 'denied') {
