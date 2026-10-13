@@ -7,6 +7,9 @@ import { canFakeCamera, hasCameraInterface, withoutThirdParties } from '../../li
 
 const TOOL = '/remote-camera/';
 const exists = discoverTools().includes('remote-camera');
+// Production and a dev preview can use different discovery contracts while
+// a release awaits approval. The checked-out website source identifies each.
+const directDiscovery = exists && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/src/main.js'), 'utf8').includes("link.addEventListener('click'");
 type CameraMode = 'allow' | 'deny' | 'pending';
 
 /** Native moving video exercises capture, encoding, decoding and track cleanup.
@@ -179,6 +182,25 @@ async function requestCamera(viewer: Page, code: string, name: string, invitatio
     .map((socket: any) => { const url = new URL(socket.url); return { tool: url.searchParams.get('tool'), role: url.searchParams.get('role'), code: url.pathname.split('/').pop() }; }), previousRooms))
     .toEqual([{ tool: 'remote-camera', role: 'viewer', code }]);
 }
+
+async function requestListedCamera(viewer: Page, code: string, name: string) {
+  if (!directDiscovery) return requestCamera(viewer, code, name);
+  await viewer.goto(TOOL); await viewer.locator('#viewer-name').fill(name);
+  await expect.poll(() => viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].some((socket: any) => socket.discovery && socket.readyState === 1))).toBe(true);
+  await viewer.evaluate((code) => {
+    const discovery = [...(window as any).__remoteCameraSockets.values()].find((socket: any) => socket.discovery && socket.readyState === 1) as any;
+    discovery.receive({ type: 'shares', tool: 'remote-camera', list: [{ code, local: true }] });
+  }, code);
+  const camera = viewer.locator('#discovery-list a'); await expect(camera).toHaveText(code);
+  await camera.focus(); await camera.press('Enter');
+  await expect(viewer.locator('#viewer-code')).toHaveValue(code);
+  await expect(viewer.locator('#viewer-stop')).toBeFocused();
+  expect(await viewer.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
+  await expect.poll(() => viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()]
+    .filter((socket: any) => !socket.discovery).map((socket: any) => {
+      const url = new URL(socket.url); return { tool: url.searchParams.get('tool'), role: url.searchParams.get('role'), code: url.pathname.split('/').pop() };
+    }))).toEqual([{ tool: 'remote-camera', role: 'viewer', code }]);
+}
 async function approveCamera(source: Page, viewer: Page) {
   await expect(source.locator('[data-action=approve]')).toBeVisible({ timeout: 20_000 });
   expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
@@ -210,14 +232,37 @@ test.describe('remote-camera: camera lifecycle', () => {
     await expect(page.locator('#viewer-status')).toContainText('complete camera code');
     expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length)).toBe(0);
   });
-  test('a listed camera opens the viewing form and waits for Connect', async ({ page }) => {
+  test('a listed camera follows the shipped viewing request contract without capture', async ({ page }) => {
     await cameraHooks(page, 'deny', 'listed'); await page.goto(TOOL);
     await expect(page.locator('#discovery-list a')).toHaveText('qa-listed-camera');
-    await page.locator('#discovery-list a').click();
+    if (directDiscovery) await page.locator('#discovery-list a').evaluate((link: HTMLAnchorElement) => { link.click(); link.click(); (document.querySelector('#viewer-connect') as HTMLButtonElement).click(); });
+    else await page.locator('#discovery-list a').click();
     await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
     await expect(page.locator('#viewer-panel')).toBeVisible();
-    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+    if (directDiscovery) {
+      await expect(page.locator('#camera-panel')).toBeHidden(); await expect(page.locator('#camera-discovery')).toBeHidden();
+      await expect(page.locator('#viewer-stop')).toBeFocused(); await expect(page.locator('#viewer-connect')).toBeDisabled();
+    } else {
+      await expect(page.locator('#camera-discovery')).toBeVisible(); await expect(page.locator('#viewer-code')).toBeFocused();
+      await expect(page.locator('#viewer-connect')).toBeEnabled(); await expect(page.locator('#viewer-stop')).toBeHidden();
+    }
+    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, directDiscovery ? 1 : 0]);
     expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => socket.discovery && socket.readyState === 1).map((socket: any) => new URL(socket.url).searchParams.get('tool')))).toEqual(['remote-camera']);
+  });
+  test('a modified listed-camera click keeps its viewer link without pairing', async ({ page }) => {
+    await cameraHooks(page, 'deny', 'listed'); await page.goto(TOOL);
+    const camera = page.locator('#discovery-list a'); await expect(camera).toHaveText('qa-listed-camera');
+    expect(await camera.getAttribute('href')).toContain('#qa-listed-camera');
+    const intercepted = await camera.evaluate((link) => {
+      let intercepted = false;
+      link.addEventListener('click', (event) => { intercepted = event.defaultPrevented; event.preventDefault(); }, { once: true });
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
+      return intercepted;
+    });
+    expect(intercepted).toBe(false);
+    await expect(page.locator('#viewer-connect')).toBeEnabled(); await expect(page.locator('#viewer-stop')).toBeHidden();
+    expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+    await expect(page.locator('#camera-discovery')).toBeVisible();
   });
   test('pairing tools display the shipped JavaScript version', async ({ page }) => {
     await cameraHooks(page, 'deny'); await page.goto(TOOL);
@@ -281,7 +326,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await page.locator('#camera-require-approval').uncheck(); await expect(page.locator('#camera-approval-policy')).toContainText('Anyone');
       await page.locator('#camera-start').click(); await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/);
       const code = (await page.locator('#camera-code').textContent())!, invite = await page.locator('#camera-link').inputValue();
-      await requestCamera(viewer, code, 'Automatic viewer');
+      await cameraHooks(viewer, 'deny', 'broker'); await requestListedCamera(viewer, code, 'Automatic viewer');
       await expect.poll(() => viewer.locator('#remote-video').evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 20_000 }).toBe(640);
       await expect(page.locator('#camera-approval')).toBeHidden();
       await page.evaluate(() => {
@@ -319,12 +364,12 @@ test.describe('remote-camera: native WebRTC media', () => {
       await page.locator('#camera-name').fill('QA Camera Room'); await page.locator('#camera-start').click();
       await expect(page.locator('#camera-code')).toHaveText('qa-camera-room'); const code = (await page.locator('#camera-code').textContent())!;
       const invitation = await page.locator('#camera-link').inputValue(); expect(new URL(invitation).hash).toBe(`#${code}`);
-      await requestCamera(viewer, code, '<img src=x onerror=alert(1)>', invitation); await expect(page.locator('[data-action=deny]')).toBeVisible({ timeout: 20_000 });
+      await cameraHooks(viewer, 'deny', 'broker'); await requestListedCamera(viewer, code, '<img src=x onerror=alert(1)>'); await expect(page.locator('[data-action=deny]')).toBeVisible({ timeout: 20_000 });
       await expect(page.locator('#camera-requests')).toContainText('<img src=x onerror=alert(1)>'); await expect(page.locator('#camera-requests img')).toHaveCount(0);
       expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
       await page.locator('[data-action=deny]').click(); await expect(viewer.locator('#viewer-status')).toContainText('turned away');
       expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject)).toBeNull();
-      await requestCamera(viewer, code, 'QA approved viewer'); await approveCamera(page, viewer);
+      await requestCamera(viewer, code, 'QA approved viewer', invitation); await approveCamera(page, viewer);
       const extra = await viewerContext.newPage(); await withoutThirdParties(extra); await requestCamera(extra, code, 'QA other viewer');
       await expect(extra.locator('#viewer-status')).toContainText('already has a viewer'); expect(await extra.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
       await viewer.locator('#viewer-stop').click(); await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
