@@ -16,6 +16,10 @@ test.describe('hub page', () => {
 
   test('task search finds a real JPG-to-PNG converter and rejects an unsupported destination', async ({ page }) => {
     const search = page.locator('#tool-filter-input');
+    await expect(search).toBeVisible();
+    const visibleCards = page.locator('a.tool-card:visible');
+    const initialCount = await visibleCards.count();
+    expect(initialCount).toBeGreaterThan(0);
     await search.fill('JPEG to PNG');
     await expect(page.locator('a.tool-card[data-tool="resize-image"]')).toBeVisible();
     await expect(page.locator('#tool-filter-none')).toBeHidden();
@@ -23,7 +27,7 @@ test.describe('hub page', () => {
     await search.fill('PNG to AVIF');
     await expect(page.locator('#tool-filter-none')).toContainText('Try fewer words');
     await search.press('Escape');
-    await expect(page.locator('a.tool-card:visible')).toHaveCount(tools.length);
+    await expect(visibleCards).toHaveCount(initialCount);
   });
 
   for (const [lang, query] of [['es', 'jpeg a png'], ['pt', 'jpg para png']]) {
