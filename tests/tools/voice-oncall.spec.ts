@@ -6,6 +6,8 @@ import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksSt
 
 const TOOL = '/voice-oncall/';
 const exists = discoverTools().includes('voice-oncall');
+// Discovery must recover within the live service's shared per-address budget.
+const DISCOVERY_TIMEOUT = 75_000;
 
 test.describe('voice-oncall', () => {
   test.beforeEach(async ({ page }) => {
@@ -124,7 +126,7 @@ test.describe('voice-oncall', () => {
   test('an anonymous caller reconnects with the same label and stays removed after reloading', async ({ page, browser, browserName }) => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
-    test.setTimeout(90_000);
+    test.setTimeout(150_000);
     const pagerName = `QA removal ${test.info().workerIndex}-${Date.now()}`;
     const senderContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
@@ -169,7 +171,9 @@ test.describe('voice-oncall', () => {
       await sender.reload();
       await expect(sender.locator('#vi-status-text')).toHaveText('Choose a nearby pager or open a link from its host.');
       await expect(sender.locator('#vi-join-form')).toBeVisible();
-      await sender.getByRole('radio', { name: `${pagerName} Open pager`, exact: true }).check({ timeout: 20_000 });
+      const pager = sender.getByRole('radio', { name: `${pagerName} Open pager`, exact: true });
+      await expect(pager).toBeVisible({ timeout: DISCOVERY_TIMEOUT });
+      await pager.check();
       await sender.locator('#vi-join').click();
       await expect(sender.locator('#vi-status-text')).toHaveText('The host removed you from this pager.');
       await expect(sender.locator('#vi-sender-name')).toHaveCount(0);
