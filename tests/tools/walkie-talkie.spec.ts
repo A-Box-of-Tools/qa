@@ -67,6 +67,8 @@ test.describe('walkie-talkie', () => {
       expect(await listener.locator('#wt-audio').evaluate((audio: HTMLAudioElement) => audio.srcObject)).toBeNull();
       await peersClosed(listener);
       await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.');
+      // Invitations are read at startup; a fragment-only navigation does not restart the page.
+      await listener.goto('about:blank');
       await listener.goto(invitation);
       await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
       await page.locator('#wt-end').click();
