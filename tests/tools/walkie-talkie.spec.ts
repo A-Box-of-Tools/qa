@@ -11,6 +11,10 @@ const exists = discoverTools().includes('walkie-talkie');
 const DISCOVERY_TIMEOUT = 75_000;
 
 test.describe('walkie-talkie', () => {
+  // These live channels share the service's per-address connection budget.
+  // Run them one at a time while allowing later cases to run after a failure.
+  test.describe.configure({ mode: 'default' });
+
   test.beforeEach(async ({ page }) => {
     test.skip(!exists, 'Local Walkie-Talkie is awaiting the website release.');
     await withoutThirdParties(page);
