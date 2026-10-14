@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
-import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled } from '../../lib/voice-fixtures';
+import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, voiceSnapshot } from '../../lib/voice-fixtures';
 
 const TOOL = '/voice-oncall/';
 const exists = discoverTools().includes('voice-oncall');
@@ -72,7 +72,33 @@ test.describe('voice-oncall', () => {
       const before = await receivedAudio(page);
       await sender.locator('#vi-toggle').click();
       await expect.poll(() => microphoneEnabled(sender)).toBe(true);
-      await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
+      try {
+        await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
+      } catch (error) {
+        const diagnostics: unknown[] = [{ stage: 'before decoder probe', host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) }];
+        // This probe runs only after the real assertion has failed and never changes its result.
+        // The stream is the test oscillator, so no person's audio is played or recorded.
+        for (const volume of [0, 1]) {
+          const probeResult = await page.evaluate(async volume => {
+            const qa = (window as any).__voiceQA;
+            if (!qa.decodeProbe) {
+              const stream = document.querySelector('audio')?.srcObject;
+              if (!stream) return 'no stream';
+              qa.decodeProbe = document.createElement('audio');
+              qa.decodeProbe.srcObject = stream;
+              document.body.append(qa.decodeProbe);
+            }
+            qa.decodeProbe.muted = false;
+            qa.decodeProbe.volume = volume;
+            try { await qa.decodeProbe.play(); return 'playing'; }
+            catch (error) { return (error as DOMException).name; }
+          }, volume);
+          await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 3_000 }).toBeGreaterThan(before.energy).catch(() => {});
+          diagnostics.push({ stage: `unmuted decoder volume ${volume}`, probeResult, host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) });
+        }
+        await test.info().attach('voice-audio-diagnostics', { body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json' });
+        throw error;
+      }
       await expect.poll(async () => (await receivedAudio(page)).packets).toBeGreaterThan(before.packets);
 
       // Keep the speaking page focused: foregrounding the other test window

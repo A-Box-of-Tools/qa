@@ -23,7 +23,7 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
     const state = (window as any).__voiceQA = {
       calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[],
       peers: [] as RTCPeerConnection[], gains: [] as GainNode[],
-      contexts: [] as AudioContext[], sockets: [] as WebSocket[],
+      contexts: [] as AudioContext[], captureContexts: [] as AudioContext[], sockets: [] as WebSocket[],
     };
     const NativeAudio = window.AudioContext || (window as any).webkitAudioContext;
     if (NativeAudio) {
@@ -45,6 +45,7 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
       state.calls.push(constraints);
       if (capture === 'deny') throw new DOMException('Permission denied', 'NotAllowedError');
       const context: AudioContext = new NativeAudio();
+      state.captureContexts.push(context);
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       const destination = context.createMediaStreamDestination();
@@ -147,5 +148,30 @@ export async function microphoneEnabled(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const live = ((window as any).__voiceQA.tracks as MediaStreamTrack[]).filter(track => track.readyState === 'live');
     return live.length > 0 && live.every(track => track.enabled);
+  });
+}
+
+export async function voiceSnapshot(page: Page) {
+  return page.evaluate(async () => {
+    const qa = (window as any).__voiceQA;
+    const tracks = (track: MediaStreamTrack | null) => track && ({ kind: track.kind, enabled: track.enabled, muted: track.muted, readyState: track.readyState });
+    const peers = [];
+    for (const peer of qa.peers as RTCPeerConnection[]) {
+      const stats: Record<string, unknown>[] = [];
+      (await peer.getStats()).forEach(stat => {
+        if (!['media-source', 'inbound-rtp', 'outbound-rtp'].includes(stat.type)) return;
+        const selected: Record<string, unknown> = {};
+        for (const key of ['type', 'kind', 'mediaType', 'packetsReceived', 'packetsSent', 'bytesReceived', 'bytesSent', 'totalAudioEnergy', 'totalSamplesDuration', 'audioLevel']) {
+          if (key in stat) selected[key] = stat[key];
+        }
+        stats.push(selected);
+      });
+      peers.push({ state: peer.connectionState, signaling: peer.signalingState,
+        transceivers: peer.getTransceivers().map(t => ({ direction: t.direction, currentDirection: t.currentDirection, sender: tracks(t.sender.track), receiver: tracks(t.receiver.track) })), stats });
+    }
+    return { contexts: qa.contexts.map((context: AudioContext) => context.state),
+      captureContexts: qa.captureContexts.map((context: AudioContext) => context.state),
+      gains: qa.gains.map((gain: GainNode) => gain.gain.value), tracks: qa.tracks.map(tracks), peers,
+      audio: Array.from(document.querySelectorAll('audio')).map(audio => ({ paused: audio.paused, muted: audio.muted, volume: audio.volume, readyState: audio.readyState, hasStream: Boolean(audio.srcObject) })) };
   });
 }
