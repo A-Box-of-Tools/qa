@@ -34,6 +34,7 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
           const createGain = context.createGain.bind(context);
           context.createGain = () => {
             const gain = createGain(); state.gains.push(gain);
+            // Observe the app's existing output without adding an audible route.
             const analyser = context.createAnalyser();
             gain.connect(analyser); state.analysers.push(analyser);
             return gain;
@@ -151,6 +152,21 @@ export async function microphoneEnabled(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const live = ((window as any).__voiceQA.tracks as MediaStreamTrack[]).filter(track => track.readyState === 'live');
     return live.length > 0 && live.every(track => track.enabled);
+  });
+}
+
+/** Chromium's inbound RTP energy follows the native media element, which can
+ * stay muted while the app plays the same stream through Web Audio. Sample
+ * the app's output after its own gain so this also verifies local muting. */
+export async function outputRms(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const analysers: AnalyserNode[] = (window as any).__voiceQA.analysers;
+    return Math.max(0, ...analysers.map(analyser => {
+      if (analyser.context.state !== 'running') return 0;
+      const data = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(data);
+      return Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
+    }));
   });
 }
 

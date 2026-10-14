@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
-import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, voiceSnapshot } from '../../lib/voice-fixtures';
+import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, outputRms, voiceSnapshot } from '../../lib/voice-fixtures';
 
 const TOOL = '/voice-oncall/';
 const exists = discoverTools().includes('voice-oncall');
@@ -69,44 +69,14 @@ test.describe('voice-oncall', () => {
       expect(await microphoneEnabled(sender)).toBe(false);
       expect(await page.evaluate(() => (window as any).__voiceQA.peers.flatMap((peer: RTCPeerConnection) => peer.getSenders()).filter((sender: RTCRtpSender) => sender.track).length)).toBe(0);
       expect(await page.evaluate((endpoint) => (window as any).__voiceQA.sockets.some((socket: WebSocket) => socket.url.startsWith(`${endpoint}/inbox/`) && socket.readyState === WebSocket.OPEN), endpoint)).toBe(true);
+      await expect.poll(() => outputRms(page)).toBeLessThan(0.00001);
       const before = await receivedAudio(page);
       await sender.locator('#vi-toggle').click();
       await expect.poll(() => microphoneEnabled(sender)).toBe(true);
       try {
-        await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
+        await expect.poll(() => outputRms(page), { timeout: 20_000 }).toBeGreaterThan(0.01);
       } catch (error) {
-        const diagnostics: unknown[] = [{ stage: 'before decoder probe', host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) }];
-        // This probe runs only after the real assertion has failed and never changes its result.
-        // The stream is the test oscillator, so no person's audio is played or recorded.
-        for (const volume of [0, 1]) {
-          const probeResult = await page.evaluate(async volume => {
-            const qa = (window as any).__voiceQA;
-            if (!qa.decodeProbe) {
-              const stream = document.querySelector('audio')?.srcObject;
-              if (!stream) return 'no stream';
-              qa.decodeProbe = document.createElement('audio');
-              qa.decodeProbe.srcObject = stream;
-              document.body.append(qa.decodeProbe);
-            }
-            qa.decodeProbe.muted = false;
-            qa.decodeProbe.volume = volume;
-            try { await qa.decodeProbe.play(); return 'playing'; }
-            catch (error) { return (error as DOMException).name; }
-          }, volume);
-          await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 3_000 }).toBeGreaterThan(before.energy).catch(() => {});
-          diagnostics.push({ stage: `unmuted decoder volume ${volume}`, probeResult, host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) });
-        }
-        await page.evaluate(() => {
-          const qa = (window as any).__voiceQA;
-          qa.gains.forEach((gain: GainNode) => { gain.gain.value = 0; });
-          const context = qa.contexts[0] as AudioContext;
-          const source = context.createMediaElementSource(qa.decodeProbe);
-          const gain = context.createGain(); gain.gain.value = 1;
-          source.connect(gain).connect(context.destination);
-        });
-        const routed = await receivedAudio(page);
-        await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 3_000 }).toBeGreaterThan(routed.energy).catch(() => {});
-        diagnostics.push({ stage: 'element routed through gain', host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) });
+        const diagnostics = { host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) };
         await test.info().attach('voice-audio-diagnostics', { body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json' });
         throw error;
       }
@@ -121,10 +91,13 @@ test.describe('voice-oncall', () => {
         const gains: GainNode[] = (window as any).__voiceQA.gains;
         return gains.length > 0 && gains.every(gain => gain.gain.value === 0);
       })).toBe(true);
+      await expect.poll(() => outputRms(page)).toBeLessThan(0.00001);
       await page.getByRole('button', { name: 'Unmute QA speaker', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
       await expect(sender.locator('#vi-status-text')).toHaveText('Connected. Hold to talk when you are ready.');
       expect(await microphoneEnabled(sender)).toBe(false);
       await expect.poll(() => page.evaluate(() => (window as any).__voiceQA.gains.some((gain: GainNode) => gain.gain.value === 1))).toBe(true);
+      await sender.locator('#vi-toggle').click();
+      await expect.poll(() => outputRms(page)).toBeGreaterThan(0.01);
       await page.locator('#vi-end').evaluate((button: HTMLButtonElement) => button.click());
       await expect(sender.locator('#vi-status-text')).toHaveText('The host ended this pager.');
       await tracksStopped(sender);
