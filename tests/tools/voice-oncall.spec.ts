@@ -125,6 +125,7 @@ test.describe('voice-oncall', () => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(90_000);
+    const pagerName = `QA removal ${test.info().workerIndex}-${Date.now()}`;
     const senderContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
       const sender = await senderContext.newPage();
@@ -133,7 +134,7 @@ test.describe('voice-oncall', () => {
       await voiceHooks(sender, 'allow');
       await page.goto(TOOL);
       await page.locator('#vi-tab-host').click();
-      await page.locator('#vi-room-name').fill(`QA removal ${test.info().workerIndex}-${Date.now()}`);
+      await page.locator('#vi-room-name').fill(pagerName);
       await page.locator('#vi-start').click();
       await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
       await sender.goto(await page.locator('#vi-link').inputValue());
@@ -166,6 +167,10 @@ test.describe('voice-oncall', () => {
       await peersClosed(sender);
       await expect(page.locator('#vi-participants > li')).toHaveCount(0);
       await sender.reload();
+      await expect(sender.locator('#vi-status-text')).toHaveText('Choose a nearby pager or open a link from its host.');
+      await expect(sender.locator('#vi-join-form')).toBeVisible();
+      await sender.getByRole('radio', { name: `${pagerName} Open pager`, exact: true }).check({ timeout: 20_000 });
+      await sender.locator('#vi-join').click();
       await expect(sender.locator('#vi-status-text')).toHaveText('The host removed you from this pager.');
       await expect(sender.locator('#vi-sender-name')).toHaveCount(0);
       await expect(sender.locator('#vi-join-form')).toBeHidden();
