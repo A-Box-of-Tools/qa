@@ -22,7 +22,7 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
   await page.addInitScript(({ capture, quietDiscovery }) => {
     const state = (window as any).__voiceQA = {
       calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[],
-      peers: [] as RTCPeerConnection[], gains: [] as GainNode[],
+      peers: [] as RTCPeerConnection[], gains: [] as GainNode[], analysers: [] as AnalyserNode[],
       contexts: [] as AudioContext[], captureContexts: [] as AudioContext[], sockets: [] as WebSocket[],
     };
     const NativeAudio = window.AudioContext || (window as any).webkitAudioContext;
@@ -33,7 +33,10 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
           state.contexts.push(context);
           const createGain = context.createGain.bind(context);
           context.createGain = () => {
-            const gain = createGain(); state.gains.push(gain); return gain;
+            const gain = createGain(); state.gains.push(gain);
+            const analyser = context.createAnalyser();
+            gain.connect(analyser); state.analysers.push(analyser);
+            return gain;
           };
           return context;
         },
@@ -169,9 +172,13 @@ export async function voiceSnapshot(page: Page) {
       peers.push({ state: peer.connectionState, signaling: peer.signalingState,
         transceivers: peer.getTransceivers().map(t => ({ direction: t.direction, currentDirection: t.currentDirection, sender: tracks(t.sender.track), receiver: tracks(t.receiver.track) })), stats });
     }
-    return { contexts: qa.contexts.map((context: AudioContext) => context.state),
+    return { contexts: qa.contexts.map((context: AudioContext) => ({ state: context.state, time: context.currentTime })),
       captureContexts: qa.captureContexts.map((context: AudioContext) => context.state),
-      gains: qa.gains.map((gain: GainNode) => gain.gain.value), tracks: qa.tracks.map(tracks), peers,
+      gains: qa.gains.map((gain: GainNode) => gain.gain.value),
+      rms: qa.analysers.map((analyser: AnalyserNode) => {
+        const data = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(data);
+        return Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
+      }), tracks: qa.tracks.map(tracks), peers,
       audio: Array.from(document.querySelectorAll('audio')).map(audio => ({ paused: audio.paused, muted: audio.muted, volume: audio.volume, readyState: audio.readyState, hasStream: Boolean(audio.srcObject) })) };
   });
 }

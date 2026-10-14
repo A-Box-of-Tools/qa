@@ -96,6 +96,17 @@ test.describe('voice-oncall', () => {
           await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 3_000 }).toBeGreaterThan(before.energy).catch(() => {});
           diagnostics.push({ stage: `unmuted decoder volume ${volume}`, probeResult, host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) });
         }
+        await page.evaluate(() => {
+          const qa = (window as any).__voiceQA;
+          qa.gains.forEach((gain: GainNode) => { gain.gain.value = 0; });
+          const context = qa.contexts[0] as AudioContext;
+          const source = context.createMediaElementSource(qa.decodeProbe);
+          const gain = context.createGain(); gain.gain.value = 1;
+          source.connect(gain).connect(context.destination);
+        });
+        const routed = await receivedAudio(page);
+        await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 3_000 }).toBeGreaterThan(routed.energy).catch(() => {});
+        diagnostics.push({ stage: 'element routed through gain', host: await voiceSnapshot(page), sender: await voiceSnapshot(sender) });
         await test.info().attach('voice-audio-diagnostics', { body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json' });
         throw error;
       }
