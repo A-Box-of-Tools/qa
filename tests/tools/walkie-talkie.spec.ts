@@ -130,6 +130,9 @@ test.describe('walkie-talkie', () => {
       await expect(page.locator('#wt-discover')).toBeChecked();
       await page.locator('#wt-start').click();
       await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+      expect(await microphoneEnabled(page)).toBe(false);
+      await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+      await expect(page.locator('#wt-live-banner')).toBeHidden();
       await expect(page.locator('#wt-publication')).toHaveText('Your channel is listed nearby.', { timeout: DISCOVERY_TIMEOUT });
       const channel = listener.locator('#wt-channels > li').filter({ hasText: channelName });
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
@@ -156,14 +159,52 @@ test.describe('walkie-talkie', () => {
       await page.locator('#wt-toggle').click();
       await expect.poll(() => microphoneEnabled(page)).toBe(true);
       await test.info().attach('walkie-hands-free-active', {
-        body: await page.screenshot({ fullPage: true }), contentType: 'image/png',
+        body: await page.locator('#wt-transmit').screenshot(), contentType: 'image/png',
       });
       await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'true');
       await expect(page.locator('#wt-toggle')).toHaveText('Stop talking');
+      await expect(page.locator('#wt-hold')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'true');
+      await expect(page.locator('#wt-live-banner')).toBeVisible();
+      await expect(page.locator('#wt-live-banner')).toContainText('Microphone on');
       await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
       await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(before.packets);
       await page.locator('#wt-toggle').click();
       await expect.poll(() => microphoneEnabled(page)).toBe(false);
+      await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+      await expect(page.locator('#wt-live-banner')).toBeHidden();
+
+      // Held transmission must not present itself as hands-free transmission.
+      await page.locator('#wt-hold').focus();
+      await page.keyboard.down('Space');
+      try {
+        await expect.poll(() => microphoneEnabled(page)).toBe(true);
+        await expect(page.locator('#wt-hold')).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+        await expect(page.locator('#wt-live-banner')).toBeHidden();
+      } finally {
+        await page.keyboard.up('Space');
+      }
+      await expect.poll(() => microphoneEnabled(page)).toBe(false);
+
+      await page.locator('#wt-toggle').click();
+      await expect.poll(() => microphoneEnabled(page)).toBe(true);
+      await expect(page.locator('#wt-live-banner')).toBeVisible();
+      await page.locator('#wt-microphone').click();
+      await expect.poll(() => microphoneEnabled(page)).toBe(false);
+      await expect(page.locator('#wt-microphone')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hold')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+      await expect(page.locator('#wt-live-banner')).toBeHidden();
+      await page.locator('#wt-microphone').click();
+      await expect(page.locator('#wt-microphone')).toHaveAttribute('aria-pressed', 'false');
+      await expect.poll(() => microphoneEnabled(page)).toBe(false);
+      await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+      await expect(page.locator('#wt-live-banner')).toBeHidden();
 
       await listener.locator('#wt-leave').click();
       await expect(listener.locator('#wt-nearby')).toBeVisible();
@@ -175,8 +216,16 @@ test.describe('walkie-talkie', () => {
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
       await channel.getByRole('button', { name: `Join ${channelName}`, exact: true }).click();
       await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
+      await page.locator('#wt-toggle').click();
+      await expect.poll(() => microphoneEnabled(page)).toBe(true);
+      await expect(page.locator('#wt-live-banner')).toBeVisible();
       await page.locator('#wt-end').click();
       await tracksStopped(page);
+      expect(await microphoneEnabled(page)).toBe(false);
+      await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hold')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+      await expect(page.locator('#wt-live-banner')).toBeHidden();
       await peersClosed(page);
       await expect(listener.locator('#wt-status-text')).toHaveText('The host ended this broadcast.');
       await peersClosed(listener);
@@ -188,5 +237,163 @@ test.describe('walkie-talkie', () => {
     } finally {
       await listenerContext.close();
     }
+  });
+
+  test('simulated visibility recovery reuses the host invitation and resumes silently', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'This lifecycle simulation uses Chromium capture; it is not a physical screen-lock test.');
+    test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
+    test.setTimeout(180_000);
+    // Directory behavior is covered above. Keep real room signaling while this
+    // test simulates lifecycle notifications rather than an operating-system lock.
+    await voiceHooks(page, 'allow', true);
+    await page.goto(TOOL);
+    await page.evaluate(() => {
+      let hidden = false;
+      const lifecycle = {
+        attempts: 0, denyNextCapture: false,
+        setHidden(value: boolean) {
+          hidden = value;
+          document.dispatchEvent(new Event('visibilitychange'));
+        },
+      };
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+      const media = navigator.mediaDevices;
+      const capture = media.getUserMedia.bind(media);
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: new Proxy(media, {
+          get(target, property) {
+            if (property === 'getUserMedia') return async (constraints: MediaStreamConstraints) => {
+              lifecycle.attempts++;
+              if (lifecycle.denyNextCapture) {
+                lifecycle.denyNextCapture = false;
+                throw new DOMException('Permission denied during wake', 'NotAllowedError');
+              }
+              return capture(constraints);
+            };
+            return Reflect.get(target, property, target);
+          },
+        }),
+      });
+      (window as any).__voiceLifecycle = lifecycle;
+    });
+    const attempts = () => page.evaluate(() => (window as any).__voiceLifecycle.attempts);
+    const sourceState = () => page.evaluate(() => {
+      const qa = (window as any).__voiceQA;
+      return {
+        calls: qa.calls.length,
+        liveTracks: qa.tracks.filter((track: MediaStreamTrack) => track.readyState === 'live').length,
+        openPeers: qa.peers.filter((peer: RTCPeerConnection) => peer.connectionState !== 'closed').length,
+        openRooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')
+          && socket.readyState === WebSocket.OPEN).length,
+      };
+    });
+    await page.locator('#wt-room-name').fill('QA lifecycle ' + test.info().workerIndex + '-' + Date.now());
+    await page.locator('#wt-discover').uncheck();
+    await page.locator('#wt-start').click();
+    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+    const invitation = await page.locator('#wt-link').inputValue();
+    expect(await attempts()).toBe(1);
+    await page.locator('#wt-toggle').click();
+    await expect.poll(() => microphoneEnabled(page)).toBe(true);
+    await expect(page.locator('#wt-live-banner')).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as any).__voiceLifecycle.setHidden(true);
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    });
+    await tracksStopped(page);
+    expect(await sourceState()).toEqual({ calls: 1, liveTracks: 0, openPeers: 0, openRooms: 0 });
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+
+    // A visible event can precede pageshow while the page is still suspended.
+    await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+    expect(await attempts()).toBe(1);
+    await page.evaluate(() => {
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    });
+    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+    expect(await attempts()).toBe(2);
+    expect(await sourceState()).toEqual({ calls: 2, liveTracks: 1, openPeers: 0, openRooms: 1 });
+    await expect(page.locator('#wt-link')).toHaveValue(invitation);
+    expect(await microphoneEnabled(page)).toBe(false);
+    await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('#wt-hold')).toHaveAttribute('aria-pressed', 'false');
+
+    // A capture interruption can arrive before the browser reports hiding.
+    // Dispatch mute on the real synthetic track, then use visibility alone.
+    await page.locator('#wt-toggle').click();
+    await expect.poll(() => microphoneEnabled(page)).toBe(true);
+    await page.evaluate(() => {
+      const track = (window as any).__voiceQA.tracks.find((track: MediaStreamTrack) => track.readyState === 'live');
+      if (!track) throw new Error('The host has no live capture track.');
+      track.dispatchEvent(new Event('mute'));
+      (window as any).__voiceLifecycle.setHidden(true);
+    });
+    await tracksStopped(page);
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+    expect(await attempts()).toBe(3);
+    expect(await sourceState()).toEqual({ calls: 3, liveTracks: 1, openPeers: 0, openRooms: 1 });
+    await expect(page.locator('#wt-link')).toHaveValue(invitation);
+    expect(await microphoneEnabled(page)).toBe(false);
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+
+    // A denied automatic wake needs a gesture instead of a new capture attempt
+    // for every visible event. The denial wrapper is confined to this testcase.
+    await page.locator('#wt-toggle').click();
+    await expect.poll(() => microphoneEnabled(page)).toBe(true);
+    await page.evaluate(() => {
+      (window as any).__voiceLifecycle.denyNextCapture = true;
+      (window as any).__voiceLifecycle.setHidden(true);
+    });
+    await tracksStopped(page);
+    await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+    await expect(page.locator('#wt-start')).toHaveText('Resume channel');
+    await expect(page.locator('#wt-start')).toBeEnabled();
+    await expect(page.locator('#wt-status-text')).toHaveText('Channel paused. Choose Resume channel to reconnect. Your microphone will stay off until you talk.');
+    expect(await attempts()).toBe(4);
+    expect(await sourceState()).toEqual({ calls: 3, liveTracks: 0, openPeers: 0, openRooms: 0 });
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    await page.evaluate(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    });
+    expect(await attempts()).toBe(4);
+    await expect(page.locator('#wt-start')).toHaveText('Resume channel');
+
+    await page.locator('#wt-start').click();
+    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+    expect(await attempts()).toBe(5);
+    expect(await sourceState()).toEqual({ calls: 4, liveTracks: 1, openPeers: 0, openRooms: 1 });
+    await expect(page.locator('#wt-link')).toHaveValue(invitation);
+    expect(await microphoneEnabled(page)).toBe(false);
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+
+    await page.locator('#wt-toggle').click();
+    await expect.poll(() => microphoneEnabled(page)).toBe(true);
+    await page.locator('#wt-end').click();
+    await tracksStopped(page);
+    await page.evaluate(() => {
+      (window as any).__voiceLifecycle.setHidden(true);
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      (window as any).__voiceLifecycle.setHidden(false);
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(await attempts()).toBe(5);
+    expect(await sourceState()).toEqual({ calls: 4, liveTracks: 0, openPeers: 0, openRooms: 0 });
+    await expect(page.locator('#wt-start')).toHaveText('Start channel');
+    await expect(page.locator('#wt-start')).toBeEnabled();
+    await expect(page.locator('#wt-live-banner')).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem('walkie-talkie.host'))).toBeNull();
   });
 });
