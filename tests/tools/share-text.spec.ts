@@ -661,18 +661,31 @@ test.describe('share-text: foreground continuity', () => {
       const [saved] = await Promise.all([reader.waitForEvent('download'), fresh.click()]);
       expect(fs.readFileSync((await saved.path())!)).toEqual(file);
 
+      const hostBeforeStop = await sharer.evaluate(() => {
+        const sockets: WebSocket[] = (window as any).shareTextTransports.sockets;
+        return { index: sockets.map((ws) => ws.url.includes('role=host') && ws.readyState === WebSocket.OPEN).lastIndexOf(true),
+          count: sockets.filter((ws) => ws.url.includes('role=host')).length };
+      });
+      expect(hostBeforeStop.index).toBeGreaterThanOrEqual(0);
       await sharer.locator('#stop').click();
       await expect(reader.locator('#panel')).not.toContainText(SECRET, { timeout: 30_000 });
       await expect(reader.locator('#retryrow')).toBeVisible();
-      await expect.poll(() => sharer.evaluate(() => (window as any).shareTextTransports.sockets
-        .filter((ws: WebSocket) => ws.url.includes('role=host'))
-        .every((ws: WebSocket) => ws.readyState === WebSocket.CLOSED))).toBe(true);
+      // Native close handshakes can outlast the page's terminal control.
+      // The current socket must begin closing; room retirement is checked
+      // separately against the rendezvous rather than inferred from CLOSED.
+      await expect.poll(() => sharer.evaluate((index) => (window as any).shareTextTransports.sockets[index].readyState,
+        hostBeforeStop.index)).toBeGreaterThanOrEqual(2);
       await waitForVacantRoom(sharer, code);
       const stopped = await reader.evaluate(() => ({ peers: (window as any).shareTextTransports.peers.length,
         sockets: (window as any).shareTextTransports.sockets.length }));
       await setForeground(reader, false);
       await setForeground(reader, true);
       await reader.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+      await setForeground(sharer, false);
+      await setForeground(sharer, true);
+      await sharer.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+      expect(await sharer.evaluate(() => (window as any).shareTextTransports.sockets
+        .filter((ws: WebSocket) => ws.url.includes('role=host')).length)).toBe(hostBeforeStop.count);
       const replacement = 'A-NEW-PRIVATE-SHARE-IS-NOT-THE-OLD-ADMISSION';
       await sharer.locator('#text').fill(replacement);
       await sharer.locator('#publish').click();
@@ -686,6 +699,8 @@ test.describe('share-text: foreground continuity', () => {
       await reader.waitForTimeout(6500);
       expect(await reader.evaluate(() => ({ peers: (window as any).shareTextTransports.peers.length,
         sockets: (window as any).shareTextTransports.sockets.length }))).toEqual(stopped);
+      expect(await sharer.evaluate(() => (window as any).shareTextTransports.sockets
+        .filter((ws: WebSocket) => ws.url.includes('role=host')).length)).toBe(hostBeforeStop.count + 1);
       await expect(reader.locator('#panel')).not.toContainText(replacement);
       await expect(sharer.locator('#requests button')).toHaveCount(0);
     } finally {
