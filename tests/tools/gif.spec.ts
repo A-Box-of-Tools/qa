@@ -196,6 +196,10 @@ test.describe('gif-maker: the animation it writes', () => {
     });
 
     test(`cancelling an in-flight ${palette} palette export permits same-page edits and retry`, async ({ page }) => {
+      // Mobile WebKit finished the GIF checks, then exhausted 30 seconds during
+      // the second download. Keep that check for late retired results within
+      // a bounded budget for the full cancellation, edit and retry workflow.
+      test.setTimeout(60_000);
       await loadFrames(page, [[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
       await page.locator('#palette-mode').selectOption(palette);
       // Keep retired native work, edits and retry in one document. A separate
