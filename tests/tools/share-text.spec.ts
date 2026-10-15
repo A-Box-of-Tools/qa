@@ -120,10 +120,65 @@ async function rendezvousAdmits(page: Page): Promise<boolean> {
   }), `${RENDEZVOUS_URL}/ws/qa-probe-${Date.now().toString(36)}?role=viewer`);
 }
 
+/** Observe real transports so simulated page lifecycle events cannot hide a redial. */
+async function observeConnections(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const sockets: WebSocket[] = [];
+    const peers: RTCPeerConnection[] = [];
+    const NativeSocket = window.WebSocket;
+    const NativePeer = window.RTCPeerConnection;
+    window.WebSocket = class extends NativeSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        sockets.push(this);
+      }
+    };
+    window.RTCPeerConnection = class extends NativePeer {
+      constructor(configuration?: RTCConfiguration) {
+        super(configuration);
+        peers.push(this);
+      }
+    };
+    (window as any).shareTextTransports = { sockets, peers };
+  });
+}
+
+async function setForeground(page: Page, shown: boolean): Promise<void> {
+  await page.evaluate((visible) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: visible ? 'visible' : 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, shown);
+}
+
+async function continuityAvailable(page: Page): Promise<void> {
+  test.skip(await page.locator('[data-phrase="view.reconnecting"]').count() === 0,
+    'this deployed page predates bounded same-page Share Text recovery');
+}
+
+async function waitForVacantRoom(page: Page, code: string): Promise<void> {
+  await expect.poll(() => page.evaluate((url) => new Promise<boolean>((resolve) => {
+    let finished = false;
+    let timer = 0;
+    const probe = new WebSocket(url);
+    const done = (vacant: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try { probe.close(); } catch { /* already closed */ }
+      resolve(vacant);
+    };
+    probe.onclose = (event) => done(event.code === 4404);
+    probe.onmessage = () => done(false);
+    probe.onerror = () => done(false);
+    timer = window.setTimeout(() => done(false), 2000);
+  }), `${RENDEZVOUS_URL}/ws/${code}?role=viewer`),
+  { timeout: 15_000, intervals: [250, 500, 1000] }).toBe(true);
+}
+
 /** Open a sharer, write the text, and publish it. Returns the share link. */
 async function publish(
   page: Page,
-  { text, code, priv }: { text: string; code: string; priv: boolean },
+  { text, code, priv, local = false }: { text: string; code: string; priv: boolean; local?: boolean },
 ): Promise<string> {
   await page.goto(URL_PATH);
   if (!onProductionDomain()) {
@@ -138,6 +193,7 @@ async function publish(
   // time. The open case is the simpler one to prove delivery with.
   if (priv) await page.locator('#private').check();
   else await page.locator('#private').uncheck();
+  if (local) await page.locator('#local').check();
 
   await page.locator('#publish').click();
   await expect(page.locator('#link')).toHaveValue(/share-text/, { timeout: 30_000 });
@@ -145,9 +201,10 @@ async function publish(
 }
 
 /** Open a reader on a share link and get past the consent gate. */
-async function readerFor(browser: Browser, link: string): Promise<{ page: Page; frames: string[] }> {
+async function readerFor(browser: Browser, link: string, observe = false): Promise<{ page: Page; frames: string[] }> {
   const context = await browser.newContext();
   const page = await context.newPage();
+  if (observe) await observeConnections(page);
   const frames = captureRendezvous(page);
   // The link is absolute and points at the site under test; the path and
   // fragment are what matter, so it is followed as given.
@@ -477,4 +534,179 @@ test('share-text: stopping a share during a file read never offers a partial dow
     await context.close();
     await reader?.context().close();
   }
+});
+
+test.describe('share-text: foreground continuity', () => {
+  test('a hidden healthy peer survives a host introduction-socket loss', async ({ browser, browserName }) => {
+    test.skip(browserName !== 'chromium', 'native data-channel lifecycle instrumentation is checked in Chromium');
+    test.setTimeout(180_000);
+    const context = await browser.newContext();
+    let reader: Page | undefined;
+    try {
+      const sharer = await context.newPage();
+      await observeConnections(sharer);
+      const code = codeWord();
+      const link = await publish(sharer, { text: SECRET, code, priv: false });
+      await continuityAvailable(sharer);
+      const opened = await readerFor(browser, link, true);
+      reader = opened.page;
+      await reader.locator('#connect').click();
+      await expect(reader.locator('#panel')).toContainText(SECRET, { timeout: 60_000 });
+      await setForeground(sharer, false);
+      await setForeground(reader, false);
+      const before = await reader.evaluate(() => (window as any).shareTextTransports.peers.length);
+      await sharer.evaluate(() => {
+        const socket = (window as any).shareTextTransports.sockets.findLast((ws: WebSocket) =>
+          ws.url.includes('role=host') && ws.readyState === WebSocket.OPEN);
+        if (!socket) throw new Error('the active host introduction socket was not observed');
+        socket.close(1000);
+      });
+      await expect.poll(() => sharer.evaluate(() => (window as any).shareTextTransports.sockets
+        .filter((ws: WebSocket) => ws.url.includes('role=host') && ws.readyState === WebSocket.OPEN).length),
+      { timeout: 30_000 }).toBe(1);
+      await setForeground(sharer, true);
+      await setForeground(reader, true);
+      const updated = `${SECRET}\nSTILL-THE-SAME-HIDDEN-PEER`;
+      await sharer.locator('#text').fill(updated);
+      await expect(reader.locator('#panel')).toContainText(updated, { timeout: 30_000 });
+      expect(await reader.evaluate(() => (window as any).shareTextTransports.peers.length)).toBe(before);
+      await expect(sharer.locator('#link')).toHaveValue(link);
+      expect(opened.frames.some((frame) => /"relay"\s*:\s*true/.test(frame))).toBe(false);
+    } finally {
+      await context.close();
+      await reader?.context().close();
+    }
+  });
+
+  test('a consented local reader recovers its admission and mode, while Stop stays terminal', async ({ browser, browserName }) => {
+    test.skip(browserName !== 'chromium', 'native data-channel lifecycle instrumentation is checked in Chromium');
+    test.setTimeout(240_000);
+    const context = await browser.newContext();
+    let reader: Page | undefined;
+    let replacementReader: Page | undefined;
+    try {
+      const sharer = await context.newPage();
+      await observeConnections(sharer);
+      const code = codeWord();
+      const link = await publish(sharer, { text: SECRET, code, priv: true, local: true });
+      await continuityAvailable(sharer);
+      await sharer.locator('#markdown').check();
+      const file = Buffer.alloc(200_000, 73);
+      await sharer.locator('#fileinput').setInputFiles({ name: 'fresh-request.bin', mimeType: 'application/octet-stream', buffer: file });
+      const opened = await readerFor(browser, link, true);
+      reader = opened.page;
+      await expect(reader.locator('#consent')).toBeVisible({ timeout: 30_000 });
+      await setForeground(reader, false);
+      await setForeground(reader, true);
+      await reader.waitForTimeout(300);
+      expect(await reader.evaluate(() => (window as any).shareTextTransports.peers.length)).toBe(0);
+      await reader.evaluate(() => {
+        Object.defineProperty(window, 'sessionStorage', { configurable: true,
+          get() { throw new DOMException('Storage unavailable', 'SecurityError'); } });
+      });
+      await reader.locator('#connect').click();
+      await expect(reader.locator('#knockrow')).toBeVisible({ timeout: 60_000 });
+      await reader.locator('#knock').fill('Same-page continuation');
+      await reader.locator('#send-knock').click();
+      await expect(sharer.locator('#requests')).toContainText('Same-page continuation');
+      await sharer.locator('#requests button').first().click();
+      await expect(reader.locator('#panel')).toContainText(SECRET, { timeout: 60_000 });
+      await reader.locator('#mode-src').click();
+      await sharer.evaluate(() => {
+        const original = Blob.prototype.arrayBuffer;
+        let reads = 0;
+        Blob.prototype.arrayBuffer = async function () {
+          reads += 1;
+          if (reads !== 2) return original.call(this);
+          Blob.prototype.arrayBuffer = original;
+          const bytes = await original.call(this);
+          await new Promise<void>((resolve) => {
+            (window as any).releaseRecoveryFile = resolve;
+            (window as any).recoveryFileHeld = true;
+          });
+          return bytes;
+        };
+      });
+      const downloads: string[] = [];
+      reader.on('download', (download) => downloads.push(download.suggestedFilename()));
+      await expect(reader.locator('#filelist .filerow')).toHaveCount(1);
+      const partial = await rowDownload(reader.locator('#filelist .filerow'));
+      const downloadLabel = (await partial.textContent()) ?? '';
+      await partial.click();
+      await expect.poll(() => sharer.evaluate(() => Boolean((window as any).recoveryFileHeld))).toBe(true);
+      await expect(partial).toContainText(/%/);
+      const before = await reader.evaluate(() => (window as any).shareTextTransports.peers.length);
+      await setForeground(reader, false);
+      await reader.evaluate(() => {
+        const peer = (window as any).shareTextTransports.peers.findLast((pc: RTCPeerConnection) => pc.connectionState === 'connected');
+        if (!peer) throw new Error('the connected native reader peer was not observed');
+        peer.close();
+      });
+      await expect(reader.locator('#panel')).not.toContainText(SECRET);
+      await setForeground(reader, true);
+      await expect(reader.locator('#panel')).toContainText(SECRET, { timeout: 60_000 });
+      expect(await reader.evaluate(() => (window as any).shareTextTransports.peers.length)).toBeGreaterThan(before);
+      await expect(reader.locator('#received')).toBeVisible();
+      await expect(reader.locator('#knock')).toHaveValue('Same-page continuation');
+      await expect(sharer.locator('#requests button')).toHaveCount(0);
+      await expect(reader.locator('#consent')).toBeHidden();
+      expect(new URL(reader.url()).searchParams.get('local')).toBe('1');
+      expect(await reader.evaluate(() => (window as any).shareTextTransports.peers.at(-1).getConfiguration().iceServers)).toEqual([]);
+      expect(opened.frames.some((frame) => /"relay"\s*:\s*true/.test(frame))).toBe(false);
+      await sharer.evaluate(() => (window as any).releaseRecoveryFile());
+      await expect(reader.locator('#filelist .filerow')).toHaveCount(1);
+      const fresh = await rowDownload(reader.locator('#filelist .filerow'));
+      await expect(fresh).toHaveText(downloadLabel);
+      expect(downloads).toEqual([]);
+      const [saved] = await Promise.all([reader.waitForEvent('download'), fresh.click()]);
+      expect(fs.readFileSync((await saved.path())!)).toEqual(file);
+
+      const hostBeforeStop = await sharer.evaluate(() => {
+        const sockets: WebSocket[] = (window as any).shareTextTransports.sockets;
+        return { index: sockets.map((ws) => ws.url.includes('role=host') && ws.readyState === WebSocket.OPEN).lastIndexOf(true),
+          count: sockets.filter((ws) => ws.url.includes('role=host')).length };
+      });
+      expect(hostBeforeStop.index).toBeGreaterThanOrEqual(0);
+      await sharer.locator('#stop').click();
+      await expect(reader.locator('#panel')).not.toContainText(SECRET, { timeout: 30_000 });
+      await expect(reader.locator('#retryrow')).toBeVisible();
+      // Native close handshakes can outlast the page's terminal control.
+      // The current socket must begin closing; room retirement is checked
+      // separately against the rendezvous rather than inferred from CLOSED.
+      await expect.poll(() => sharer.evaluate((index) => (window as any).shareTextTransports.sockets[index].readyState,
+        hostBeforeStop.index)).toBeGreaterThanOrEqual(2);
+      await waitForVacantRoom(sharer, code);
+      const stopped = await reader.evaluate(() => ({ peers: (window as any).shareTextTransports.peers.length,
+        sockets: (window as any).shareTextTransports.sockets.length }));
+      await setForeground(reader, false);
+      await setForeground(reader, true);
+      await reader.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+      await setForeground(sharer, false);
+      await setForeground(sharer, true);
+      await sharer.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+      expect(await sharer.evaluate(() => (window as any).shareTextTransports.sockets
+        .filter((ws: WebSocket) => ws.url.includes('role=host')).length)).toBe(hostBeforeStop.count);
+      const replacement = 'A-NEW-PRIVATE-SHARE-IS-NOT-THE-OLD-ADMISSION';
+      await sharer.locator('#text').fill(replacement);
+      await sharer.locator('#publish').click();
+      await expect(sharer.locator('#stop')).toBeVisible();
+      replacementReader = (await readerFor(browser, link)).page;
+      await replacementReader.locator('#connect').click();
+      await expect(replacementReader.locator('#knockrow')).toBeVisible({ timeout: 60_000 });
+      await expect(replacementReader.locator('#panel')).not.toContainText(replacement);
+      // Longer than the recovery delay: a late queued retry must not dial
+      // the new share under the old name or silently reuse its old admission.
+      await reader.waitForTimeout(6500);
+      expect(await reader.evaluate(() => ({ peers: (window as any).shareTextTransports.peers.length,
+        sockets: (window as any).shareTextTransports.sockets.length }))).toEqual(stopped);
+      expect(await sharer.evaluate(() => (window as any).shareTextTransports.sockets
+        .filter((ws: WebSocket) => ws.url.includes('role=host')).length)).toBe(hostBeforeStop.count + 1);
+      await expect(reader.locator('#panel')).not.toContainText(replacement);
+      await expect(sharer.locator('#requests button')).toHaveCount(0);
+    } finally {
+      await context.close();
+      await reader?.context().close();
+      await replacementReader?.context().close();
+    }
+  });
 });
