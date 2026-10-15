@@ -36,6 +36,9 @@ remaining capability and scenario boundaries.
 straight out of the `etoolbox` checkout at test time, the same way its own
 `build.py` avoids a second hand-kept list — add a tool or widen the CSP over
 there and this suite picks it up with nothing to update here.
+Pairing probes and frame capture follow the checked-out source's selected
+development service on local builds and previews, or production service;
+older website checkouts retain their literal endpoint.
 
 ## Setup
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { test, expect, type Browser, type Locator, type Page } from '@playwright/test';
-import { ETOOLBOX_DIR, onProductionDomain } from '../../lib/site';
+import { onProductionDomain } from '../../lib/site';
+import { liveRendezvous } from '../../lib/rendezvous';
 
 /**
  * Tool-level functional tests for Share Text & Files.
@@ -45,17 +45,10 @@ const URL_PATH = '/share-text/';
  * under the site's domain (website#361) - and a copy of the old address in
  * this file meant a probe the page's Content-Security-Policy refused, which
  * WebKit reports by throwing, and six tests failing for a host nobody was
- * connecting to any more. tools/share-text/src/main.js names it in one
- * constant, and the tool's README says that constant is the place it changes.
+ * connecting to any more. Newer sources select a separate service for local
+ * builds and previews; older sources still name their one literal endpoint.
  */
-const RENDEZVOUS_URL = ((): string => {
-  const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools', 'share-text', 'src', 'main.js'), 'utf8');
-  const named = source.match(/^const RENDEZVOUS = '(wss:\/\/[^']+)';/m)?.[1];
-  if (!named) throw new Error('tools/share-text/src/main.js no longer names its rendezvous in `const RENDEZVOUS`');
-  return named;
-})();
-/** Matches a socket to that host, whatever path it opens. */
-const RENDEZVOUS = new RegExp(new URL(RENDEZVOUS_URL).host.replace(/[.]/g, '\\.'));
+const RENDEZVOUS_URL = liveRendezvous('tools/share-text/src/main.js');
 
 /** Long, unmistakable, and not a word the page would produce on its own. */
 const SECRET = 'QAcanary-7f3e91d4-the-quick-brown-fox-jumps-over-42-lazy-dogs';
@@ -73,7 +66,7 @@ const codeWord = (): string => `qa-${Date.now().toString(36)}-${Math.random().to
 function captureRendezvous(page: Page): string[] {
   const frames: string[] = [];
   page.on('websocket', (socket) => {
-    if (!RENDEZVOUS.test(socket.url())) return;
+    if (new URL(socket.url()).origin !== RENDEZVOUS_URL) return;
     const keep = (payload: string | Buffer) => {
       frames.push(typeof payload === 'string' ? payload : payload.toString('binary'));
     };
