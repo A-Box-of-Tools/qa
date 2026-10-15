@@ -13,6 +13,8 @@ export async function tabHooks(context: BrowserContext, options: {
     const state = (window as any).__tabQA = {
       captures: [] as any[], userMedia: 0, tracks: [] as MediaStreamTrack[],
       peers: [] as RTCPeerConnection[], channels: [] as RTCDataChannel[], received: [] as MediaStreamTrack[],
+      localCandidateTypes: [] as string[], addedCandidateTypes: [] as string[],
+      remoteDescriptions: [] as { type: string; media: string[]; candidates: string[] }[],
       sockets: [] as any[], controls: [] as { type: string; peer: number }[],
       signals: [] as { type: string; media: string[]; relay: boolean; noteLeaked: boolean }[],
       releaseCapture: null as null | (() => void), releaseAck: null as null | (() => void),
@@ -95,6 +97,18 @@ export async function tabHooks(context: BrowserContext, options: {
     window.RTCPeerConnection = new Proxy(NativePeer, { construct(target, args) {
       const peer = Reflect.construct(target, args) as RTCPeerConnection, index = state.peers.length;
       state.peers.push(peer);
+      peer.addEventListener('icecandidate', (event) => { if (event.candidate) state.localCandidateTypes.push(event.candidate.type ?? 'unknown'); });
+      const remote = peer.setRemoteDescription.bind(peer), candidate = peer.addIceCandidate.bind(peer);
+      peer.setRemoteDescription = (description) => {
+        state.remoteDescriptions.push({ type: description!.type,
+          media: description!.sdp?.match(/^m=\w+/gm)?.map((value: string) => value.slice(2)) ?? [],
+          candidates: [...(description!.sdp?.matchAll(/^a=candidate:[^\r\n]*\styp\s+(\w+)/gm) ?? [])].map((match) => match[1]) });
+        return remote(description);
+      };
+      peer.addIceCandidate = (value) => {
+        if (value?.candidate) state.addedCandidateTypes.push(value.candidate.match(/\styp\s+(\w+)/)?.[1] ?? 'unknown');
+        return candidate(value);
+      };
       peer.addEventListener('track', (event) => state.received.push(event.track));
       peer.addEventListener('datachannel', (event) => observeChannel(event.channel, index, true));
       const create = peer.createDataChannel.bind(peer);
@@ -124,14 +138,15 @@ export async function tabHooks(context: BrowserContext, options: {
 }
 
 /** Opaque room routing only; this stand-in never creates SDP, peers or media. */
-export function tabBroker({ holdDescriptions = false, relay = 'unavailable', privateNotes = [] }: {
-  holdDescriptions?: boolean; relay?: 'unavailable' | 'configured'; privateNotes?: string[];
+export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = false, privateNotes = [] }: {
+  holdDescriptions?: boolean; injectNonHostCandidates?: boolean; privateNotes?: string[];
 } = {}) {
   const endpoint = liveRendezvous('tools/share-tab/src/session.js');
   type Client = { page: Page; socket: number; code: string; role: string; id: string; ready: boolean };
   type Room = { host?: Client; viewers: Map<string, Client>; queue: Promise<void> };
   const rooms = new Map<string, Room>(), clients = new Map<Page, Map<number, Client>>(); let serial = 0;
-  const observed = { urls: [] as string[], relayRequests: 0, descriptions: [] as { type: string; media: string[] }[], noteLeaked: false };
+  const observed = { urls: [] as string[], relayRequests: 0, injectedCandidates: 0,
+    candidates: [] as string[], descriptions: [] as { type: string; media: string[] }[], noteLeaked: false };
   const roomFor = (code: string) => { if (!rooms.has(code)) rooms.set(code, { viewers: new Map(), queue: Promise.resolve() }); return rooms.get(code)!; };
   const message = async (client: Client, data: unknown) => {
     if (!client.page.isClosed()) await client.page.evaluate(({ socket, data }) => (window as any).__tabQA.sockets[socket]?.receive(data), { socket: client.socket, data });
@@ -183,19 +198,28 @@ export function tabBroker({ holdDescriptions = false, relay = 'unavailable', pri
         const envelope = JSON.parse(raw);
         if (envelope.relay === true) {
           observed.relayRequests++;
-          await message(client, { type: 'relay', iceServers: relay === 'configured' ? [{
-            urls: ['turn:127.0.0.1:9?transport=udp'], username: 'qa-supplied-not-a-service', credential: 'qa-supplied-not-a-service',
-          }] : [] });
-          return;
+          throw new Error('Share Tab must not request an internet relay');
         }
         const description = envelope.data?.description;
         if (description) observed.descriptions.push({ type: description.type,
           media: description.sdp.match(/^m=\w+/gm)?.map((value: string) => value.slice(2)) ?? [] });
         if ('note' in (envelope.data ?? {}) || privateNotes.some((note) => raw.includes(note))) observed.noteLeaked = true;
+        if (envelope.data?.candidate?.candidate) observed.candidates.push(envelope.data.candidate.candidate.match(/\styp\s+(\w+)/)?.[1] ?? 'unknown');
         if (holdDescriptions && description) return;
-        if (client.role === 'host') {
-          const viewer = room.viewers.get(envelope.to); if (viewer) await message(viewer, { type: 'signal', data: envelope.data });
-        } else if (room.host) await message(room.host, { type: 'signal', from: client.id, data: envelope.data });
+        const receiver = client.role === 'host' ? room.viewers.get(envelope.to) : room.host;
+        if (!receiver) return;
+        const frame = (data: unknown) => ({ type: 'signal', ...(client.role === 'viewer' ? { from: client.id } : {}), data });
+        if (injectNonHostCandidates && description) {
+          // Add controlled wire input, never a peer or a replacement native SDP.
+          const foreign = ['srflx', 'relay'].map((type, index) => ({
+            candidate: `candidate:qa${index} 1 udp 1 192.0.2.${index + 1} 12345 typ ${type} raddr 192.0.2.9 rport 12345`,
+            sdpMid: '0', sdpMLineIndex: 0,
+          }));
+          const sdp = description.sdp + foreign.map((value) => `a=${value.candidate}\r\n`).join('');
+          await message(receiver, frame({ ...envelope.data, description: { ...description, sdp } }));
+          for (const candidate of foreign) await message(receiver, frame({ protocol: envelope.data.protocol, candidate }));
+          observed.injectedCandidates += foreign.length * 2;
+        } else await message(receiver, frame(envelope.data));
       });
     });
     await context.exposeBinding('__tabBrokerClose', ({ page }, socket: number) => {
@@ -244,6 +268,42 @@ export async function startTabHost(page: Page) {
   await expect(page.locator('#share-link')).toHaveValue(/#tab-[a-z2-7]{16}$/, { timeout: 20_000 });
   const invitation = await page.locator('#share-link').inputValue();
   return { invitation, code: new URL(invitation).hash.slice(1) };
+}
+
+export async function startOfflineTabHost(page: Page) {
+  await prepareTabPage(page);
+  await page.locator('#pairing-offline').check();
+  await page.locator('#host-start').click();
+  await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
+  await expect(page.locator('#host-invitation')).toBeHidden();
+  return page.locator('#offline-offer').inputValue();
+}
+
+export async function replyOfflineTab(viewer: Page, offer: string, note: string) {
+  await prepareTabPage(viewer);
+  await viewer.locator('#pairing-offline').check();
+  await viewer.locator('#offline-offer-input').fill(offer);
+  await viewer.locator('#viewer-name').fill(note);
+  await viewer.locator('#offline-reply').click();
+  await expect(viewer.locator('#offline-answer')).not.toHaveValue('', { timeout: 20_000 });
+  return viewer.locator('#offline-answer').inputValue();
+}
+
+export async function localTabOnly(...pages: Page[]) {
+  for (const page of pages) expect(await page.evaluate(() => {
+    const state = (window as any).__tabQA;
+    return { iceServers: state.peers.map((peer: RTCPeerConnection) => peer.getConfiguration().iceServers),
+      local: [...new Set(state.localCandidateTypes)], accepted: [...new Set(state.addedCandidateTypes)],
+      descriptions: [...new Set(state.remoteDescriptions.flatMap((description: any) => description.candidates))] };
+  })).toEqual({ iceServers: expect.arrayContaining([[]]), local: ['host'],
+    accepted: expect.not.arrayContaining(['srflx', 'prflx', 'relay', 'unknown']),
+    descriptions: expect.not.arrayContaining(['srflx', 'prflx', 'relay', 'unknown']) });
+  for (const page of pages) expect(await page.evaluate(() => (window as any).__tabQA.peers
+    .every((peer: RTCPeerConnection) => peer.getConfiguration().iceServers?.length === 0))).toBe(true);
+}
+
+export async function noTabSockets(...pages: Page[]) {
+  for (const page of pages) expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(0);
 }
 
 export async function requestTab(page: Page, code: string, note: string) {

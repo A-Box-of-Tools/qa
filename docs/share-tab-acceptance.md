@@ -29,10 +29,18 @@ creates SDP nor grants approval. These cases verify:
   track's ended event and explicit Stop retire capture and peers; foreground
   notifications never request capture again. Starting again requires a click
   and a fresh invitation.
-- A controlled connection failure exposes relay retry without requesting it
-  automatically. Clicking retry starts a fresh attempt. An unavailable reply
-  fails visibly; supplied dummy credentials demonstrate relay-only viewer
-  configuration, not a successful TURN connection or relayed media.
+- Both pairing methods construct peers with no ICE servers. A controlled
+  failure stays terminal, with no automatic retry or internet relay control.
+  Injected server-reflexive and relay candidates in both SDP and trickle
+  traffic are removed before reaching the native peer, while the untouched
+  native host candidates still establish moving video.
+- Offline mode exchanges real gathered data-only offers and replies through
+  the visible text fields and native file download/upload controls. It
+  constructs no WebSocket, and host acceptance still needs a separate approval
+  plus the encrypted acknowledgement before attaching video. Invalid,
+  mismatched, expired and retired exchange blocks grant no media access.
+  The expiry case advances only the host's Date.now at acceptance; it does
+  not wait ten minutes or replace native transport timers.
 
 One callback-ordering regression postpones the local open notification until
 after a real data-channel message. It masks readyState only during application
@@ -47,9 +55,9 @@ both an older literal endpoint and the shared production/preview selector,
 and checks the actual socket origin against that source contract. It fails
 if the deployed worker rejects the
 `share-tab` namespace, and checks that the private introduction note stays out
-of introduction traffic. Ordinary attempts preserve the tool's declared STUN
-configuration and must not request TURN. No actual TURN service is simulated
-as successful.
+of introduction traffic. Online and offline attempts must have empty ICE
+server configuration and host-only advertised/accepted candidates. There is
+no STUN/TURN fallback in Share Tab's current contract.
 
 The flowing-video cases run in the Chromium projects. A separate native canvas
 probe must succeed there; a tool error never skips a case. The supplied-picker
@@ -63,8 +71,8 @@ physical LAN reachability, corporate policies or phone interoperability.
 
 ## Physical acceptance before release
 
-Record exact browser/OS versions, host and viewer roles, network topology,
-candidate types and whether a relay was explicitly selected. Keep failures in
+Record exact browser/OS versions, host and viewer roles, network topology and
+candidate types. Keep failures in
 the record even if changing networks or restarting fixes the next attempt.
 
 1. On a desktop browser, use the real browser picker. Cancel it, refuse it,
@@ -85,10 +93,14 @@ the record even if changing networks or restarting fixes the next attempt.
    button, tool Stop, tab closing and Wi-Fi loss. Confirm indicators, tracks
    and remote video end as appropriate. Returning never opens a picker;
    starting again requires a deliberate click and fresh invitation.
-5. Check an ordinary direct path separately from an explicitly selected,
-   configured real TURN path. Require actual selected relay candidates for
-   a TURN claim. Test unavailable credentials and restrictive/corporate or
-   isolated networks. A same-runner native pass cannot establish those routes.
+5. Exercise online pairing and offline text/file exchange on a reachable
+   Wi-Fi, Ethernet or hotspot with separate devices. For offline acceptance,
+   first install/cache the real page, disconnect internet and exchange the
+   blocks through a local method. Verify reload, current-block expiry and
+   old replies after Stop. The automated cases keep the website HTTP origin
+   available and do not establish offline cache or physical file-transfer
+   behavior. Test isolated/corporate networks, VPNs and local-network browser
+   permission refusal; neither mode supplies a network or an internet relay.
 
 Screenshots are not required for this QA-only change: it changes no website
 interface. CI runs the tests; no local suite is part of this workflow.

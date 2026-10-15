@@ -1,10 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { liveRendezvous } from '../../lib/rendezvous';
 import {
   tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
+  startOfflineTabHost, replyOfflineTab, localTabOnly, noTabSockets,
   noTabMedia, flowingTab, stoppedTab, type CaptureMode,
 } from '../../lib/share-tab';
 
@@ -36,8 +38,7 @@ async function directFailure(viewer: Page) {
     Object.defineProperty(peer, 'connectionState', { configurable: true, get: () => 'failed' });
     peer.dispatchEvent(new Event('connectionstatechange'));
   });
-  await expect(viewer.locator('#relay-panel')).toBeVisible();
-  await expect(viewer.locator('#viewer-status')).toContainText('could not establish a direct connection');
+  await expect(viewer.locator('#viewer-status')).toContainText('There is no internet relay');
   expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].signalingState)).toBe('closed');
 }
 
@@ -75,11 +76,13 @@ test.describe('share-tab: picker and terminal intent', () => {
     });
   }
 
-  test('Stop retires a pending picker and closes its late grant without recapturing', async ({ page, context }) => {
+  for (const offline of [false, true]) test(`Stop retires a pending ${offline ? 'offline' : 'online'} picker and closes its late grant without recapturing`, async ({ page, context }) => {
     test.skip(!await page.evaluate(() => typeof HTMLCanvasElement.prototype.captureStream === 'function'),
       'This engine has no independent native canvas track for the supplied picker result.');
     await tabHooks(context, { capture: 'pending' }); await tabBroker().install(context);
-    await prepareTabPage(page); await page.locator('#host-start').click();
+    await prepareTabPage(page);
+    if (offline) await page.locator('#pairing-offline').check();
+    await page.locator('#host-start').click();
     await expect.poll(() => page.evaluate(() => typeof (window as any).__tabQA.releaseCapture)).toBe('function');
     await page.locator('#host-stop').click();
     await expect(page.locator('#host-stop')).toBeHidden();
@@ -149,8 +152,9 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       const state = (window as any).__tabQA;
       return { kinds: state.peers[0].getSenders().map((sender: RTCRtpSender) => sender.track?.kind).filter(Boolean),
         audio: state.captures[0].audio, userMedia: state.userMedia,
-        turn: state.peers[0].getConfiguration().iceServers.some((server: RTCIceServer) => /turns?:/.test(String(server.urls))) };
-    })).toEqual({ kinds: ['video'], audio: false, userMedia: 0, turn: false });
+        iceServers: state.peers[0].getConfiguration().iceServers };
+    })).toEqual({ kinds: ['video'], audio: false, userMedia: 0, iceServers: [] });
+    await localTabOnly(page, viewer);
     expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].getSenders().every((sender: RTCRtpSender) => !sender.track))).toBe(true);
     expect(broker.observed.relayRequests).toBe(0);
     expect(broker.observed.noteLeaked).toBe(false);
@@ -258,36 +262,129 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await page.locator('#host-stop').click(); await stoppedTab(page, true);
   });
 
-  for (const relay of ['unavailable', 'configured'] as const) {
-    test(`direct failure keeps relay opt-in and a ${relay} relay reply uses no old consent`, async ({ page, context }) => {
-      const broker = tabBroker({ holdDescriptions: true, relay }); await tabHooks(context); await broker.install(context);
-      const { code } = await startTabHost(page), viewer = await context.newPage();
-      await requestTab(viewer, code, 'Relay decision'); await directFailure(viewer);
-      expect(broker.observed.relayRequests).toBe(0);
-      expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].getConfiguration().iceServers
-        .every((server: RTCIceServer) => !String(server.urls).match(/turns?:/)))).toBe(true);
-      expect(await viewer.evaluate(() => (window as any).__tabQA.received.length)).toBe(0);
-      await viewer.locator('#viewer-relay').click();
-      await expect.poll(() => broker.observed.relayRequests).toBe(1);
-      if (relay === 'unavailable') {
-        await expect(viewer.locator('#viewer-status')).toContainText('relay is unavailable');
-        expect(await viewer.evaluate(() => (window as any).__tabQA.peers.length)).toBe(1);
-      } else {
-        await expect.poll(() => viewer.evaluate(() => (window as any).__tabQA.peers.length)).toBe(2);
-        expect(await viewer.evaluate(() => {
-          const state = (window as any).__tabQA, current = state.peers[1];
-          return { fresh: current !== state.peers[0], policy: current.getConfiguration().iceTransportPolicy,
-            urls: current.getConfiguration().iceServers.flatMap((server: RTCIceServer) => server.urls)
-              .filter((url: string) => /^turns?:/.test(url)), received: state.received.length,
-            commands: state.controls.map((item: any) => item.type) };
-        })).toEqual({ fresh: true, policy: 'relay', urls: ['turn:127.0.0.1:9?transport=udp'], received: 0, commands: [] });
-        await viewer.locator('#viewer-stop').click();
-      }
-      await expect(viewer.locator('#relay-panel')).toBeHidden();
-      await page.locator('#host-stop').click(); await stoppedTab(page, true);
-      expect(await viewer.evaluate(() => (window as any).__tabQA.captures.length)).toBe(0);
-    });
-  }
+  test('local connection failure stays terminal without address discovery or an internet relay', async ({ page, context }) => {
+    const broker = tabBroker({ holdDescriptions: true }); await tabHooks(context); await broker.install(context);
+    const { code } = await startTabHost(page), viewer = await context.newPage();
+    await requestTab(viewer, code, 'Local connection failure'); await directFailure(viewer);
+    await foreground(viewer);
+    expect(await viewer.evaluate(() => {
+      const state = (window as any).__tabQA;
+      return { peers: state.peers.length, servers: state.peers[0].getConfiguration().iceServers,
+        received: state.received.length, captures: state.captures.length, sockets: state.sockets.length };
+    })).toEqual({ peers: 1, servers: [], received: 0, captures: 0, sockets: 1 });
+    await expect(viewer.locator('#viewer-relay, #relay-panel')).toHaveCount(0);
+    expect(broker.observed.relayRequests).toBe(0);
+    await page.locator('#host-stop').click(); await stoppedTab(page, true);
+  });
+
+  test('non-host candidates in SDP and trickle are filtered while native local video still flows', async ({ page, context }) => {
+    const broker = tabBroker({ injectNonHostCandidates: true }); await tabHooks(context); await broker.install(context);
+    const { code } = await startTabHost(page), viewer = await context.newPage();
+    await requestTab(viewer, code, 'Host candidates only');
+    await approve(page, viewer, 'Host candidates only');
+    await localTabOnly(page, viewer);
+    expect(broker.observed.injectedCandidates).toBeGreaterThanOrEqual(8);
+    expect(broker.observed.candidates.length).toBeGreaterThan(0);
+    expect(broker.observed.candidates.every((type) => type === 'host')).toBe(true);
+    expect(broker.observed.relayRequests).toBe(0);
+    await page.locator('#host-stop').click(); await stoppedTab(viewer); await stoppedTab(page, true);
+  });
+
+  test('offline block exchange still needs approval plus ACK before native video and Stop retires the exchange', async ({ page, context }) => {
+    await tabHooks(context, { holdAck: true, live: true });
+    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
+    const answer = await replyOfflineTab(viewer, offer, 'Offline approval boundary');
+    for (const block of [offer, answer]) {
+      const parsed = JSON.parse(block);
+      expect(parsed.format).toBe('share-tab-offline-v1');
+      expect(parsed.description.sdp.match(/^m=\w+/gm)).toEqual(['m=application']);
+      expect([...parsed.description.sdp.matchAll(/^a=candidate:[^\r\n]*\styp\s+(\w+)/gm)].map((match: RegExpMatchArray) => match[1]))
+        .toEqual(expect.arrayContaining(['host']));
+    }
+    await noTabMedia(page, viewer); await noTabSockets(page, viewer);
+    await page.locator('#offline-answer-input').fill(answer); await page.locator('#offline-accept').click();
+    const row = requestRow(page, 'Offline approval boundary'); await expect(row).toBeVisible({ timeout: 20_000 });
+    await noTabMedia(page, viewer);
+    await row.locator('[data-action="host.approve"]').click();
+    await expect.poll(() => viewer.evaluate(() => (window as any).__tabQA.ackHeld)).toBe(true);
+    await noTabMedia(page, viewer);
+    await viewer.evaluate(() => (window as any).__tabQA.releaseAck());
+    await flowingTab(viewer); await localTabOnly(page, viewer); await noTabSockets(page, viewer);
+    await expect(page.locator('#offline-accept')).toBeDisabled();
+    expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].getSenders().every((sender: RTCRtpSender) => !sender.track))).toBe(true);
+    await page.locator('#host-stop').click(); await stoppedTab(page, true); await stoppedTab(viewer);
+    await foreground(page); await foreground(viewer); await noTabSockets(page, viewer);
+    await expect(page.locator('#offline-offer')).toHaveValue('');
+    await expect(page.locator('#offline-answer-input')).toHaveValue('');
+    expect(await page.evaluate(() => [(window as any).__tabQA.captures.length, (window as any).__tabQA.peers.length])).toEqual([1, 1]);
+    expect(await viewer.evaluate(() => [(window as any).__tabQA.captures.length, (window as any).__tabQA.peers.length])).toEqual([0, 1]);
+  });
+
+  test('offline host and reply files round-trip complete native blocks without a WebSocket', async ({ page, context }) => {
+    await tabHooks(context, { live: true });
+    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
+    const hostDownload = page.waitForEvent('download'); await page.locator('#save-offer').click();
+    const offerFile = await hostDownload; expect(offerFile.suggestedFilename()).toBe('tab-offer.json');
+    const offerBytes = await readFile((await offerFile.path())!); expect(offerBytes.toString('utf8')).toBe(offer);
+    await prepareTabPage(viewer); await viewer.locator('#pairing-offline').check();
+    const offerChooser = viewer.waitForEvent('filechooser'); await viewer.locator('#choose-offer').click();
+    await (await offerChooser).setFiles({ name: 'tab-offer.json', mimeType: 'application/json', buffer: offerBytes });
+    await expect(viewer.locator('#offline-offer-input')).toHaveValue(offer);
+    await viewer.locator('#viewer-name').fill('Offline file viewer'); await viewer.locator('#offline-reply').click();
+    await expect(viewer.locator('#offline-answer')).not.toHaveValue('', { timeout: 20_000 });
+    const answer = await viewer.locator('#offline-answer').inputValue();
+    const replyDownload = viewer.waitForEvent('download'); await viewer.locator('#save-answer').click();
+    const answerFile = await replyDownload; expect(answerFile.suggestedFilename()).toBe('tab-answer.json');
+    const answerBytes = await readFile((await answerFile.path())!); expect(answerBytes.toString('utf8')).toBe(answer);
+    const answerChooser = page.waitForEvent('filechooser'); await page.locator('#choose-answer').click();
+    await (await answerChooser).setFiles({ name: 'tab-answer.json', mimeType: 'application/json', buffer: answerBytes });
+    await expect(page.locator('#offline-answer-input')).toHaveValue(answer);
+    await page.locator('#offline-accept').click(); await noTabMedia(page, viewer);
+    await approve(page, viewer, 'Offline file viewer'); await localTabOnly(page, viewer); await noTabSockets(page, viewer);
+    await viewer.locator('#viewer-stop').click(); await stoppedTab(viewer);
+    await expect(page.locator('#host-stop')).toBeHidden(); await stoppedTab(page, true);
+    await foreground(page); await foreground(viewer); await noTabSockets(page, viewer);
+  });
+
+  test('invalid, mismatched and retired offline blocks never grant viewing consent', async ({ page, context }) => {
+    await tabHooks(context, { live: true });
+    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
+    await prepareTabPage(viewer); await viewer.locator('#pairing-offline').check();
+    for (const invalid of ['not-json', JSON.stringify({ format: 'share-tab-offline-v1' })]) {
+      await viewer.locator('#offline-offer-input').fill(invalid); await viewer.locator('#offline-reply').click();
+      await expect(viewer.locator('#viewer-status')).toContainText('host block is incomplete or unsupported');
+      expect(await viewer.evaluate(() => [(window as any).__tabQA.peers.length, (window as any).__tabQA.captures.length])).toEqual([0, 0]);
+    }
+    const answer = await replyOfflineTab(viewer, offer, 'Unapproved offline viewer');
+    const mismatch = JSON.parse(answer); mismatch.session = mismatch.session === '0'.repeat(32) ? '1'.repeat(32) : '0'.repeat(32);
+    for (const invalid of ['not-json', offer, JSON.stringify(mismatch)]) {
+      await page.locator('#offline-answer-input').fill(invalid); await page.locator('#offline-accept').click();
+      await expect(page.locator('#offline-accept-status')).toContainText('reply does not match this connection');
+      await expect(page.locator('#offline-accept')).toBeEnabled();
+      await expect(page.locator('#viewer-requests li')).toHaveCount(0); await noTabMedia(page, viewer);
+    }
+    await page.locator('#host-stop').click(); await stoppedTab(page, true);
+    await page.locator('#host-start').click(); await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
+    expect(JSON.parse(await page.locator('#offline-offer').inputValue()).session).not.toBe(JSON.parse(offer).session);
+    await page.locator('#offline-answer-input').fill(answer); await page.locator('#offline-accept').click();
+    await expect(page.locator('#offline-accept-status')).toContainText('reply does not match this connection');
+    await noTabMedia(page, viewer); await noTabSockets(page, viewer);
+    await page.locator('#host-stop').click(); await viewer.locator('#viewer-stop').click();
+    await stoppedTab(page, true); await stoppedTab(viewer);
+  });
+
+  test('an offline reply accepted after the host deadline is refused without media', async ({ page, context }) => {
+    await tabHooks(context, { live: true });
+    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
+    const answer = await replyOfflineTab(viewer, offer, 'Expired offline viewer');
+    await page.evaluate((expires) => { Date.now = () => expires + 1; }, JSON.parse(offer).expires);
+    await page.locator('#offline-answer-input').fill(answer); await page.locator('#offline-accept').click();
+    await expect(page.locator('#offline-accept-status')).toContainText('expired');
+    await expect(page.locator('#viewer-requests li')).toHaveCount(0);
+    await noTabMedia(page, viewer); await noTabSockets(page, viewer);
+    await page.locator('#host-stop').click(); await viewer.locator('#viewer-stop').click();
+    await stoppedTab(page, true); await stoppedTab(viewer);
+  });
 
   test('the live rendezvous admits the Share Tab namespace and carries setup while native video advances', async ({ page, context }) => {
     const endpoint = liveRendezvous('tools/share-tab/src/session.js');
@@ -307,6 +404,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       }))).toEqual([{ origin: endpoint, tool: 'share-tab', path: true }]);
       expect(await side.evaluate(() => (window as any).__tabQA.signals.some((item: any) => item.noteLeaked || item.relay))).toBe(false);
     }
+    await localTabOnly(page, viewer);
     await viewer.locator('#viewer-stop').click(); await stoppedTab(viewer);
     await expect(page.locator('#accepted-panel')).toBeHidden();
     await page.locator('#host-stop').click(); await stoppedTab(page, true);
