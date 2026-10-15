@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { SYMBOL_SETS, LOOKALIKES } from '../../lib/password-generator';
+import { SYMBOL_SETS, LOOKALIKES, longWordIndices } from '../../lib/password-generator';
 import { quiet } from '../../lib/engine';
 
 /**
@@ -20,6 +20,7 @@ import { quiet } from '../../lib/engine';
  */
 
 const URL_PATH = '/password-generator/';
+const LOWERCASE_WORD = '[a-z]+(?:-[a-z]+)*';
 
 /** Range inputs can't be filled like a text box; set and fire the event the page listens for. */
 async function setRange(page: Page, id: string, value: number): Promise<void> {
@@ -39,6 +40,32 @@ async function allResults(page: Page): Promise<string[]> {
   const first = await secret(page);
   const rest = await page.locator('#batch li').allTextContents();
   return [first, ...rest];
+}
+
+/** Exercise the real generation handler with known words and independent separator draws. */
+async function knownPassphraseDraws(page: Page, draws: number[]): Promise<number> {
+  return page.evaluate((values) => {
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, 'getRandomValues');
+    let used = 0;
+    Object.defineProperty(crypto, 'getRandomValues', { configurable: true, value(array: Uint32Array) {
+      if (!(array instanceof Uint32Array) || array.length !== 1) {
+        throw new Error('The generator no longer draws one Uint32 value at a time');
+      }
+      const value = values[used++];
+      if (value === undefined) throw new Error('The generator requested an unexpected extra draw');
+      array[0] = value;
+      return array;
+    } });
+    try {
+      const button = document.getElementById('regenerate');
+      if (!(button instanceof HTMLButtonElement)) throw new Error('The regeneration button is missing');
+      button.click();
+      return used;
+    } finally {
+      if (descriptor) Object.defineProperty(crypto, 'getRandomValues', descriptor);
+      else Reflect.deleteProperty(crypto, 'getRandomValues');
+    }
+  }, draws);
 }
 
 /**
@@ -278,7 +305,47 @@ test.describe('password-generator: passphrase mode', () => {
     await page.locator('#separator').selectOption('digit');
     // A random digit between each pair of words - three of them for four
     // words, and each one an actual choice rather than a fixed character.
-    expect(await secret(page)).toMatch(/^[a-z]+[0-9][a-z]+[0-9][a-z]+[0-9][a-z]+$/);
+    expect(await secret(page)).toMatch(new RegExp(`^${LOWERCASE_WORD}(?:[0-9]${LOWERCASE_WORD}){3}$`));
+  });
+
+  test('hyphenated EFF words preserve separators and capitalisation', async ({ page }) => {
+    const words = ['drop-down', 'felt-tip', 't-shirt', 'yo-yo'];
+    const indices = longWordIndices(words);
+    await setRange(page, 'words', words.length);
+    await setRange(page, 'count', 1);
+    await page.locator('#list').selectOption('long');
+    await page.locator('#capitals').selectOption('lower');
+    await page.locator('#add-digit').uncheck();
+    await page.locator('#add-symbol').uncheck();
+
+    for (const [separator, joiner] of [
+      ['space', ' '], ['hyphen', '-'], ['dot', '.'], ['underscore', '_'], ['none', ''],
+    ]) {
+      await page.locator('#separator').selectOption(separator);
+      expect(await knownPassphraseDraws(page, indices), separator).toBe(words.length);
+      await expect(page.locator('#secret'), separator).toHaveText(words.join(joiner));
+    }
+
+    await page.locator('#separator').selectOption('digit');
+    for (const digits of [[2, 7, 4], [9, 0, 6]]) {
+      const draws = [...indices, ...digits];
+      expect(await knownPassphraseDraws(page, draws)).toBe(draws.length);
+      const value = await secret(page);
+      expect(value).toBe(words.reduce((phrase, word, index) => (
+        index === 0 ? word : `${phrase}${digits[index - 1]}${word}`), ''));
+      expect(value.split(/[0-9]/)).toEqual(words);
+      expect(value.match(/[0-9]/g)).toEqual(digits.map(String));
+    }
+
+    await page.locator('#separator').selectOption('space');
+    for (const [style, expected] of [
+      ['title', words.map((word) => word[0].toUpperCase() + word.slice(1)).join(' ')],
+      ['upper', words.join(' ').toUpperCase()],
+    ]) {
+      await page.locator('#capitals').selectOption(style);
+      expect(await knownPassphraseDraws(page, indices), style).toBe(words.length);
+      await expect(page.locator('#secret'), style).toHaveText(expected);
+    }
   });
 
   test('capitalisation is applied as asked', async ({ page }) => {
@@ -293,7 +360,7 @@ test.describe('password-generator: passphrase mode', () => {
     expect(await secret(page)).toBe((await secret(page)).toUpperCase());
 
     await page.locator('#capitals').selectOption('lower');
-    expect(await secret(page)).toMatch(/^[a-z ]+$/);
+    expect(await secret(page)).toMatch(new RegExp(`^${LOWERCASE_WORD}(?: ${LOWERCASE_WORD}){4}$`));
   });
 
   test('an added digit and symbol land on the end', async ({ page }) => {
