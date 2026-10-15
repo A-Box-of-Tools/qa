@@ -1,27 +1,45 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { withoutThirdParties } from '../../lib/engine';
+import { ETOOLBOX_DIR } from '../../lib/site';
+
+const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/share-text/src/main.js'), 'utf8');
+const recoveredHostControls = source.includes('function hostSocket(code) {');
 
 /** The network suite still exercises real peers. This controlled peer stops
  * at the exact stage that those traces stalled, so retry success cannot hide
  * a missing first-message deadline. No fake text goes through a WebSocket. */
-async function controlledPeer(page: Page, alreadyOpen = false): Promise<void> {
+async function controlledPeer(page: Page, alreadyOpen = false, holdHost = false): Promise<void> {
   await withoutThirdParties(page);
-  await page.addInitScript(({ alreadyOpen }) => {
-    const state = { channel: null as any, peer: null as any, sent: [] as string[] };
+  await page.addInitScript(({ alreadyOpen, holdHost }) => {
+    const state = { channel: null as any, peer: null as any, sent: [] as string[], hosts: [] as any[] };
     (window as any).__shareRecovery = state;
     class Socket {
       readyState = 1;
       onopen: any;
       onmessage: any;
       onclose: any;
-      constructor() {
+      onerror: any;
+      url: string;
+      constructor(url: string | URL) {
+        this.url = String(url);
+        if (new URL(this.url).searchParams.get('role') === 'host') {
+          state.hosts.push(this);
+          if (holdHost) { this.readyState = 0; return; }
+        }
         setTimeout(() => {
-          this.onopen?.({});
+          this.open();
           this.onmessage?.({ data: JSON.stringify({ type: 'ready' }) });
         }, 0);
       }
+      open() { this.readyState = 1; this.onopen?.({}); }
+      fail() { this.onerror?.({}); this.readyState = 3; this.onclose?.({ code: 1006 }); }
       send() {}
-      close() { this.readyState = 3; this.onclose?.({ code: 1000 }); }
+      close() {
+        if (this.readyState === 3) return;
+        this.readyState = 3; this.onclose?.({ code: 1000 });
+      }
     }
     class Channel {
       readyState = alreadyOpen ? 'open' : 'connecting';
@@ -57,8 +75,57 @@ async function controlledPeer(page: Page, alreadyOpen = false): Promise<void> {
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: Socket });
     Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: Peer });
-  }, { alreadyOpen });
+  }, { alreadyOpen, holdHost });
 }
+
+test('share-text: recovery after an initial socket failure exposes the link and Stop, which stays terminal', async ({ page }) => {
+  test.skip(!recoveredHostControls, 'This website source predates host controls being initialized on every successful socket opening.');
+  await controlledPeer(page, false, true);
+  await page.clock.install();
+  await page.goto('/share-text/');
+  await page.locator('#code').fill('qa-initial-host-retry');
+  await page.locator('#private').check();
+  await page.locator('#local').check();
+  await page.locator('#discoverable').uncheck();
+  await page.locator('#publish').click();
+  await expect(page.locator('#link')).toHaveValue('');
+  await expect(page.locator('#stop')).toBeHidden();
+  expect(await page.evaluate(() => (window as any).__shareRecovery.hosts.length)).toBe(1);
+  await page.evaluate(() => (window as any).__shareRecovery.hosts[0].fail());
+  await page.clock.fastForward(5_100);
+  expect(await page.evaluate(() => (window as any).__shareRecovery.hosts.length)).toBe(2);
+  const urls = await page.evaluate(() => (window as any).__shareRecovery.hosts.map((socket: any) => socket.url));
+  expect(urls[1]).toBe(urls[0]);
+  await page.evaluate(() => (window as any).__shareRecovery.hosts[1].open());
+  const link = new URL(page.url()); link.searchParams.set('local', '1'); link.hash = 'qa-initial-host-retry';
+  await expect(page.locator('#link')).toHaveValue(link.href);
+  await expect(page.locator('#linkrow')).toBeVisible();
+  await expect(page.locator('#stop')).toBeVisible();
+  await expect(page.locator('#publish')).toBeHidden();
+  await expect(page.locator('#private')).toBeChecked();
+  await expect(page.locator('#local')).toBeChecked();
+  expect(await page.evaluate(() => (window as any).__shareRecovery.peer)).toBeNull();
+
+  // Stop must cancel a queued retry and fence an already-queued old open event.
+  await page.evaluate(() => {
+    const state = (window as any).__shareRecovery;
+    state.lateOpen = state.hosts[1].onopen;
+    state.hosts[1].fail();
+  });
+  await page.locator('#stop').click();
+  await page.evaluate(() => {
+    (window as any).__shareRecovery.lateOpen({});
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('pageshow'));
+    window.dispatchEvent(new Event('online'));
+  });
+  await page.clock.fastForward(60_100);
+  await expect(page.locator('#publish')).toBeVisible();
+  await expect(page.locator('#stop')).toBeHidden();
+  await expect(page.locator('#linkrow')).toBeHidden();
+  expect(await page.evaluate(() => (window as any).__shareRecovery.hosts.map((socket: any) => socket.readyState))).toEqual([3, 3]);
+  expect(await page.evaluate(() => (window as any).__shareRecovery.peer)).toBeNull();
+});
 
 test('share-text: an open channel without its first message ends with a fresh retry', async ({ page }) => {
   await controlledPeer(page);
