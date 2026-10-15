@@ -549,7 +549,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible({ timeout: 20_000 });
     await page.locator('#host-stop').click(); await stoppedTab(page, true); await stoppedTab(viewer);
     await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toHaveCount(0, { timeout: 20_000 });
-    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    await expect.poll(() => page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
     await foreground(page);
     expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(2);
     await observer.locator('#discovery-close').click();
