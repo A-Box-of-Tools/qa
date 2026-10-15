@@ -41,8 +41,11 @@ must send their hello before a response, with no duplicate hello when the
 delayed open callback is replayed. This is a deterministic event-order check,
 not evidence that a particular physical browser produced that order.
 
-The live-worker case uses actual WebSockets to `rendezvous.abox.tools`, native
-peers and advancing video. It fails if the deployed worker rejects the
+The live-worker case uses actual WebSockets to the endpoint selected by the
+checked-out website source, native peers and advancing video. It supports
+both an older literal endpoint and the shared production/preview selector,
+and checks the actual socket origin against that source contract. It fails
+if the deployed worker rejects the
 `share-tab` namespace, and checks that the private introduction note stays out
 of introduction traffic. Ordinary attempts preserve the tool's declared STUN
 configuration and must not request TURN. No actual TURN service is simulated

@@ -1,5 +1,6 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { withoutThirdParties } from './engine';
+import { liveRendezvous } from './rendezvous';
 
 export const SHARE_TAB = '/share-tab/';
 export type CaptureMode = 'allow' | 'denied' | 'cancelled' | 'pending' | 'window' | 'monitor' | 'unknown';
@@ -126,6 +127,7 @@ export async function tabHooks(context: BrowserContext, options: {
 export function tabBroker({ holdDescriptions = false, relay = 'unavailable', privateNotes = [] }: {
   holdDescriptions?: boolean; relay?: 'unavailable' | 'configured'; privateNotes?: string[];
 } = {}) {
+  const endpoint = liveRendezvous('tools/share-tab/src/session.js');
   type Client = { page: Page; socket: number; code: string; role: string; id: string; ready: boolean };
   type Room = { host?: Client; viewers: Map<string, Client>; queue: Promise<void> };
   const rooms = new Map<string, Room>(), clients = new Map<Page, Map<number, Client>>(); let serial = 0;
@@ -153,7 +155,7 @@ export function tabBroker({ holdDescriptions = false, relay = 'unavailable', pri
   const install = async (context: BrowserContext) => {
     await context.exposeBinding('__tabBrokerOpen', ({ page }, socket: number, address: string) => {
       const url = new URL(address), code = url.pathname.split('/').pop()!, role = url.searchParams.get('role')!;
-      if (url.origin !== 'wss://rendezvous.abox.tools' || !/^\/ws\/tab-[a-z2-7]{16}$/.test(url.pathname)
+      if (url.origin !== endpoint || !/^\/ws\/tab-[a-z2-7]{16}$/.test(url.pathname)
           || url.searchParams.get('tool') !== 'share-tab' || !['host', 'viewer'].includes(role)) throw new Error('Unexpected Share Tab room contract');
       observed.urls.push(address);
       const client: Client = { page, socket, code, role, id: `v:${++serial}`, ready: false }, room = roomFor(code);

@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
+import { liveRendezvous } from '../../lib/rendezvous';
 import {
   tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
   noTabMedia, flowingTab, stoppedTab, type CaptureMode,
@@ -289,6 +290,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
   }
 
   test('the live rendezvous admits the Share Tab namespace and carries setup while native video advances', async ({ page, context }) => {
+    const endpoint = liveRendezvous('tools/share-tab/src/session.js');
     const host = new URL(BASE_URL).hostname;
     expect(host === 'localhost' || host === '127.0.0.1' || host === 'abox.tools' || host.endsWith('.abox-preview.pages.dev'),
       'The live worker smoke requires an admitted HTTPS preview or loopback origin').toBe(true);
@@ -301,8 +303,8 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await approve(page, viewer, 'Live namespace private note');
     for (const side of [page, viewer]) {
       expect(await side.evaluate(() => (window as any).__tabQA.sockets.map((socket: WebSocket) => {
-        const url = new URL(socket.url); return { tool: url.searchParams.get('tool'), path: url.pathname.startsWith('/ws/tab-') };
-      }))).toEqual([{ tool: 'share-tab', path: true }]);
+        const url = new URL(socket.url); return { origin: url.origin, tool: url.searchParams.get('tool'), path: url.pathname.startsWith('/ws/tab-') };
+      }))).toEqual([{ origin: endpoint, tool: 'share-tab', path: true }]);
       expect(await side.evaluate(() => (window as any).__tabQA.signals.some((item: any) => item.noteLeaked || item.relay))).toBe(false);
     }
     await viewer.locator('#viewer-stop').click(); await stoppedTab(viewer);
