@@ -60,6 +60,7 @@ test.describe('share-tab: picker and terminal intent', () => {
       await tabHooks(context, { capture: mode });
       await tabBroker().install(context);
       await prepareTabPage(page);
+      await page.locator('#host-discoverable').check();
       await page.locator('#host-start').click();
       await expect(page.locator('#host-status')).toContainText(mode === 'denied' ? 'cancelled or not allowed'
         : mode === 'cancelled' ? 'attempt was stopped' : 'rather than a window or screen');
@@ -81,6 +82,7 @@ test.describe('share-tab: picker and terminal intent', () => {
       'This engine has no independent native canvas track for the supplied picker result.');
     await tabHooks(context, { capture: 'pending' }); await tabBroker().install(context);
     await prepareTabPage(page);
+    await page.locator('#host-discoverable').check();
     if (offline) await page.locator('#pairing-offline').check();
     await page.locator('#host-start').click();
     await expect.poll(() => page.evaluate(() => typeof (window as any).__tabQA.releaseCapture)).toBe('function');
@@ -112,6 +114,51 @@ test.describe('share-tab: picker and terminal intent', () => {
     await expect(page.locator('#capture-support')).toContainText('You can still watch');
     await expect(page.locator('#viewer-connect')).toBeEnabled();
   });
+
+  test('nearby browsing is explicit, selection only fills the code, and offline mode closes discovery', async ({ page, context }) => {
+    const code = 'tab-abcdefghijklmnop';
+    const broker = tabBroker({ discoveryList: [{ code, local: true },
+      { code: 'camera-other-tool', local: true }, { code: 'tab-ponmlkjihgfedcba', local: false }] });
+    await tabHooks(context); await broker.install(context); await prepareTabPage(page);
+    await expect(page.locator('#host-discoverable')).not.toBeChecked();
+    await noTabSockets(page);
+    await page.locator('#discovery-start').click();
+    const choice = page.locator('#discovery-list button').filter({ hasText: code });
+    await expect(choice).toBeVisible();
+    await expect(page.locator('#discovery-list button')).toHaveCount(1);
+    expect(broker.observed.urls.map((value) => new URL(value).pathname)).toEqual(['/discover']);
+    await choice.click();
+    await expect(page.locator('#viewer-code')).toHaveValue(code);
+    await expect(page.locator('#viewer-connect')).toBeFocused();
+    expect(await page.evaluate(() => {
+      const state = (window as any).__tabQA;
+      return [state.peers.length, state.captures.length, state.userMedia];
+    })).toEqual([0, 0, 0]);
+    await page.locator('#discovery-refresh').click();
+    await expect.poll(() => broker.observed.discoveryMessages.some((frame) => frame.refresh === true)).toBe(true);
+    await page.locator('#pairing-offline').check();
+    await expect(page.locator('#discovery-panel')).toBeHidden();
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    await foreground(page);
+    await page.locator('#pairing-online').check();
+    expect(broker.observed.urls).toHaveLength(1);
+    await expect(page.locator('#discovery-list button')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__tabQA.peers.length)).toBe(0);
+    await page.locator('#discovery-start').click();
+    await expect(choice).toBeVisible();
+    await page.locator('#discovery-close').click();
+    await expect(page.locator('#discovery-start')).toBeFocused();
+    await expect(page.locator('#discovery-panel')).toBeHidden();
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    await page.locator('#discovery-start').click(); await expect(choice).toBeVisible();
+    const opened = broker.observed.urls.length;
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    await foreground(page);
+    await expect(page.locator('#discovery-panel')).toBeHidden();
+    await expect(page.locator('#discovery-list button')).toHaveCount(0);
+    expect(broker.observed.urls).toHaveLength(opened);
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+  });
 });
 
 test.describe('share-tab: native pairing, approval and live video', () => {
@@ -128,6 +175,9 @@ test.describe('share-tab: native pairing, approval and live video', () => {
   test('an invitation is idle until Request, and approval plus ACK precede native video', async ({ page, context }) => {
     const broker = tabBroker({ privateNotes: ['ACK boundary viewer'] }); await tabHooks(context, { holdAck: true }); await broker.install(context);
     const { code } = await startTabHost(page), viewer = await context.newPage();
+    await expect(page.locator('#host-discoverable')).not.toBeChecked();
+    expect(broker.observed.urls.some((value) => new URL(value).pathname === '/discover')).toBe(false);
+    expect(new URL(broker.observed.urls[0]).searchParams.has('discover')).toBe(false);
     await prepareTabPage(viewer, code);
     expect(new URL(viewer.url()).pathname).toBe(TOOL);
     expect(await viewer.evaluate(() => {
@@ -176,6 +226,66 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     expect(await viewer.evaluate(() => (window as any).__tabQA.controls.filter((item: any) => item.type === 'hello').length)).toBe(1);
     await approve(page, viewer, 'Open callback ordering');
     await page.locator('#host-stop').click(); await stoppedTab(viewer); await stoppedTab(page, true);
+  });
+
+  test('a discoverable host publishes only after its room lease and late readiness cannot revive Stop', async ({ page, context }) => {
+    const broker = tabBroker({ holdHostReady: true }); await tabHooks(context); await broker.install(context);
+    const observer = await context.newPage(); await prepareTabPage(observer); await observer.locator('#discovery-start').click();
+    const { code } = await startTabHost(page, true);
+    await expect(page.locator('#host-discoverable')).toBeDisabled();
+    await expect(observer.locator('#discovery-list button')).toHaveCount(0);
+    expect(broker.observed.discoveryMessages.some((frame) => frame.publish)).toBe(false);
+    const room = broker.observed.urls.map((value) => new URL(value)).find((url) => url.searchParams.get('role') === 'host')!;
+    expect({ local: room.searchParams.get('local'), discover: room.searchParams.get('discover') }).toEqual({ local: '1', discover: '1' });
+    await broker.releaseHostReady();
+    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible();
+    const publication = broker.observed.discoveryMessages.find((frame) => frame.publish)?.publish;
+    expect(publication).toEqual({ code, lease: expect.any(String) });
+    expect(Object.keys(publication).sort()).toEqual(['code', 'lease']);
+    expect(await page.evaluate(() => (window as any).__tabQA.peers.length)).toBe(0);
+    expect(await page.evaluate(() => {
+      const state = (window as any).__tabQA;
+      const socket = state.sockets.find((item: WebSocket) => new URL(item.url).searchParams.get('role') === 'host');
+      state.queuedHostMessage = socket.onmessage;
+      return typeof state.queuedHostMessage;
+    })).toBe('function');
+    await page.locator('#host-stop').click(); await stoppedTab(page, true);
+    await expect(observer.locator('#discovery-list button')).toHaveCount(0);
+    await expect.poll(() => broker.observed.discoveryMessages.some((frame) => frame.publish === null)).toBe(true);
+    await expect(page.locator('#host-discoverable')).toBeEnabled();
+    const socketsAfterStop = broker.observed.urls.length, publicationsAfterStop = broker.observed.discoveryMessages.filter((frame) => frame.publish).length;
+    await page.evaluate((publication) => {
+      // Deliver an already-queued readiness callback even after socket closure.
+      (window as any).__tabQA.queuedHostMessage(new MessageEvent('message', {
+        data: JSON.stringify({ type: 'host-ready', discovery: { ...publication, tool: 'share-tab' } }),
+      }));
+    }, publication);
+    await foreground(page); await observer.locator('#discovery-refresh').click();
+    await expect(observer.locator('#discovery-list button')).toHaveCount(0);
+    expect(broker.observed.urls).toHaveLength(socketsAfterStop);
+    expect(broker.observed.discoveryMessages.filter((frame) => frame.publish)).toHaveLength(publicationsAfterStop);
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+  });
+
+  for (const ending of ['capture ended', 'room failed']) test(`nearby publication withdraws when ${ending} without automatic republishing`, async ({ page, context }) => {
+    const broker = tabBroker(); await tabHooks(context); await broker.install(context);
+    const { code } = await startTabHost(page, true), observer = await context.newPage();
+    await prepareTabPage(observer); await observer.locator('#discovery-start').click();
+    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible();
+    if (ending === 'room failed') await broker.failHost(page);
+    else await page.evaluate(() => {
+      const track = (window as any).__tabQA.tracks[0] as MediaStreamTrack;
+      track.stop(); track.dispatchEvent(new Event('ended'));
+    });
+    await stoppedTab(page, true);
+    await expect(observer.locator('#discovery-list button')).toHaveCount(0);
+    const opened = broker.observed.urls.length, publications = broker.observed.discoveryMessages.filter((frame) => frame.publish).length;
+    await foreground(page); await observer.locator('#discovery-refresh').click();
+    await expect(observer.locator('#discovery-list button')).toHaveCount(0);
+    expect(broker.observed.urls).toHaveLength(opened);
+    expect(broker.observed.discoveryMessages.filter((frame) => frame.publish)).toHaveLength(publications);
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    expect(await page.evaluate(() => (window as any).__tabQA.captures.length)).toBe(1);
   });
 
   test('pending viewers remain private, denial is terminal, and changing the sole viewer needs fresh approval', async ({ page, context }) => {
@@ -386,27 +496,62 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await stoppedTab(page, true); await stoppedTab(viewer);
   });
 
-  test('the live rendezvous admits the Share Tab namespace and carries setup while native video advances', async ({ page, context }) => {
+  test('live nearby discovery selects a code but Request, approval and ACK still precede native video', async ({ page, context }) => {
     const endpoint = liveRendezvous('tools/share-tab/src/session.js');
     const host = new URL(BASE_URL).hostname;
     expect(host === 'localhost' || host === '127.0.0.1' || host === 'abox.tools' || host.endsWith('.abox-preview.pages.dev'),
       'The live worker smoke requires an admitted HTTPS preview or loopback origin').toBe(true);
-    await tabHooks(context, { live: true });
-    const { code } = await startTabHost(page), viewer = await context.newPage();
+    await tabHooks(context, { live: true, holdAck: true });
+    const { code } = await startTabHost(page, true), viewer = await context.newPage();
     await page.evaluate(() => { (window as any).__tabQA.note = 'Live namespace private note'; });
-    await requestTab(viewer, code, 'Live namespace private note');
+    await prepareTabPage(viewer); await noTabSockets(viewer);
+    await viewer.locator('#discovery-start').click();
+    const choice = viewer.locator('#discovery-list button').filter({ hasText: code });
+    await expect(choice).toBeVisible({ timeout: 20_000 });
+    expect(await page.evaluate(() => (window as any).__tabQA.peers.length)).toBe(0);
+    await choice.click();
+    await expect(viewer.locator('#viewer-code')).toHaveValue(code);
+    await expect(viewer.locator('#viewer-connect')).toBeFocused();
+    expect(await viewer.evaluate(() => {
+      const state = (window as any).__tabQA;
+      return { peers: state.peers.length, captures: state.captures.length,
+        paths: state.sockets.map((socket: WebSocket) => new URL(socket.url).pathname) };
+    })).toEqual({ peers: 0, captures: 0, paths: ['/discover'] });
+    await viewer.evaluate(() => { (window as any).__tabQA.note = 'Live namespace private note'; });
+    await viewer.locator('#viewer-name').fill('Live namespace private note');
+    await viewer.locator('#viewer-connect').click();
     await expect(requestRow(page, 'Live namespace private note')).toBeVisible({ timeout: 20_000 });
     await noTabMedia(page, viewer);
-    await approve(page, viewer, 'Live namespace private note');
+    await requestRow(page, 'Live namespace private note').locator('[data-action="host.approve"]').click();
+    await expect.poll(() => viewer.evaluate(() => (window as any).__tabQA.ackHeld)).toBe(true);
+    await noTabMedia(page, viewer);
+    await viewer.evaluate(() => (window as any).__tabQA.releaseAck());
+    await flowingTab(viewer);
     for (const side of [page, viewer]) {
       expect(await side.evaluate(() => (window as any).__tabQA.sockets.map((socket: WebSocket) => {
-        const url = new URL(socket.url); return { origin: url.origin, tool: url.searchParams.get('tool'), path: url.pathname.startsWith('/ws/tab-') };
-      }))).toEqual([{ origin: endpoint, tool: 'share-tab', path: true }]);
+        const url = new URL(socket.url); return { origin: url.origin, tool: url.searchParams.get('tool'),
+          permittedPath: url.pathname === '/discover' || url.pathname.startsWith('/ws/tab-') };
+      }))).toEqual([{ origin: endpoint, tool: 'share-tab', permittedPath: true }, { origin: endpoint, tool: 'share-tab', permittedPath: true }]);
       expect(await side.evaluate(() => (window as any).__tabQA.signals.some((item: any) => item.noteLeaked || item.relay))).toBe(false);
+      const discoveryFrames = await side.evaluate(() => (window as any).__tabQA.discoveryFrames);
+      for (const { direction, frame } of discoveryFrames) {
+        if (direction === 'sent' && frame.publish) expect(Object.keys(frame.publish).sort()).toEqual(['code', 'lease']);
+        if (direction === 'received' && frame.type === 'shares') {
+          expect(frame.tool).toBe('share-tab');
+          for (const entry of frame.list) expect(Object.keys(entry).sort()).toEqual(['code', 'local']);
+        }
+      }
     }
     await localTabOnly(page, viewer);
-    await viewer.locator('#viewer-stop').click(); await stoppedTab(viewer);
-    await expect(page.locator('#accepted-panel')).toBeHidden();
-    await page.locator('#host-stop').click(); await stoppedTab(page, true);
+    expect(await viewer.evaluate(() => (window as any).__tabQA.sockets
+      .filter((socket: WebSocket) => new URL(socket.url).pathname === '/discover').every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    const observer = await context.newPage(); await prepareTabPage(observer); await observer.locator('#discovery-start').click();
+    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible({ timeout: 20_000 });
+    await page.locator('#host-stop').click(); await stoppedTab(page, true); await stoppedTab(viewer);
+    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toHaveCount(0, { timeout: 20_000 });
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    await foreground(page);
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(2);
+    await observer.locator('#discovery-close').click();
   });
 });
