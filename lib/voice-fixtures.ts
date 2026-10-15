@@ -157,6 +157,73 @@ export async function microphoneEnabled(page: Page): Promise<boolean> {
   });
 }
 
+/** Exercise the page's lifecycle contract without claiming to reproduce an OS
+ * screen lock. Capture, RTP senders, peers and signaling remain native. */
+export async function installVoiceLifecycle(page: Page) {
+  await page.evaluate(() => {
+    let hidden = false;
+    const lifecycle = {
+      attempts: 0, denyNextCapture: false,
+      setHidden(value: boolean) {
+        hidden = value;
+        document.dispatchEvent(new Event('visibilitychange'));
+      },
+      interrupt(kind: 'mute' | 'unmute' | 'ended') {
+        const track = ((window as any).__voiceQA.tracks as MediaStreamTrack[]).find(track => track.readyState === 'live');
+        if (!track) throw new Error('No live synthetic capture track.');
+        if (kind === 'ended') {
+          // stop() does not dispatch ended; an external device loss does both.
+          track.stop();
+        } else {
+          // A synthetic event alone does not change the native readonly flag.
+          Object.defineProperty(track, 'muted', { configurable: true, value: kind === 'mute' });
+        }
+        track.dispatchEvent(new Event(kind));
+      },
+    };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+    const media = navigator.mediaDevices;
+    const capture = media.getUserMedia.bind(media);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: new Proxy(media, {
+        get(target, property) {
+          if (property === 'getUserMedia') return async (constraints: MediaStreamConstraints) => {
+            lifecycle.attempts++;
+            if (lifecycle.denyNextCapture) {
+              lifecycle.denyNextCapture = false;
+              throw new DOMException('Permission denied during recovery', 'NotAllowedError');
+            }
+            return capture(constraints);
+          };
+          return Reflect.get(target, property, target);
+        },
+      }),
+    });
+    (window as any).__voiceLifecycle = lifecycle;
+  });
+}
+
+export async function voiceConnectionState(page: Page, route: 'broadcast' | 'inbox') {
+  return page.evaluate(route => {
+    const qa = (window as any).__voiceQA;
+    const peers: RTCPeerConnection[] = qa.peers;
+    const rooms = (qa.sockets as WebSocket[]).filter(socket => new URL(socket.url).pathname.startsWith(`/${route}/`));
+    return { peers: peers.length, connected: peers.filter(peer => peer.connectionState === 'connected').length,
+      rooms: rooms.length, open: rooms.filter(socket => socket.readyState === WebSocket.OPEN).length };
+  }, route);
+}
+
+export async function captureAttached(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const qa = (window as any).__voiceQA;
+    const tracks = (qa.tracks as MediaStreamTrack[]).filter(track => track.readyState === 'live');
+    const peers = (qa.peers as RTCPeerConnection[]).filter(peer => peer.connectionState === 'connected');
+    return tracks.length === 1 && peers.length > 0 && peers.every(peer =>
+      peer.getSenders().some(sender => sender.track === tracks[0]));
+  });
+}
+
 /** Chromium's inbound RTP energy follows the native media element, which can
  * stay muted while the app plays the same stream through Web Audio. Sample
  * the app's output after its own gain so this also verifies local muting. */
