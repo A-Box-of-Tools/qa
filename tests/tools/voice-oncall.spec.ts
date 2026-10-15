@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
@@ -9,7 +9,43 @@ const exists = discoverTools().includes('voice-oncall');
 // Discovery must recover within the live service's shared per-address budget.
 const DISCOVERY_TIMEOUT = 75_000;
 
+async function suspendVoicePage(page: Page) {
+  await page.evaluate(() => {
+    (window as any).__voiceLifecycle.setHidden(true);
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+  });
+  // All native close handshakes must finish before reopening the host, so the
+  // worker has no remaining socket from which to recover moderation metadata.
+  await expect.poll(() => page.evaluate(() => (window as any).__voiceQA.sockets
+    .filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/inbox/'))
+    .every((socket: WebSocket) => socket.readyState === WebSocket.CLOSED)), { timeout: 20_000 }).toBe(true);
+}
+
+async function returnVoicePage(page: Page) {
+  await page.evaluate(() => {
+    (window as any).__voiceLifecycle.setHidden(false);
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+}
+
+async function observeProtection(page: Page, dropNextKick = false) {
+  await page.evaluate(dropNextKick => {
+    const state = (window as any).__voiceProtectionQA = { sent: [] as { type: string; muted?: boolean }[], dropNextKick, dropped: 0 };
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data: Parameters<WebSocket['send']>[0]) {
+      if (typeof data === 'string' && data.startsWith('{')) {
+        const frame = JSON.parse(data);
+        if (frame.type === 'kick' && state.dropNextKick) { state.dropNextKick = false; state.dropped++; return; }
+        if (frame.type === 'kick' || frame.type === 'moderate') state.sent.push({ type: frame.type, ...(frame.type === 'moderate' ? { muted: frame.muted } : {}) });
+      }
+      return send.call(this, data);
+    };
+  }, dropNextKick);
+}
+
 test.describe('voice-oncall', () => {
+  // Recovery adds real room handshakes within the shared service address budget.
+  test.describe.configure({ mode: 'default' });
   test.beforeEach(async ({ page }) => {
     test.skip(!exists, 'Voice Oncall is awaiting the website release.');
     await withoutThirdParties(page);
@@ -186,6 +222,22 @@ test.describe('voice-oncall', () => {
       await expect(sender.locator('#vi-status-text')).toHaveText('The host muted you. Wait for the host to unmute you.');
       expect(await voiceConnectionState(sender, 'inbox')).toEqual(connection);
       await expect.poll(() => outputRms(page)).toBeLessThan(0.00001);
+      // Simulate both pages entering the page cache, including all room sockets
+      // closing. The rebuilt host must restore the mute for this same caller.
+      await observeProtection(page);
+      await suspendVoicePage(sender); await suspendVoicePage(page);
+      await peersClosed(sender); await peersClosed(page);
+      await returnVoicePage(page);
+      await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
+      await expect(page.locator('#vi-link')).toHaveValue(invitation);
+      if (await page.locator('#vi-audio-recovery').isVisible()) await page.locator('#vi-restore-sound').click();
+      await returnVoicePage(sender);
+      await expect(sender.locator('#vi-status-text')).toHaveText('The host muted you. Wait for the host to unmute you.', { timeout: 20_000 });
+      await expect.poll(() => page.evaluate(() => (window as any).__voiceProtectionQA.sent.some((frame: any) => frame.type === 'moderate' && frame.muted))).toBe(true);
+      await expect.poll(() => captureAttached(sender)).toBe(true);
+      await expect(caller).toHaveText(callerName); expect(await attempts()).toBe(5);
+      expect(await microphoneEnabled(sender)).toBe(false);
+      await expect.poll(() => outputRms(page)).toBeLessThan(0.00001);
       await page.getByRole('button', { name: `Unmute ${callerName}`, exact: true }).evaluate((button: HTMLButtonElement) => button.click());
       await expect(sender.locator('#vi-status-text')).toHaveText('Connected. Hold to talk when you are ready.');
       expect(await microphoneEnabled(sender)).toBe(false);
@@ -209,7 +261,7 @@ test.describe('voice-oncall', () => {
         (window as any).__voiceLifecycle.setHidden(false);
         window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
       });
-      expect(await attempts()).toBe(4);
+      expect(await attempts()).toBe(5);
       expect((await voiceConnectionState(sender, 'inbox')).open).toBe(0);
       expect((await voiceConnectionState(page, 'inbox')).open).toBe(0);
       expect(await page.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
@@ -230,11 +282,13 @@ test.describe('voice-oncall', () => {
       await voiceHooks(page, 'deny');
       await voiceHooks(sender, 'allow');
       await page.goto(TOOL);
+      await installVoiceLifecycle(page);
       await page.locator('#vi-tab-host').click();
       await page.locator('#vi-room-name').fill(pagerName);
       await page.locator('#vi-start').click();
       await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
       await sender.goto(await page.locator('#vi-link').inputValue());
+      await installVoiceLifecycle(sender);
       await expect(sender.locator('#vi-sender-name')).toHaveCount(0);
       await sender.locator('#vi-join').click();
       await expect(sender.locator('#vi-status-text')).toHaveText('Connected. Hold to talk when you are ready.', { timeout: 20_000 });
@@ -258,8 +312,17 @@ test.describe('voice-oncall', () => {
       await expect(sender.locator('#vi-status-text')).toHaveText('Connected. Hold to talk when you are ready.', { timeout: 20_000 });
       await expect(page.locator('#vi-participant-count')).toHaveText('1 person connected');
       await expect(caller).toHaveText(callerName);
+      // Lose one outbound removal, then suspend every room socket before its
+      // acknowledgement deadline. Recovery must replay the retained decision.
+      await observeProtection(page, true);
       await page.getByRole('button', { name: `Remove ${callerName}`, exact: true }).evaluate((button: HTMLButtonElement) => button.click());
-      await expect(sender.locator('#vi-status-text')).toHaveText('The host removed you from this pager.');
+      expect(await page.evaluate(() => (window as any).__voiceProtectionQA.dropped)).toBe(1);
+      await suspendVoicePage(sender); await suspendVoicePage(page);
+      await returnVoicePage(page);
+      await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
+      await returnVoicePage(sender);
+      await expect(sender.locator('#vi-status-text')).toHaveText('The host removed you from this pager.', { timeout: 20_000 });
+      expect(await page.evaluate(() => (window as any).__voiceProtectionQA.sent.some((frame: any) => frame.type === 'kick'))).toBe(true);
       await tracksStopped(sender);
       await peersClosed(sender);
       await expect(page.locator('#vi-participants > li')).toHaveCount(0);

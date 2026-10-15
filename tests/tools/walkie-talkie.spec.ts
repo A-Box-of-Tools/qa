@@ -75,6 +75,19 @@ test.describe('walkie-talkie', () => {
       await expect.poll(() => microphoneEnabled(page)).toBe(true);
       await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
       await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(before.packets);
+      // Supply one busy response while the native peer is carrying speech.
+      // Snapshot before the retry can hide an incorrect inactive UI state.
+      expect(await page.evaluate(async () => {
+        const qa = (window as any).__voiceQA;
+        const socket = qa.sockets.find((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/') && socket.readyState === WebSocket.OPEN);
+        if (!socket) throw new Error('The host has no live signaling socket.');
+        socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'error', error: 'busy' }) }));
+        await Promise.resolve();
+        const shown = (id: string) => !(document.getElementById(id) as HTMLElement).hidden;
+        return { enabled: qa.tracks.some((track: MediaStreamTrack) => track.readyState === 'live' && track.enabled),
+          controls: shown('wt-transmit'), banner: shown('wt-live-banner'), start: shown('wt-start'),
+          pressed: document.getElementById('wt-toggle')!.getAttribute('aria-pressed') };
+      })).toEqual({ enabled: true, controls: true, banner: true, start: false, pressed: 'true' });
       await page.locator('#wt-toggle').click();
       await expect.poll(() => microphoneEnabled(page)).toBe(false);
 

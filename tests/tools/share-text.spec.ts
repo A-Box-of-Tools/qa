@@ -155,6 +155,26 @@ async function continuityAvailable(page: Page): Promise<void> {
     'this deployed page predates bounded same-page Share Text recovery');
 }
 
+async function waitForVacantRoom(page: Page, code: string): Promise<void> {
+  await expect.poll(() => page.evaluate((url) => new Promise<boolean>((resolve) => {
+    let finished = false;
+    let timer = 0;
+    const probe = new WebSocket(url);
+    const done = (vacant: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try { probe.close(); } catch { /* already closed */ }
+      resolve(vacant);
+    };
+    probe.onclose = (event) => done(event.code === 4404);
+    probe.onmessage = () => done(false);
+    probe.onerror = () => done(false);
+    timer = window.setTimeout(() => done(false), 2000);
+  }), `${RENDEZVOUS_URL}/ws/${code}?role=viewer`),
+  { timeout: 15_000, intervals: [250, 500, 1000] }).toBe(true);
+}
+
 /** Open a sharer, write the text, and publish it. Returns the share link. */
 async function publish(
   page: Page,
@@ -563,6 +583,7 @@ test.describe('share-text: foreground continuity', () => {
     test.setTimeout(240_000);
     const context = await browser.newContext();
     let reader: Page | undefined;
+    let replacementReader: Page | undefined;
     try {
       const sharer = await context.newPage();
       await observeConnections(sharer);
@@ -646,6 +667,7 @@ test.describe('share-text: foreground continuity', () => {
       await expect.poll(() => sharer.evaluate(() => (window as any).shareTextTransports.sockets
         .filter((ws: WebSocket) => ws.url.includes('role=host'))
         .every((ws: WebSocket) => ws.readyState === WebSocket.CLOSED))).toBe(true);
+      await waitForVacantRoom(sharer, code);
       const stopped = await reader.evaluate(() => ({ peers: (window as any).shareTextTransports.peers.length,
         sockets: (window as any).shareTextTransports.sockets.length }));
       await setForeground(reader, false);
@@ -655,6 +677,10 @@ test.describe('share-text: foreground continuity', () => {
       await sharer.locator('#text').fill(replacement);
       await sharer.locator('#publish').click();
       await expect(sharer.locator('#stop')).toBeVisible();
+      replacementReader = (await readerFor(browser, link)).page;
+      await replacementReader.locator('#connect').click();
+      await expect(replacementReader.locator('#knockrow')).toBeVisible({ timeout: 60_000 });
+      await expect(replacementReader.locator('#panel')).not.toContainText(replacement);
       // Longer than the recovery delay: a late queued retry must not dial
       // the new share under the old name or silently reuse its old admission.
       await reader.waitForTimeout(6500);
@@ -665,6 +691,7 @@ test.describe('share-text: foreground continuity', () => {
     } finally {
       await context.close();
       await reader?.context().close();
+      await replacementReader?.context().close();
     }
   });
 });

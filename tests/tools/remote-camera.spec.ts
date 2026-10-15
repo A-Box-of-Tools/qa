@@ -343,7 +343,7 @@ test.describe('remote-camera: camera lifecycle', () => {
     expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).every((socket: any) => socket.readyState === 3))).toBe(true);
     expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => socket.discovery && socket.readyState === 1).length)).toBe(1);
   });
-  test('signaling failure releases capture and offers Resume with the same viewer link', async ({ page }) => {
+  test('initial signaling failure releases capture and offers Resume with the same viewer link', async ({ page }) => {
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.');
     await cameraHooks(page, 'allow', 'fail'); await sourcePage(page);
     const code = await page.locator('#camera-name').inputValue(); await page.locator('#camera-start').click();
@@ -438,6 +438,42 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect(page.locator('[data-action=approve]')).toHaveCount(0); await expect(page.locator('#camera-link')).toHaveValue(invitation);
       const recoveredFrames = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
       await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(recoveredFrames + 2);
+
+      // A Room leave is a lost viewer socket, not proof its direct peer ended.
+      await viewer.evaluate(() => {
+        const socket = [...(window as any).__remoteCameraSockets.values()].find((socket: any) => !socket.discovery && socket.readyState === 1) as any;
+        if (!socket) throw new Error('The viewer has no room socket.');
+        socket.close();
+      });
+      await expect(viewer.locator('#viewer-status')).toContainText('Pairing is unavailable');
+      let continuedFrames = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
+      await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(continuedFrames + 2);
+      await page.evaluate(() => {
+        (window as any).__setCameraHidden(true);
+        const socket = [...(window as any).__remoteCameraSockets.values()].find((socket: any) => !socket.discovery && socket.readyState === 1) as any;
+        if (!socket) throw new Error('The camera has no room socket.');
+        socket.close();
+      });
+      await expect(page.locator('#camera-status')).toContainText('Pairing is unavailable');
+      await expect(page.locator('#camera-start')).toHaveText('Restore pairing');
+      await expect(page.locator('#camera-start')).toBeDisabled();
+      continuedFrames = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
+      await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(continuedFrames + 2);
+      expect(await page.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(2);
+      await page.evaluate(() => {
+        (window as any).__setCameraHidden(false);
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+      });
+      await expect(page.locator('#camera-start')).toBeHidden();
+      expect(await page.evaluate(() => {
+        const original = (window as any).__cameraContinuity;
+        return original.peer.connectionState === 'connected' && (window as any).__remoteCameraRTC.peers.length === 1
+          && (window as any).__remoteCameraSockets.size === original.sockets + 1 && (window as any).__cameraQA.calls.length === 2;
+      })).toBe(true);
+      expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.length === 1
+        && (window as any).__originalViewerPeer.connectionState === 'connected')).toBe(true);
+      await expect(page.locator('#camera-link')).toHaveValue(invitation);
+      await expect(page.locator('[data-action=approve]')).toHaveCount(0);
 
       await page.evaluate(() => {
         const state = (window as any).__cameraQA; state.holdNext = true; state.release = null;
