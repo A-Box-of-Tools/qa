@@ -10,8 +10,19 @@ a visible video element alone does not.
 The controlled broker forwards opaque introduction envelopes. It neither
 creates SDP nor grants approval. These cases verify:
 
-- Opening an invitation does not capture or connect. Request to watch opens
-  only a `tool=share-tab` room; no discovery listing is used.
+- Opening an invitation does not capture or connect. An ordinary host is not
+  discoverable, and Request to watch opens only a `tool=share-tab` room.
+- Nearby browsing requires an explicit click. A valid Share Tab code from the
+  local listing only fills the invitation and focuses Request to watch: it
+  creates no peer, capture or request. Other-tool codes and non-local entries
+  are ignored. Refresh, Stop looking, switching to Offline and pagehide are
+  exercised; returning online or receiving pageshow does not reopen discovery.
+- Host discoverability is unchecked initially and frozen during capture. The
+  opted-in room requests a local discovery lease, and only that lease permits
+  a code-only publication. No tab title, address, note or media enters a
+  listing. Stop, capture ending and a controlled room failure withdraw it,
+  close the sockets and prevent automatic republishing. A deliberately late
+  host-ready callback after Stop cannot revive the publication.
 - The first offer contains a data channel and no media. A request left for
   later stays private. Host approval still cannot attach video while the
   native control channel's approval acknowledgement is deliberately held.
@@ -23,8 +34,8 @@ creates SDP nor grants approval. These cases verify:
   requires another explicit approval. Denial, Disconnect and host Stop close
   their corresponding attempts.
 - Permission denial, picker cancellation, window/screen/unknown-surface
-  results and a late picker result after Stop cannot publish an invitation.
-  Their acquired tracks are stopped.
+  results and a late picker result after Stop cannot publish an invitation or
+  nearby listing, even with discovery selected. Their acquired tracks stop.
 - Simulated visibility notifications retain healthy capture. A supplied native
   track's ended event and explicit Stop retire capture and peers; foreground
   notifications never request capture again. Starting again requires a click
@@ -36,7 +47,8 @@ creates SDP nor grants approval. These cases verify:
   native host candidates still establish moving video.
 - Offline mode exchanges real gathered data-only offers and replies through
   the visible text fields and native file download/upload controls. It
-  constructs no WebSocket, and host acceptance still needs a separate approval
+  constructs no WebSocket, even when the host first selected discoverability
+  before switching modes. Host acceptance still needs a separate approval
   plus the encrypted acknowledgement before attaching video. Invalid,
   mismatched, expired and retired exchange blocks grant no media access.
   The expiry case advances only the host's Date.now at acceptance; it does
@@ -49,13 +61,17 @@ must send their hello before a response, with no duplicate hello when the
 delayed open callback is replayed. This is a deterministic event-order check,
 not evidence that a particular physical browser produced that order.
 
-The live-worker case uses actual WebSockets to the endpoint selected by the
-checked-out website source, native peers and advancing video. It supports
+The live-worker case uses actual room and discovery WebSockets to the endpoint
+selected by the checked-out website source, native peers and advancing video. It supports
 both an older literal endpoint and the shared production/preview selector,
 and checks the actual socket origin against that source contract. It fails
-if the deployed worker rejects the
-`share-tab` namespace, and checks that the private introduction note stays out
-of introduction traffic. Online and offline attempts must have empty ICE
+if the deployed worker rejects the `share-tab` namespace or cannot list the
+opted-in host. Selecting the discovered code still needs Request, approval and
+an explicitly held native acknowledgement before moving video. Received
+listings contain only code/local fields; publications contain only code/lease,
+and the private introduction note stays out of introduction traffic. A third
+browser page observes the listing disappear after host Stop, since requesting
+a view closes that viewer's listing socket. Online and offline attempts must have empty ICE
 server configuration and host-only advertised/accepted candidates. There is
 no STUN/TURN fallback in Share Tab's current contract.
 
@@ -85,6 +101,12 @@ the record even if changing networks or restarting fixes the next attempt.
    the link must remain idle; turn away a request and later approve a fresh
    request. Verify live pixels, Play/Full screen, no audio, and no remote
    mouse, keyboard, navigation, text selection or website login/session access.
+   Repeat with nearby discovery: enable it before capture, check the code with
+   the viewer, select the listing and confirm that access still needs Request
+   and host approval. Confirm the entry disappears after Stop. Matching is
+   only by the server-observed public IPv4 address or IPv6 prefix, origin and
+   tool: shared gateways can include strangers and VPNs or different routes
+   can hide a reachable device. A listing is not proof of trust or LAN access.
 3. Leave several requests waiting. Approve one, reject another and disconnect
    the approved viewer. Every replacement needs fresh approval; no pending
    viewer may receive a frame while another viewer owns the session.

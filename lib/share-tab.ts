@@ -15,8 +15,9 @@ export async function tabHooks(context: BrowserContext, options: {
       peers: [] as RTCPeerConnection[], channels: [] as RTCDataChannel[], received: [] as MediaStreamTrack[],
       localCandidateTypes: [] as string[], addedCandidateTypes: [] as string[],
       remoteDescriptions: [] as { type: string; media: string[]; candidates: string[] }[],
-      sockets: [] as any[], controls: [] as { type: string; peer: number }[],
+      sockets: [] as any[], socketCloseCalls: [] as number[], controls: [] as { type: string; peer: number }[],
       signals: [] as { type: string; media: string[]; relay: boolean; noteLeaked: boolean }[],
+      discoveryFrames: [] as { direction: string; frame: any }[],
       releaseCapture: null as null | (() => void), releaseAck: null as null | (() => void),
       ackHeld: false, delayedOpenReplayed: 0, fixtureErrors: [] as string[],
       note: '',
@@ -119,11 +120,23 @@ export async function tabHooks(context: BrowserContext, options: {
       const NativeSocket = window.WebSocket;
       window.WebSocket = new Proxy(NativeSocket, { construct(target, args) {
         const socket = Reflect.construct(target, args) as WebSocket;
+        const index = state.sockets.length;
         state.sockets.push(socket);
+        const close = socket.close.bind(socket);
+        socket.close = (code, reason) => {
+          state.socketCloseCalls.push(index);
+          return close(code, reason);
+        };
+        const discovery = new URL(String(args[0])).pathname === '/discover';
+        if (discovery) socket.addEventListener('message', (event) => {
+          if (typeof event.data !== 'string' || event.data === 'pong') return;
+          try { state.discoveryFrames.push({ direction: 'received', frame: JSON.parse(event.data) }); } catch { /* The app rejects malformed frames. */ }
+        });
         const send = socket.send.bind(socket);
         socket.send = (data) => {
           if (typeof data === 'string' && data !== 'ping') {
             const envelope = JSON.parse(data), description = envelope.data?.description;
+            if (discovery) state.discoveryFrames.push({ direction: 'sent', frame: envelope });
             state.signals.push({ type: description?.type ?? (envelope.relay ? 'relay' : 'signal'),
               media: description?.sdp?.match(/^m=\w+/gm)?.map((value: string) => value.slice(2)) ?? [],
               relay: envelope.relay === true, noteLeaked: Boolean(state.note && data.includes(state.note)) });
@@ -138,14 +151,18 @@ export async function tabHooks(context: BrowserContext, options: {
 }
 
 /** Opaque room routing only; this stand-in never creates SDP, peers or media. */
-export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = false, privateNotes = [] }: {
+export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = false, privateNotes = [],
+  holdHostReady = false, discoveryList = [] }: {
   holdDescriptions?: boolean; injectNonHostCandidates?: boolean; privateNotes?: string[];
+  holdHostReady?: boolean; discoveryList?: { code: string; local: boolean }[];
 } = {}) {
   const endpoint = liveRendezvous('tools/share-tab/src/session.js');
-  type Client = { page: Page; socket: number; code: string; role: string; id: string; ready: boolean };
+  type Client = { page: Page; socket: number; code: string; role: string; id: string; ready: boolean;
+    lease?: string; publication?: string };
   type Room = { host?: Client; viewers: Map<string, Client>; queue: Promise<void> };
   const rooms = new Map<string, Room>(), clients = new Map<Page, Map<number, Client>>(); let serial = 0;
   const observed = { urls: [] as string[], relayRequests: 0, injectedCandidates: 0,
+    discoveryMessages: [] as any[],
     candidates: [] as string[], descriptions: [] as { type: string; media: string[] }[], noteLeaked: false };
   const roomFor = (code: string) => { if (!rooms.has(code)) rooms.set(code, { viewers: new Map(), queue: Promise.resolve() }); return rooms.get(code)!; };
   const message = async (client: Client, data: unknown) => {
@@ -155,12 +172,25 @@ export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = 
     if (!client.page.isClosed()) await client.page.evaluate(({ socket, code }) => (window as any).__tabQA.sockets[socket]?.remoteClose(code), { socket: client.socket, code });
   };
   const enqueue = (room: Room, work: () => Promise<void>) => { const next = room.queue.then(work); room.queue = next.catch(() => {}); return next; };
+  const observers = () => [...clients.values()].flatMap((entries) => [...entries.values()])
+    .filter((client) => client.role === 'observer' && client.ready);
+  const broadcast = async () => {
+    const codes = [...new Set(observers().flatMap((client) => client.publication ? [client.publication] : []))];
+    const list = [...discoveryList, ...codes.map((code) => ({ code, local: true }))];
+    for (const client of observers()) await message(client, { type: 'shares', tool: 'share-tab', list });
+  };
+  const hostReady = async (client: Client) => {
+    if (client.lease) await message(client, { type: 'host-ready', discovery: { code: client.code, lease: client.lease, tool: 'share-tab' } });
+  };
   const drop = (client: Client) => {
     clients.get(client.page)?.delete(client.socket);
+    if (client.role === 'observer') return broadcast();
     const room = roomFor(client.code);
     return enqueue(room, async () => {
       if (client.role === 'host' && room.host === client) {
         room.host = undefined; const viewers = [...room.viewers.values()]; room.viewers.clear();
+        for (const observer of observers()) if (observer.publication === client.code) observer.publication = undefined;
+        await broadcast();
         for (const viewer of viewers) await close(viewer, 4410);
       } else if (client.role === 'viewer' && room.viewers.get(client.id) === client) {
         room.viewers.delete(client.id); if (room.host) await message(room.host, { type: 'leave', id: client.id });
@@ -169,29 +199,53 @@ export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = 
   };
   const install = async (context: BrowserContext) => {
     await context.exposeBinding('__tabBrokerOpen', ({ page }, socket: number, address: string) => {
-      const url = new URL(address), code = url.pathname.split('/').pop()!, role = url.searchParams.get('role')!;
-      if (url.origin !== endpoint || !/^\/ws\/tab-[a-z2-7]{16}$/.test(url.pathname)
-          || url.searchParams.get('tool') !== 'share-tab' || !['host', 'viewer'].includes(role)) throw new Error('Unexpected Share Tab room contract');
+      const url = new URL(address), discovery = url.pathname === '/discover';
+      const code = discovery ? '' : url.pathname.split('/').pop()!, role = discovery ? 'observer' : url.searchParams.get('role')!;
+      if (url.origin !== endpoint || (!discovery && !/^\/ws\/tab-[a-z2-7]{16}$/.test(url.pathname))
+          || url.searchParams.get('tool') !== 'share-tab' || !['host', 'viewer', 'observer'].includes(role)) throw new Error('Unexpected Share Tab socket contract');
       observed.urls.push(address);
-      const client: Client = { page, socket, code, role, id: `v:${++serial}`, ready: false }, room = roomFor(code);
+      const client: Client = { page, socket, code, role, id: `v:${++serial}`, ready: false };
+      if (role === 'host' && url.searchParams.get('local') === '1' && url.searchParams.get('discover') === '1') client.lease = `qa-discovery-lease-${serial.toString().padStart(8, '0')}`;
       if (!clients.has(page)) {
         clients.set(page, new Map());
         page.on('close', () => { for (const item of clients.get(page)?.values() ?? []) void drop(item).catch(() => {}); clients.delete(page); });
       }
       clients.get(page)!.set(socket, client);
+      if (discovery) return;
+      const room = roomFor(code);
       if (role === 'host') room.host = client; else room.viewers.set(client.id, client);
     });
     await context.exposeBinding('__tabBrokerReady', ({ page }, socket: number) => {
       const client = clients.get(page)?.get(socket); if (!client) return;
-      client.ready = true; const room = roomFor(client.code);
+      client.ready = true;
+      if (client.role === 'observer') return broadcast();
+      const room = roomFor(client.code);
       return enqueue(room, async () => {
         if (!room.host?.ready) return;
+        if (client.role === 'host' && !holdHostReady) await hostReady(client);
         if (client.role === 'viewer') await message(client, { type: 'ready' });
         else for (const viewer of room.viewers.values()) if (viewer.ready) await message(viewer, { type: 'ready' });
       });
     });
     await context.exposeBinding('__tabBrokerSend', ({ page }, socket: number, raw: string) => {
       const client = clients.get(page)?.get(socket); if (!client) return;
+      if (client.role === 'observer') {
+        if (raw === 'ping') return message(client, 'pong');
+        const frame = JSON.parse(raw); observed.discoveryMessages.push(frame);
+        if ('publish' in frame) {
+          expect(Object.keys(frame)).toEqual(['publish']);
+          if (frame.publish === null) client.publication = undefined;
+          else {
+            // The stand-in grants no lease without an opted-in live host, and
+            // rejects extra fields so private metadata cannot pass unnoticed.
+            expect(Object.keys(frame.publish).sort()).toEqual(['code', 'lease']);
+            const host = rooms.get(frame.publish.code)?.host;
+            expect(host?.ready && host.lease === frame.publish.lease, 'Publication must use the live room lease').toBe(true);
+            client.publication = frame.publish.code;
+          }
+        } else expect(frame).toEqual({ refresh: true });
+        return broadcast();
+      }
       const room = roomFor(client.code);
       return enqueue(room, async () => {
         if (raw === 'ping') { await message(client, 'pong'); return; }
@@ -252,7 +306,16 @@ export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = 
       Object.defineProperty(window, 'WebSocket', { configurable: true, value: BrokerSocket });
     });
   };
-  return { install, observed };
+  return { install, observed,
+    async releaseHostReady() {
+      for (const room of rooms.values()) if (room.host?.ready) await hostReady(room.host);
+    },
+    async failHost(page: Page) {
+      for (const client of clients.get(page)?.values() ?? []) if (client.role === 'host') {
+        await close(client, 1011); await drop(client);
+      }
+    },
+  };
 }
 
 export async function prepareTabPage(page: Page, code?: string) {
@@ -262,8 +325,9 @@ export async function prepareTabPage(page: Page, code?: string) {
   await expect(page.locator('#boot-warning')).toHaveCount(0);
 }
 
-export async function startTabHost(page: Page) {
+export async function startTabHost(page: Page, discoverable = false) {
   await prepareTabPage(page);
+  if (discoverable) await page.locator('#host-discoverable').check();
   await page.locator('#host-start').click();
   await expect(page.locator('#share-link')).toHaveValue(/#tab-[a-z2-7]{16}$/, { timeout: 20_000 });
   const invitation = await page.locator('#share-link').inputValue();
@@ -272,6 +336,7 @@ export async function startTabHost(page: Page) {
 
 export async function startOfflineTabHost(page: Page) {
   await prepareTabPage(page);
+  await page.locator('#host-discoverable').check();
   await page.locator('#pairing-offline').check();
   await page.locator('#host-start').click();
   await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
