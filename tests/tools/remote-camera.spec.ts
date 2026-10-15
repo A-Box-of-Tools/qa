@@ -9,7 +9,9 @@ const TOOL = '/remote-camera/';
 const exists = discoverTools().includes('remote-camera');
 // Production and a dev preview can use different discovery contracts while
 // a release awaits approval. The checked-out website source identifies each.
-const directDiscovery = exists && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/src/main.js'), 'utf8').includes("link.addEventListener('click'");
+const cameraSource = exists ? fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/src/main.js'), 'utf8') : '';
+const directDiscovery = cameraSource.includes("link.addEventListener('click'");
+const captureRecovery = cameraSource.includes('async function resumeCamera(');
 const cameraBody = exists ? fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/body.html'), 'utf8') : '';
 const approvalPopup = cameraBody.includes('id="camera-request-dialog"');
 const connectionReports = cameraBody.includes('id="connection-report"');
@@ -587,6 +589,7 @@ test.describe('remote-camera: camera lifecycle', () => {
     } finally { await touchContext.close(); }
   });
   test('initial signaling failure releases capture and offers Resume with the same viewer link', async ({ page }) => {
+    test.skip(!captureRecovery, 'Camera capture recovery is awaiting the website release.');
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.');
     await cameraHooks(page, 'allow', 'fail'); await sourcePage(page);
     const code = await page.locator('#camera-name').inputValue(); await page.locator('#camera-start').click();
@@ -1135,6 +1138,7 @@ test.describe('remote-camera: native WebRTC media', () => {
     });
   }
   test('simulated visibility keeps approved video and resumes ended capture without reviving Stop', async ({ page, context, browser }) => {
+    test.skip(!captureRecovery, 'Camera capture recovery is awaiting the website release.');
     test.setTimeout(60_000); const broker = localRendezvous();
     const viewerContext = await browser.newContext({ baseURL: BASE_URL });
     // These events exercise browser lifecycle handling with real media and RTC.
