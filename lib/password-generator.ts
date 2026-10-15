@@ -49,3 +49,21 @@ export const LOOKALIKES: string = extract(
   'LOOKALIKES',
   /\bLOOKALIKES\s*=\s*'([^']*)'/,
 );
+
+/** Resolve regression words from the real list instead of copying numeric positions. */
+export function longWordIndices(wanted: readonly string[]): number[] {
+  const text = fs.readFileSync(
+    path.join(ETOOLBOX_DIR, 'tools', 'password-generator', 'src', 'wordlist.js'),
+    'utf8',
+  );
+  const match = text.match(/\bexport\s+const\s+LONG\s*=\s*`([\s\S]*?)`/);
+  if (!match) {
+    throw new Error('Could not read LONG from the password generator\'s wordlist.js - has it been renamed or reshaped?');
+  }
+  const words = match[1].trim().split(/\s+/);
+  return wanted.map((word) => {
+    const index = words.indexOf(word);
+    if (index < 0) throw new Error(`The EFF long list no longer contains ${JSON.stringify(word)}`);
+    return index;
+  });
+}
