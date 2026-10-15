@@ -15,7 +15,7 @@ export async function tabHooks(context: BrowserContext, options: {
       peers: [] as RTCPeerConnection[], channels: [] as RTCDataChannel[], received: [] as MediaStreamTrack[],
       localCandidateTypes: [] as string[], addedCandidateTypes: [] as string[],
       remoteDescriptions: [] as { type: string; media: string[]; candidates: string[] }[],
-      sockets: [] as any[], controls: [] as { type: string; peer: number }[],
+      sockets: [] as any[], socketCloseCalls: [] as number[], controls: [] as { type: string; peer: number }[],
       signals: [] as { type: string; media: string[]; relay: boolean; noteLeaked: boolean }[],
       discoveryFrames: [] as { direction: string; frame: any }[],
       releaseCapture: null as null | (() => void), releaseAck: null as null | (() => void),
@@ -120,7 +120,13 @@ export async function tabHooks(context: BrowserContext, options: {
       const NativeSocket = window.WebSocket;
       window.WebSocket = new Proxy(NativeSocket, { construct(target, args) {
         const socket = Reflect.construct(target, args) as WebSocket;
+        const index = state.sockets.length;
         state.sockets.push(socket);
+        const close = socket.close.bind(socket);
+        socket.close = (code, reason) => {
+          state.socketCloseCalls.push(index);
+          return close(code, reason);
+        };
         const discovery = new URL(String(args[0])).pathname === '/discover';
         if (discovery) socket.addEventListener('message', (event) => {
           if (typeof event.data !== 'string' || event.data === 'pong') return;

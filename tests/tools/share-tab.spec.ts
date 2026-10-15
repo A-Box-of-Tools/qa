@@ -42,6 +42,25 @@ async function directFailure(viewer: Page) {
   expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].signalingState)).toBe('closed');
 }
 
+async function retiringLiveSockets(page: Page, pathname?: string) {
+  const states = await page.evaluate((pathname) => {
+    const state = (window as any).__tabQA;
+    return state.sockets.flatMap((socket: WebSocket, index: number) =>
+      !pathname || new URL(socket.url).pathname === pathname
+        ? [{ closeCalled: state.socketCloseCalls.includes(index), readyState: socket.readyState }] : []);
+  }, pathname);
+  await test.info().attach('native-socket-retirement', {
+    body: JSON.stringify({ scope: pathname ?? 'all', sockets: states }), contentType: 'application/json',
+  });
+  expect(states.length).toBeGreaterThan(0);
+  for (const state of states) {
+    expect(state.closeCalled, 'The application must explicitly close each retired socket').toBe(true);
+    // Native close immediately forbids further sends; the remote endpoint owns
+    // how soon its closing handshake completes. Neither state may be OPEN.
+    expect([2, 3], 'A retired native socket must be CLOSING or CLOSED').toContain(state.readyState);
+  }
+}
+
 test.afterEach(async ({ context }) => {
   for (const page of context.pages()) {
     expect(await page.evaluate(() => (window as any).__tabQA?.fixtureErrors ?? []), 'The controlled broker itself must remain healthy').toEqual([]);
@@ -543,13 +562,12 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       }
     }
     await localTabOnly(page, viewer);
-    expect(await viewer.evaluate(() => (window as any).__tabQA.sockets
-      .filter((socket: WebSocket) => new URL(socket.url).pathname === '/discover').every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    await retiringLiveSockets(viewer, '/discover');
     const observer = await context.newPage(); await prepareTabPage(observer); await observer.locator('#discovery-start').click();
     await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible({ timeout: 20_000 });
     await page.locator('#host-stop').click(); await stoppedTab(page, true); await stoppedTab(viewer);
     await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toHaveCount(0, { timeout: 20_000 });
-    await expect.poll(() => page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
+    await retiringLiveSockets(page);
     await foreground(page);
     expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(2);
     await observer.locator('#discovery-close').click();
