@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
-import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled } from '../../lib/voice-fixtures';
+import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/walkie-talkie/';
 const exists = discoverTools().includes('walkie-talkie');
@@ -75,6 +75,19 @@ test.describe('walkie-talkie', () => {
       await expect.poll(() => microphoneEnabled(page)).toBe(true);
       await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
       await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(before.packets);
+      // Supply one busy response while the native peer is carrying speech.
+      // Snapshot before the retry can hide an incorrect inactive UI state.
+      expect(await page.evaluate(async () => {
+        const qa = (window as any).__voiceQA;
+        const socket = qa.sockets.find((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/') && socket.readyState === WebSocket.OPEN);
+        if (!socket) throw new Error('The host has no live signaling socket.');
+        socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'error', error: 'busy' }) }));
+        await Promise.resolve();
+        const shown = (id: string) => !(document.getElementById(id) as HTMLElement).hidden;
+        return { enabled: qa.tracks.some((track: MediaStreamTrack) => track.readyState === 'live' && track.enabled),
+          controls: shown('wt-transmit'), banner: shown('wt-live-banner'), start: shown('wt-start'),
+          pressed: document.getElementById('wt-toggle')!.getAttribute('aria-pressed') };
+      })).toEqual({ enabled: true, controls: true, banner: true, start: false, pressed: 'true' });
       await page.locator('#wt-toggle').click();
       await expect.poll(() => microphoneEnabled(page)).toBe(false);
 
@@ -243,161 +256,185 @@ test.describe('walkie-talkie', () => {
     }
   });
 
-  test('simulated visibility recovery reuses the host invitation and resumes silently', async ({ page, browserName }) => {
-    test.skip(browserName !== 'chromium', 'This lifecycle simulation uses Chromium capture; it is not a physical screen-lock test.');
+  test('simulated background use preserves live pairing and microphone recovery stays silent', async ({ page, browser, browserName }) => {
+    test.skip(browserName !== 'chromium', 'This lifecycle simulation uses native Chromium media; it is not a physical screen-lock test.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(180_000);
-    // Directory behavior is covered above. Keep real room signaling while this
-    // test simulates lifecycle notifications rather than an operating-system lock.
-    await voiceHooks(page, 'allow', true);
-    await page.goto(TOOL);
-    await page.evaluate(() => {
-      let hidden = false;
-      const lifecycle = {
-        attempts: 0, denyNextCapture: false,
-        setHidden(value: boolean) {
-          hidden = value;
-          document.dispatchEvent(new Event('visibilitychange'));
-        },
+    const listenerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
+    try {
+      const listener = await listenerContext.newPage();
+      await withoutThirdParties(listener);
+      // Directory behavior is covered above; retain real room signaling and RTP.
+      await voiceHooks(page, 'allow', true);
+      await voiceHooks(listener, 'deny', true);
+      await page.goto(TOOL);
+      await installVoiceLifecycle(page);
+      const attempts = () => page.evaluate(() => (window as any).__voiceLifecycle.attempts);
+      const silent = async () => {
+        expect(await microphoneEnabled(page)).toBe(false);
+        await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('#wt-live-banner')).toBeHidden();
       };
-      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
-      const media = navigator.mediaDevices;
-      const capture = media.getUserMedia.bind(media);
-      Object.defineProperty(navigator, 'mediaDevices', {
-        configurable: true,
-        value: new Proxy(media, {
-          get(target, property) {
-            if (property === 'getUserMedia') return async (constraints: MediaStreamConstraints) => {
-              lifecycle.attempts++;
-              if (lifecycle.denyNextCapture) {
-                lifecycle.denyNextCapture = false;
-                throw new DOMException('Permission denied during wake', 'NotAllowedError');
-              }
-              return capture(constraints);
-            };
-            return Reflect.get(target, property, target);
-          },
-        }),
+      await page.locator('#wt-room-name').fill('QA lifecycle ' + test.info().workerIndex + '-' + Date.now());
+      await page.locator('#wt-discover').uncheck();
+      await page.locator('#wt-start').click();
+      await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+      const invitation = await page.locator('#wt-link').inputValue();
+      await listener.goto(invitation);
+      await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
+      await expect.poll(() => listener.locator('#wt-audio').evaluate((audio: HTMLAudioElement) =>
+        Boolean(audio.srcObject) && (!audio.paused || !document.getElementById('wt-playback-note')!.hidden))).toBe(true);
+      if (await listener.locator('#wt-playback-note').isVisible()) await listener.locator('#wt-mute').click();
+      await expect.poll(() => captureAttached(page)).toBe(true);
+      const connection = await voiceConnectionState(page, 'broadcast');
+      // A rejected startup handshake can retry before pairing succeeds. Keep
+      // its socket history in the baseline so later reconnects still fail.
+      expect(connection).toMatchObject({ peers: 1, connected: 1, open: 1 });
+      expect(await attempts()).toBe(1);
+
+      await page.locator('#wt-toggle').click();
+      await expect.poll(() => microphoneEnabled(page)).toBe(true);
+      const beforeHidden = await receivedAudio(listener);
+      await page.evaluate(() => {
+        (window as any).__voiceLifecycle.setHidden(true);
+        window.dispatchEvent(new Event('blur'));
       });
-      (window as any).__voiceLifecycle = lifecycle;
-    });
-    const attempts = () => page.evaluate(() => (window as any).__voiceLifecycle.attempts);
-    const sourceState = () => page.evaluate(() => {
-      const qa = (window as any).__voiceQA;
-      return {
-        calls: qa.calls.length,
-        liveTracks: qa.tracks.filter((track: MediaStreamTrack) => track.readyState === 'live').length,
-        openPeers: qa.peers.filter((peer: RTCPeerConnection) => peer.connectionState !== 'closed').length,
-        openRooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')
-          && socket.readyState === WebSocket.OPEN).length,
-      };
-    });
-    await page.locator('#wt-room-name').fill('QA lifecycle ' + test.info().workerIndex + '-' + Date.now());
-    await page.locator('#wt-discover').uncheck();
-    await page.locator('#wt-start').click();
-    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
-    const invitation = await page.locator('#wt-link').inputValue();
-    expect(await attempts()).toBe(1);
-    await page.locator('#wt-toggle').click();
-    await expect.poll(() => microphoneEnabled(page)).toBe(true);
-    await expect(page.locator('#wt-live-banner')).toBeVisible();
+      expect(await microphoneEnabled(page)).toBe(true);
+      await expect(page.locator('#wt-live-banner')).toBeVisible();
+      await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(beforeHidden.energy);
+      expect(await voiceConnectionState(page, 'broadcast')).toEqual(connection);
+      expect(await attempts()).toBe(1);
+      await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+      await page.locator('#wt-toggle').click();
+      await silent();
 
-    await page.evaluate(() => {
-      (window as any).__voiceLifecycle.setHidden(true);
-      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
-    });
-    await tracksStopped(page);
-    expect(await sourceState()).toEqual({ calls: 1, liveTracks: 0, openPeers: 0, openRooms: 0 });
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+      // A held key is not a persistent authorization to speak in the background.
+      for (const event of ['blur', 'hidden']) {
+        await page.locator('#wt-hold').focus();
+        await page.keyboard.down('Space');
+        try {
+          await expect.poll(() => microphoneEnabled(page)).toBe(true);
+          await page.evaluate(event => {
+            if (event === 'hidden') (window as any).__voiceLifecycle.setHidden(true);
+            else window.dispatchEvent(new Event('blur'));
+          }, event);
+          await silent();
+        } finally {
+          await page.keyboard.up('Space');
+          await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+        }
+      }
+      expect(await voiceConnectionState(page, 'broadcast')).toEqual(connection);
+      expect(await attempts()).toBe(1);
 
-    // A visible event can precede pageshow while the page is still suspended.
-    await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
-    expect(await attempts()).toBe(1);
-    await page.evaluate(() => {
-      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
-      document.dispatchEvent(new Event('visibilitychange'));
-      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
-    });
-    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
-    expect(await attempts()).toBe(2);
-    expect(await sourceState()).toEqual({ calls: 2, liveTracks: 1, openPeers: 0, openRooms: 1 });
-    await expect(page.locator('#wt-link')).toHaveValue(invitation);
-    expect(await microphoneEnabled(page)).toBe(false);
-    await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
-    await expect(page.locator('#wt-hold')).toHaveAttribute('aria-pressed', 'false');
+      // Native source interruption changes the track flag as well as its event.
+      await page.locator('#wt-toggle').click();
+      await page.evaluate(() => {
+        (window as any).__voiceLifecycle.interrupt('mute');
+        (window as any).__voiceLifecycle.setHidden(true);
+      });
+      await silent();
+      await expect(page.locator('#wt-resume-microphone')).toBeVisible();
+      await expect(page.locator('#wt-hold')).toBeDisabled();
+      expect(await voiceConnectionState(page, 'broadcast')).toEqual(connection);
+      await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+      expect(await attempts()).toBe(1);
+      await page.evaluate(() => (window as any).__voiceLifecycle.interrupt('unmute'));
+      await expect(page.locator('#wt-resume-microphone')).toBeHidden();
+      await expect(page.locator('#wt-hold')).toBeEnabled();
+      await silent();
+      expect(await attempts()).toBe(1);
 
-    // A capture interruption can arrive before the browser reports hiding.
-    // Dispatch mute on the real synthetic track, then use visibility alone.
-    await page.locator('#wt-toggle').click();
-    await expect.poll(() => microphoneEnabled(page)).toBe(true);
-    await page.evaluate(() => {
-      const track = (window as any).__voiceQA.tracks.find((track: MediaStreamTrack) => track.readyState === 'live');
-      if (!track) throw new Error('The host has no live capture track.');
-      track.dispatchEvent(new Event('mute'));
-      (window as any).__voiceLifecycle.setHidden(true);
-    });
-    await tracksStopped(page);
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
-    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
-    expect(await attempts()).toBe(3);
-    expect(await sourceState()).toEqual({ calls: 3, liveTracks: 1, openPeers: 0, openRooms: 1 });
-    await expect(page.locator('#wt-link')).toHaveValue(invitation);
-    expect(await microphoneEnabled(page)).toBe(false);
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
+      // Denied automatic replacement leaves the same live peer and a manual
+      // action, rather than retrying capture on every foreground notification.
+      await page.locator('#wt-toggle').click();
+      await page.evaluate(() => {
+        const lifecycle = (window as any).__voiceLifecycle;
+        lifecycle.interrupt('ended');
+        lifecycle.denyNextCapture = true;
+        lifecycle.setHidden(true);
+        lifecycle.setHidden(false);
+      });
+      await expect.poll(attempts).toBe(2);
+      await expect(page.locator('#wt-resume-microphone')).toHaveText('Resume microphone');
+      await expect(page.locator('#wt-resume-microphone')).toBeEnabled();
+      await silent();
+      expect(await voiceConnectionState(page, 'broadcast')).toEqual(connection);
+      await page.evaluate(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+      });
+      expect(await attempts()).toBe(2);
+      await page.locator('#wt-resume-microphone').click();
+      await expect(page.locator('#wt-resume-microphone')).toBeHidden();
+      await expect.poll(() => captureAttached(page)).toBe(true);
+      expect(await attempts()).toBe(3);
+      await silent();
+      expect(await voiceConnectionState(page, 'broadcast')).toEqual(connection);
+      await expect(page.locator('#wt-link')).toHaveValue(invitation);
+      const beforeReplacement = await receivedAudio(listener);
+      await page.locator('#wt-toggle').click();
+      await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(beforeReplacement.energy);
 
-    // A denied automatic wake needs a gesture instead of a new capture attempt
-    // for every visible event. The denial wrapper is confined to this testcase.
-    await page.locator('#wt-toggle').click();
-    await expect.poll(() => microphoneEnabled(page)).toBe(true);
-    await page.evaluate(() => {
-      (window as any).__voiceLifecycle.denyNextCapture = true;
-      (window as any).__voiceLifecycle.setHidden(true);
-    });
-    await tracksStopped(page);
-    await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
-    await expect(page.locator('#wt-start')).toHaveText('Resume channel');
-    await expect(page.locator('#wt-start')).toBeEnabled();
-    await expect(page.locator('#wt-status-text')).toHaveText('Channel paused. Choose Resume channel to reconnect. Your microphone will stay off until you talk.');
-    expect(await attempts()).toBe(4);
-    expect(await sourceState()).toEqual({ calls: 3, liveTracks: 0, openPeers: 0, openRooms: 0 });
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    await page.evaluate(() => {
-      document.dispatchEvent(new Event('visibilitychange'));
-      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
-    });
-    expect(await attempts()).toBe(4);
-    await expect(page.locator('#wt-start')).toHaveText('Resume channel');
+      // A later ended capture can recover once automatically, still silently.
+      await page.evaluate(() => {
+        const lifecycle = (window as any).__voiceLifecycle;
+        lifecycle.interrupt('ended');
+        lifecycle.setHidden(true);
+        lifecycle.setHidden(false);
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+      });
+      await expect(page.locator('#wt-resume-microphone')).toBeHidden();
+      await expect.poll(() => captureAttached(page)).toBe(true);
+      expect(await attempts()).toBe(4);
+      await silent();
+      expect(await voiceConnectionState(page, 'broadcast')).toEqual(connection);
 
-    await page.locator('#wt-start').click();
-    await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
-    expect(await attempts()).toBe(5);
-    expect(await sourceState()).toEqual({ calls: 4, liveTracks: 1, openPeers: 0, openRooms: 1 });
-    await expect(page.locator('#wt-link')).toHaveValue(invitation);
-    expect(await microphoneEnabled(page)).toBe(false);
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    await expect(page.locator('#wt-toggle')).toHaveAttribute('aria-pressed', 'false');
-
-    await page.locator('#wt-toggle').click();
-    await expect.poll(() => microphoneEnabled(page)).toBe(true);
-    await page.locator('#wt-end').click();
-    await tracksStopped(page);
-    await page.evaluate(() => {
-      (window as any).__voiceLifecycle.setHidden(true);
-      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
-      (window as any).__voiceLifecycle.setHidden(false);
-      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-    expect(await attempts()).toBe(5);
-    expect(await sourceState()).toEqual({ calls: 4, liveTracks: 0, openPeers: 0, openRooms: 0 });
-    await expect(page.locator('#wt-start')).toHaveText('Start channel');
-    await expect(page.locator('#wt-start')).toBeEnabled();
-    await expect(page.locator('#wt-live-banner')).toBeHidden();
-    expect(await page.evaluate(() => sessionStorage.getItem('walkie-talkie.host'))).toBeNull();
+      // A history suspension closes media, unlike ordinary hiding. A visible
+      // event before pageshow must not start capture while still suspended.
+      await page.locator('#wt-toggle').click();
+      await page.evaluate(() => {
+        (window as any).__voiceLifecycle.setHidden(true);
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      });
+      await tracksStopped(page);
+      await peersClosed(page);
+      await silent();
+      await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+      expect(await attempts()).toBe(4);
+      await page.evaluate(() => {
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+      await expect(page.locator('#wt-link')).toHaveValue(invitation);
+      await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
+      await expect.poll(() => captureAttached(page)).toBe(true);
+      expect(await attempts()).toBe(5);
+      await silent();
+      const beforeReturn = await receivedAudio(listener);
+      await page.locator('#wt-toggle').click();
+      await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(beforeReturn.energy);
+      await page.locator('#wt-end').click();
+      await tracksStopped(page);
+      await peersClosed(page);
+      await expect(listener.locator('#wt-status-text')).toHaveText('The host ended this broadcast.');
+      await page.evaluate(() => {
+        (window as any).__voiceLifecycle.setHidden(true);
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+        (window as any).__voiceLifecycle.setHidden(false);
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(await attempts()).toBe(5);
+      expect((await voiceConnectionState(page, 'broadcast')).open).toBe(0);
+      await expect(page.locator('#wt-start')).toHaveText('Start channel');
+      await expect(page.locator('#wt-start')).toBeEnabled();
+      await silent();
+      expect(await page.evaluate(() => sessionStorage.getItem('walkie-talkie.host'))).toBeNull();
+      expect(await listener.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
+    } finally {
+      await listenerContext.close();
+    }
   });
 });
