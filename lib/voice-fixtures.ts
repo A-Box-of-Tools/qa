@@ -1,7 +1,6 @@
 import { expect, type Page } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { BASE_URL, ETOOLBOX_DIR } from './site';
+import { BASE_URL } from './site';
+import { liveRendezvous } from './rendezvous';
 
 export function admitsLiveVoice(): boolean {
   const url = new URL(BASE_URL);
@@ -10,10 +9,7 @@ export function admitsLiveVoice(): boolean {
 }
 
 export function liveVoiceEndpoint(): string {
-  const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'shared/js/voice-session.js'), 'utf8');
-  const endpoint = source.match(/origin = '(wss:\/\/[^']+)'/)?.[1];
-  expect(endpoint, 'The voice endpoint comes from the checked-out website.').toBeTruthy();
-  return endpoint!;
+  return liveRendezvous('shared/js/voice-session.js');
 }
 
 /** Supply an oscillator instead of asking for a person's microphone. Peers,

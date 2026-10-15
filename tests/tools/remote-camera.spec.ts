@@ -1,6 +1,7 @@
 import { test, expect, type Page, type BrowserContext } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
+import { liveRendezvous } from '../../lib/rendezvous';
 import fs from 'node:fs';
 import path from 'node:path';
 import { canFakeCamera, hasCameraInterface, withoutThirdParties } from '../../lib/engine';
@@ -1356,13 +1357,10 @@ test.describe('remote-camera: native WebRTC media', () => {
     test.setTimeout(60_000);
     const host = new URL(BASE_URL).hostname;
     test.skip(!['localhost', '127.0.0.1', 'abox.tools'].includes(host) && !host.endsWith('.abox-preview.pages.dev'), 'The public rendezvous does not admit this test origin.');
-    const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/src/session.js'), 'utf8');
-    const rendezvous = source.match(/^const RENDEZVOUS = '(wss:\/\/[^']+)';/m)?.[1];
-    expect(rendezvous, 'The live endpoint is read from the tool, not duplicated in QA.').toBeTruthy();
-    const endpoint = new URL(rendezvous!).host;
+    const endpoint = new URL(liveRendezvous('tools/remote-camera/src/session.js')).origin;
     const frames: string[] = [];
     const watch = (page: Page) => page.on('websocket', (socket) => {
-      if (new URL(socket.url()).host !== endpoint) return;
+      if (new URL(socket.url()).origin !== endpoint) return;
       socket.on('framesent', ({ payload }) => frames.push(String(payload)));
       socket.on('framereceived', ({ payload }) => frames.push(String(payload)));
     });

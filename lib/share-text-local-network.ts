@@ -1,14 +1,11 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { expect, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
-import { BASE_URL, ETOOLBOX_DIR } from './site';
+import { BASE_URL } from './site';
+import { liveRendezvous } from './rendezvous';
 
 const TEXT = 'QA-local-network-text-71e62';
 const FILE_MARKER = 'QA-local-network-file-b8c03';
-const rendezvousSource = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/share-text/src/main.js'), 'utf8');
-const rendezvousUrl = rendezvousSource.match(/^const RENDEZVOUS = '(wss:\/\/[^']+)';/m)?.[1];
-if (!rendezvousUrl) throw new Error('share-text no longer names its rendezvous');
-const rendezvousHost = new URL(rendezvousUrl).host;
+const rendezvousOrigin = new URL(liveRendezvous('tools/share-text/src/main.js')).origin;
 
 export type LocalShareJourneyOptions = {
   expectedVersions?: { sharer: string; reader: string };
@@ -24,7 +21,7 @@ function signalingFor(page: Page) {
     mdnsCandidates: 0, sentCandidates: 0, sentMdnsCandidates: 0,
     nonHostCandidates: 0, relayRequests: 0, contentLeaks: 0 };
   page.on('websocket', (socket) => {
-    if (new URL(socket.url()).host !== rendezvousHost) return;
+    if (new URL(socket.url()).origin !== rendezvousOrigin) return;
     const inspect = (sent: boolean) => ({ payload }: { payload: string | Buffer }) => {
       const raw = typeof payload === 'string' ? payload : payload.toString();
       state.frames++;
