@@ -14,12 +14,16 @@ for (const tool of tools) test(`${tool}: nearby discovery comes before setup wit
   // An empty directory keeps layout checks independent of who shares the CI
   // runner's public address. Native pairing is covered by the tool journeys.
   await page.addInitScript(() => {
+    (window as any).__pairedLayoutRoomAttempts = 0;
     class EmptyDirectory extends EventTarget {
       static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
       readyState = 0;
       constructor(public url: string) {
         super();
-        if (new URL(url).pathname !== '/discover') throw new Error('An idle layout must not open a pairing room.');
+        if (new URL(url).pathname !== '/discover') {
+          (window as any).__pairedLayoutRoomAttempts++;
+          throw new Error('An idle layout must not open a pairing room.');
+        }
         queueMicrotask(() => {
           if (this.readyState !== 0) return;
           this.readyState = 1; this.emit(new Event('open'));
@@ -53,4 +57,5 @@ for (const tool of tools) test(`${tool}: nearby discovery comes before setup wit
   await expect(help).toContainText(/internet/i);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1),
     'The discovery area and expanded network guidance fit the desktop or phone viewport.').toBe(true);
+  expect(await page.evaluate(() => (window as any).__pairedLayoutRoomAttempts)).toBe(0);
 });

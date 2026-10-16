@@ -95,7 +95,8 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
           this.emit(new Event('open'));
           const tool = new URL(this.url).searchParams.get('tool');
           this.emit(new MessageEvent('message', { data: JSON.stringify({ type: 'shares',
-            ...(tool && tool !== 'share-text' ? { tool } : {}), list: discoveryList }) }));
+            ...(tool && tool !== 'share-text' ? { tool } : {}),
+            list: discoveryList.map((room) => ({ ...room, local: true })) }) }));
         });
       }
       emit(event: Event) { this.dispatchEvent(event); (this as any)[`on${event.type}`]?.(event); }
