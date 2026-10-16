@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { BASE_URL } from '../../lib/site';
 import { hasOfflinePairing, offlineHooks, offlinePage, readOfflineOffer, createOfflineReply,
   acceptOfflineReply, freshOfflineOffer, nativeOfflineOnly, offlinePeersClosed, noOfflineServers,
-  networkHint } from '../../lib/offline-pairing';
+  networkHint, offlinePeerSnapshot } from '../../lib/offline-pairing';
 
 const secret = 'Offline private text: exact bytes — 日本語\nSecond line 0123456789';
 
@@ -47,7 +47,14 @@ test.describe('share-text: native offline pairing', () => {
       const answer = await createOfflineReply(first, 'share-text', offer); expect(answer).not.toContain(secret);
       await expect(page.locator('#requests button')).toHaveCount(0);
       await acceptOfflineReply(page, answer);
-      await expect(first.locator('#consent')).toBeVisible({ timeout: 20_000 });
+      try { await expect(first.locator('#consent')).toBeVisible({ timeout: 20_000 }); }
+      catch (error) {
+        await test.info().attach('offline-native-state', { contentType: 'application/json',
+          body: JSON.stringify({ host: await offlinePeerSnapshot(page), reader: await offlinePeerSnapshot(first),
+            hostStatus: await page.locator('#offline-accept-status').textContent(),
+            readerStatus: await first.locator('#text-offline-status').textContent() }) });
+        throw error;
+      }
       await expect(page.locator('#requests button')).toHaveCount(0);
       await consentAndAsk(first, page, 'First offline reader');
       await page.locator('#requests button').first().click();

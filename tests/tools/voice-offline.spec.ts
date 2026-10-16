@@ -2,23 +2,33 @@ import { test, expect, type Page } from '@playwright/test';
 import { hasOfflinePairing, offlineHooks, offlinePage, readOfflineOffer, createOfflineReply,
   acceptOfflineReply, freshOfflineOffer, nativeOfflineOnly, offlinePeersClosed, noOfflineServers,
   networkHint, type PairedTool } from '../../lib/offline-pairing';
-import { voiceHooks, receivedAudio, tracksStopped, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
+import { voiceHooks, receivedAudio, outputRms, tracksStopped, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
 
 async function prepareVoice(page: Page, tool: PairedTool, capture: 'allow' | 'deny') {
   await voiceHooks(page, capture); await offlineHooks(page); await offlinePage(page, tool);
 }
 
-async function audioArrives(page: Page) {
+async function audioArrives(page: Page, webAudio = false) {
   const before = await receivedAudio(page);
   await expect.poll(async () => (await receivedAudio(page)).packets, { timeout: 20_000 }).toBeGreaterThan(before.packets + 5);
-  await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
+  if (webAudio) await expect.poll(() => outputRms(page), { timeout: 20_000 }).toBeGreaterThan(0.01);
+  else await expect.poll(async () => (await receivedAudio(page)).energy, { timeout: 20_000 }).toBeGreaterThan(before.energy);
 }
 
-async function quietAfterVisibility(page: Page, toggle: string) {
+async function quietAfterInterruption(page: Page, toggle: string) {
   await installVoiceLifecycle(page);
   await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(true));
+  expect(await microphoneEnabled(page)).toBe(true);
+  await page.evaluate(() => {
+    (window as any).__voiceLifecycle.setHidden(false);
+    (window as any).__voiceLifecycle.interrupt('mute');
+  });
   await expect.poll(() => microphoneEnabled(page)).toBe(false);
-  await page.evaluate(() => (window as any).__voiceLifecycle.setHidden(false));
+  await page.evaluate(() => {
+    (window as any).__voiceLifecycle.setHidden(true);
+    (window as any).__voiceLifecycle.setHidden(false);
+    (window as any).__voiceLifecycle.interrupt('unmute');
+  });
   await expect(page.locator(toggle)).toHaveAttribute('aria-pressed', 'false');
   expect(await microphoneEnabled(page)).toBe(false);
 }
@@ -46,7 +56,7 @@ test('walkie-talkie: offline exchange reaches two receive-only listeners, keeps 
   await expect(page.locator('#pairing-status')).toBeHidden();
   await page.locator('#wt-toggle').click(); await expect.poll(() => microphoneEnabled(page)).toBe(true);
   await audioArrives(first); await audioArrives(second);
-  await quietAfterVisibility(page, '#wt-toggle');
+  await quietAfterInterruption(page, '#wt-toggle');
   for (const listener of [first, second]) {
     expect(await listener.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
     expect(await listener.evaluate(() => (window as any).__voiceQA.peers.every((peer: RTCPeerConnection) => peer.getSenders().every(sender => !sender.track)))).toBe(true);
@@ -148,8 +158,8 @@ test('voice-oncall: offline password, quiet Connect and moderation work for inde
   await expect(page.locator('#vi-participants > li')).toHaveCount(2);
   expect(await microphoneEnabled(second)).toBe(false);
   expect(await page.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
-  await first.locator('#vi-toggle').click(); await audioArrives(page);
-  await quietAfterVisibility(first, '#vi-toggle');
+  await first.locator('#vi-toggle').click(); await audioArrives(page, true);
+  await quietAfterInterruption(first, '#vi-toggle');
   await page.getByRole('button', { name: `Mute ${firstName}`, exact: true }).click();
   await expect(first.locator('#vi-status-text')).toContainText('The host muted you');
   await expect(first.locator('#vi-hold')).toBeDisabled(); expect(await microphoneEnabled(first)).toBe(false);
@@ -159,7 +169,7 @@ test('voice-oncall: offline password, quiet Connect and moderation work for inde
   await page.getByRole('button', { name: `Remove ${firstName}`, exact: true }).click();
   await expect(first.locator('#vi-status-text')).toContainText('The host removed you'); await tracksStopped(first);
   await expect(page.locator('#vi-participants > li')).toHaveCount(1);
-  await second.locator('#vi-toggle').click(); await audioArrives(page);
+  await second.locator('#vi-toggle').click(); await audioArrives(page, true);
   await nativeOfflineOnly(page, first, second);
   await page.locator('#vi-end').click(); await tracksStopped(second); await offlinePeersClosed(page, first, second);
   await expect.poll(async () => (await second.locator('#vi-status-text, #vi-offline-status').allTextContents()).join(' '))

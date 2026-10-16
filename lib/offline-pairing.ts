@@ -169,3 +169,26 @@ export async function offlinePeersClosed(...pages: Page[]) {
     .every((peer: RTCPeerConnection) => peer.connectionState === 'closed')), { timeout: 15_000 }).toBe(true);
   await noOfflineServers(...pages);
 }
+
+/** Failure evidence omits descriptions, addresses, keys, names and content. */
+export async function offlinePeerSnapshot(page: Page) {
+  return page.evaluate(async () => {
+    const qa = (window as any).__offlineQA;
+    const peers = [];
+    for (const peer of qa.peers as RTCPeerConnection[]) {
+      const pairs: Record<string, unknown>[] = [], channels: Record<string, unknown>[] = [];
+      try {
+        const report = await peer.getStats();
+        report.forEach(stat => {
+          if (stat.type === 'candidate-pair') pairs.push(Object.fromEntries(['state', 'nominated', 'requestsSent',
+            'responsesReceived', 'requestsReceived', 'responsesSent'].map(key => [key, stat[key]])));
+          if (stat.type === 'data-channel') channels.push(Object.fromEntries(['state', 'messagesSent',
+            'messagesReceived'].map(key => [key, stat[key]])));
+        });
+      } catch {}
+      peers.push({ connection: peer.connectionState, ice: peer.iceConnectionState, signaling: peer.signalingState,
+        gathering: peer.iceGatheringState, sctp: peer.sctp?.state, dtls: peer.sctp?.transport.state, pairs, channels });
+    }
+    return { sockets: qa.sockets, localTypes: qa.localTypes, remoteTypes: qa.remoteTypes, peers };
+  });
+}

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { canFakeCamera, hasCameraInterface, withoutThirdParties } from '../../lib/engine';
 import { hasOfflinePairing, offlineHooks, offlinePage, readOfflineOffer, createOfflineReply,
   acceptOfflineReply, freshOfflineOffer, nativeOfflineOnly, offlinePeersClosed, noOfflineServers,
-  networkHint } from '../../lib/offline-pairing';
+  networkHint, selectPairing } from '../../lib/offline-pairing';
 
 const TOOL = '/remote-camera/';
 const exists = discoverTools().includes('remote-camera');
@@ -712,6 +712,7 @@ test.describe('remote-camera: camera lifecycle', () => {
     test.skip(!captureRecovery, 'Camera capture recovery is awaiting the website release.');
     test.skip(!await canFakeCamera(page), 'This test engine cannot supply a native canvas camera.');
     await cameraHooks(page, 'allow', 'fail'); await sourcePage(page);
+    if (await page.locator('#pairing-options').count()) await selectPairing(page, 'online');
     const code = await page.locator('#camera-name').inputValue(); await page.locator('#camera-start').click();
     await tracksStopped(page); await expect(page.locator('#camera-status')).toContainText('Choose Resume camera to try the same viewer link');
     await expect(page.locator('#camera-code')).toHaveText(code);

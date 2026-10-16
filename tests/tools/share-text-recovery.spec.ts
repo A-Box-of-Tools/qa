@@ -3,6 +3,7 @@ import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { withoutThirdParties } from '../../lib/engine';
 import { ETOOLBOX_DIR } from '../../lib/site';
+import { hasOfflinePairing, selectPairing } from '../../lib/offline-pairing';
 
 const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/share-text/src/main.js'), 'utf8');
 const recoveredHostControls = source.includes('function hostSocket(code) {');
@@ -78,11 +79,27 @@ async function controlledPeer(page: Page, alreadyOpen = false, holdHost = false)
   }, { alreadyOpen, holdHost });
 }
 
+test('share-text: Automatic initial service failure requires a fresh manual attempt without retrying', async ({ page }) => {
+  test.skip(!hasOfflinePairing('share-text'), 'Automatic Share Text pairing is awaiting the website release.');
+  await controlledPeer(page, false, true); await page.clock.install(); await page.goto('/share-text/');
+  await expect(page.locator('#pairing-auto')).toBeChecked();
+  await page.locator('#code').fill('qa-automatic-host-failure'); await page.locator('#publish').click();
+  expect(await page.evaluate(() => (window as any).__shareRecovery.hosts.length)).toBe(1);
+  await page.evaluate(() => (window as any).__shareRecovery.hosts[0].fail());
+  await expect(page.locator('#pairing-options')).toHaveAttribute('data-pairing-mode', 'offline');
+  await expect(page.locator('#publish')).toBeVisible(); await expect(page.locator('#stop')).toBeHidden();
+  await expect(page.locator('#offline-offer')).toHaveValue('');
+  await page.clock.fastForward(60_100);
+  expect(await page.evaluate(() => (window as any).__shareRecovery.hosts.length)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__shareRecovery.peer)).toBeNull();
+});
+
 test('share-text: recovery after an initial socket failure exposes the link and Stop, which stays terminal', async ({ page }) => {
   test.skip(!recoveredHostControls, 'This website source predates host controls being initialized on every successful socket opening.');
   await controlledPeer(page, false, true);
   await page.clock.install();
   await page.goto('/share-text/');
+  if (await page.locator('#pairing-options').count()) await selectPairing(page, 'online');
   await page.locator('#code').fill('qa-initial-host-retry');
   await page.locator('#private').check();
   await page.locator('#local').check();

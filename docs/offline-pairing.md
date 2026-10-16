@@ -30,7 +30,8 @@ The native tool journeys cover:
   acknowledgement before media, native decoded frames, no viewer capture,
   stale/expired replies and capture/peer cleanup on Stop.
 - Local Walkie-Talkie: two receive-only listeners, initially quiet host capture,
-  explicit talking, native received audio, quiet foreground return and End.
+  explicit talking, native received audio, continued phone mode while merely
+  hidden, quiet return after capture interruption and End.
 - Voice Oncall: reply creation without microphone capture, separate Connect and
   Talk actions, password rejection/retry, two callers, host mute/unmute/removal
   and End. Cancel after password refusal and Disconnect during a delayed
