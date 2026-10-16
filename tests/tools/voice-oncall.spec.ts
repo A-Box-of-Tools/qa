@@ -1,13 +1,33 @@
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
-import { BASE_URL } from '../../lib/site';
+import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
+import fs from 'node:fs';
+import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, outputRms, voiceSnapshot, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/voice-oncall/';
 const exists = discoverTools().includes('voice-oncall');
+const topLevelNearby = exists && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/voice-oncall/body.html'), 'utf8').includes('data-pairing-nearby');
 // Discovery must recover within the live service's shared per-address budget.
 const DISCOVERY_TIMEOUT = 75_000;
+
+async function nativeRadioNavigation(page: Page) {
+  const probe = await page.context().newPage();
+  try {
+    await probe.setContent('<label>First<input id="first" type="radio" name="native-probe"></label><label>Last<input id="last" type="radio" name="native-probe" checked></label>');
+    const first = probe.locator('#first'), last = probe.locator('#last');
+    await last.focus(); await last.press('ArrowRight');
+    const edge = { first: await first.isChecked(), last: await last.isChecked() };
+    // WebKit stops at the group edge; Chromium wraps. The application's
+    // contract is preserving native adjacent navigation, not imposing wrap.
+    await last.check(); await last.focus(); await last.press('ArrowLeft');
+    await expect(first).toBeChecked(); await expect(first).toBeFocused();
+    await test.info().attach('native-radio-navigation', {
+      body: JSON.stringify({ edge, adjacentNavigation: 'passed' }), contentType: 'application/json',
+    });
+  } finally { await probe.close(); }
+}
 
 async function suspendVoicePage(page: Page) {
   await page.evaluate(() => {
@@ -66,6 +86,47 @@ test.describe('voice-oncall', () => {
     })).toEqual({ calls: [{ audio: true, video: false }], tracks: 0, peers: 0, rooms: 0 });
     await page.locator('#vi-leave').click();
     await expect(page.locator('#vi-join-form')).toBeVisible();
+  });
+
+  test('choosing a nearby pager from Host opens Connect without asking for a microphone', async ({ page }) => {
+    test.skip(!topLevelNearby, 'The shared nearby area is awaiting the website release.');
+    await nativeRadioNavigation(page);
+    const code = 'a'.repeat(64), openCode = 'b'.repeat(64);
+    await voiceHooks(page, 'deny', true, [{ code, name: 'QA protected pager', locked: true },
+      { code: openCode, name: 'QA open pager', locked: false }]);
+    await page.goto(TOOL);
+    await page.locator('#vi-tab-host').click();
+    await expect(page.locator('#vi-nearby')).toBeVisible();
+    const protectedPager = page.locator(`#vi-rooms input[value="${code}"]`);
+    const openPager = page.locator(`#vi-rooms input[value="${openCode}"]`);
+    await protectedPager.check();
+    await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#vi-sender-password')).toBeFocused();
+    await expect(page.locator('#vi-sender-name')).toHaveCount(0);
+    expect(await page.evaluate(() => {
+      const qa = (window as any).__voiceQA;
+      return { calls: qa.calls.length, peers: qa.peers.length,
+        rooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/inbox/')).length,
+        saved: sessionStorage.getItem('voice-oncall.senders') };
+    })).toEqual({ calls: 0, peers: 0, rooms: 0, saved: null });
+    await page.locator('#vi-tab-host').click();
+    await protectedPager.focus(); await protectedPager.press('ArrowLeft');
+    await expect(openPager).toBeChecked(); await expect(openPager).toBeFocused();
+    await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
+    await openPager.press('ArrowRight');
+    await expect(protectedPager).toBeChecked(); await expect(protectedPager).toBeFocused();
+    expect(await page.evaluate(() => [(window as any).__voiceQA.calls.length,
+      (window as any).__voiceQA.peers.length,
+      (window as any).__voiceQA.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/inbox/')).length])).toEqual([0, 0, 0]);
+    // Clicking the already-selected pager must still return from Host to its
+    // confirmation controls; keyboard selection keeps native radio navigation.
+    await page.locator('#vi-tab-host').click(); await protectedPager.click();
+    await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#vi-sender-password')).toBeFocused();
+    await page.locator('#vi-sender-password').fill('QA test password');
+    await page.locator('#vi-join').click();
+    await expect(page.locator('#vi-status-text')).toContainText('The microphone stopped or could not start.');
+    expect(await page.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(1);
   });
 
   test('a protected live pager preserves background audio and recovers capture without losing host moderation', async ({ page, browser, browserName }) => {

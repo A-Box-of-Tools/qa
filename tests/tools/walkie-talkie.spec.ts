@@ -1,11 +1,14 @@
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
-import { BASE_URL } from '../../lib/site';
+import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
+import fs from 'node:fs';
+import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/walkie-talkie/';
 const exists = discoverTools().includes('walkie-talkie');
+const explicitNearbyJoin = exists && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/walkie-talkie/body.html'), 'utf8').includes('id="wt-join"');
 // Parallel QA workers share the live service's address budget. Allow a rejected
 // discovery socket to retry after its reconnect delay and the minute window.
 const DISCOVERY_TIMEOUT = 75_000;
@@ -32,6 +35,30 @@ test.describe('walkie-talkie', () => {
       return { calls: qa.calls, tracks: qa.tracks.length, peers: qa.peers.length,
         rooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')).length };
     })).toEqual({ calls: [{ audio: true, video: false }], tracks: 0, peers: 0, rooms: 0 });
+  });
+
+  test('choosing a nearby channel waits for Join without creating capture, a room or a saved listener', async ({ page }) => {
+    test.skip(!explicitNearbyJoin, 'The separate nearby Join action is awaiting the website release.');
+    const code = 'a'.repeat(64), listenKey = 'b'.repeat(43), name = 'QA chosen channel';
+    await voiceHooks(page, 'deny', true, [{ code, listenKey, name }]);
+    await page.goto(TOOL);
+    await expect(page.locator('#wt-join')).toBeDisabled();
+    await page.locator('#wt-channels').getByRole('button', { name: `Choose ${name}`, exact: true }).click();
+    await expect(page.locator('#wt-selected-channel')).toContainText(name);
+    await expect(page.locator('#wt-join')).toBeEnabled();
+    await expect(page.locator('#wt-join')).toBeFocused();
+    expect(await page.evaluate(() => {
+      const qa = (window as any).__voiceQA;
+      return { calls: qa.calls.length, peers: qa.peers.length,
+        rooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')).length,
+        saved: sessionStorage.getItem('walkie-talkie.listener'), fragment: location.hash };
+    })).toEqual({ calls: 0, peers: 0, rooms: 0, saved: null, fragment: '' });
+    await page.evaluate(() => {
+      const directory = (window as any).__voiceQA.sockets.find((socket: WebSocket) => new URL(socket.url).pathname === '/discover');
+      directory.emit(new MessageEvent('message', { data: JSON.stringify({ type: 'shares', tool: 'walkie-talkie', list: [] }) }));
+    });
+    await expect(page.locator('#wt-channels button')).toHaveCount(0);
+    await expect(page.locator('#wt-join')).toBeDisabled();
   });
 
   test('an unlisted channel pairs by invitation, delivers native audio receive-only and releases both sides', async ({ page, browser, browserName }) => {
@@ -154,7 +181,14 @@ test.describe('walkie-talkie', () => {
       const channel = listener.locator('#wt-channels > li').filter({ hasText: channelName });
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
       await expect(channel.locator('span')).toHaveText(channelName);
-      await channel.getByRole('button', { name: `Join ${channelName}`, exact: true }).click();
+      await channel.getByRole('button', { name: `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true }).click();
+      if (explicitNearbyJoin) {
+        expect(await listener.evaluate(() => ({ calls: (window as any).__voiceQA.calls.length,
+          peers: (window as any).__voiceQA.peers.length,
+          rooms: (window as any).__voiceQA.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')).length })))
+          .toEqual({ calls: 0, peers: 0, rooms: 0 });
+        await listener.locator('#wt-join').click();
+      }
       await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
       await expect(page.locator('#wt-listener-count')).toHaveText('1 listener connected');
       await expect(listener.locator('#wt-listener')).toBeVisible();
@@ -231,7 +265,8 @@ test.describe('walkie-talkie', () => {
       expect(await listener.locator('#wt-audio').evaluate((audio: HTMLAudioElement) => audio.srcObject)).toBeNull();
       await peersClosed(listener);
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
-      await channel.getByRole('button', { name: `Join ${channelName}`, exact: true }).click();
+      await channel.getByRole('button', { name: `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true }).click();
+      if (explicitNearbyJoin) await listener.locator('#wt-join').click();
       await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
       await page.locator('#wt-toggle').click();
       await expect.poll(() => microphoneEnabled(page)).toBe(true);

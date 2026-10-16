@@ -54,7 +54,7 @@ function signalingFor(page: Page) {
 }
 
 /** Observe native connections without changing their configuration or delivery. */
-async function observePeers(page: Page): Promise<void> {
+async function observePeers(page: Page | BrowserContext): Promise<void> {
   await page.addInitScript(() => {
     const peers: RTCPeerConnection[] = [];
     (window as any).__qaLocalPeers = peers;
@@ -146,9 +146,9 @@ export async function runLocalShareJourney(
     expect(new URL(link).hash).toBe(`#${code}`);
 
     readerContext = await readerBrowser.newContext({ baseURL: BASE_URL });
+    await observePeers(readerContext);
     reader = await readerContext.newPage();
     readerSignaling = signalingFor(reader);
-    await observePeers(reader);
     const readerResponse = await reader.goto('/share-text/');
     expect(readerResponse?.status(), 'the reader page must load before discovery is checked').toBe(200);
     await expect(reader.locator('#text'), 'the reader tool must load before discovery is checked').toBeVisible();
@@ -156,9 +156,12 @@ export async function runLocalShareJourney(
     await expect(listedShare, 'being listed alone must not count as a working share')
       .toBeVisible({ timeout: 30_000 });
     await expect(listedShare).toHaveAttribute('href', link);
-    // Following the actual directory href keeps observers installed before
-    // startup without replacing the production discovery or consent controls.
-    await reader.goto((await listedShare.getAttribute('href'))!);
+    const draftPage = reader;
+    await draftPage.locator('#text').fill('QA unshared draft must stay in this tab');
+    [reader] = await Promise.all([readerContext.waitForEvent('page'), listedShare.click()]);
+    readerSignaling = signalingFor(reader);
+    await expect(draftPage.locator('#text')).toHaveValue('QA unshared draft must stay in this tab');
+    expect(await peerSummary(draftPage), 'opening a nearby share must not connect or publish the draft tab').toHaveLength(0);
     await expect(reader.locator('#consent')).toBeVisible({ timeout: 20_000 });
     await expect(reader.locator('#local-note')).toBeVisible();
     expect(await peerSummary(reader), 'discovery must not connect before consent').toHaveLength(0);

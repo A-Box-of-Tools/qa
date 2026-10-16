@@ -14,8 +14,9 @@ export function liveVoiceEndpoint(): string {
 
 /** Supply an oscillator instead of asking for a person's microphone. Peers,
  * codecs, received streams and the live signaling service remain native. */
-export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDiscovery = false) {
-  await page.addInitScript(({ capture, quietDiscovery }) => {
+export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDiscovery = false,
+  discoveryList: { code: string; name: string; locked?: boolean; listenKey?: string }[] = []) {
+  await page.addInitScript(({ capture, quietDiscovery, discoveryList }) => {
     const state = (window as any).__voiceQA = {
       calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[],
       peers: [] as RTCPeerConnection[], gains: [] as GainNode[], analysers: [] as AnalyserNode[],
@@ -94,7 +95,8 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
           this.emit(new Event('open'));
           const tool = new URL(this.url).searchParams.get('tool');
           this.emit(new MessageEvent('message', { data: JSON.stringify({ type: 'shares',
-            ...(tool && tool !== 'share-text' ? { tool } : {}), list: [] }) }));
+            ...(tool && tool !== 'share-text' ? { tool } : {}),
+            list: discoveryList.map((room) => ({ ...room, local: true })) }) }));
         });
       }
       emit(event: Event) { this.dispatchEvent(event); (this as any)[`on${event.type}`]?.(event); }
@@ -112,7 +114,7 @@ export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDis
         return socket;
       },
     });
-  }, { capture, quietDiscovery });
+  }, { capture, quietDiscovery, discoveryList });
 }
 
 export async function receivedAudio(page: Page): Promise<{ packets: number; energy: number }> {

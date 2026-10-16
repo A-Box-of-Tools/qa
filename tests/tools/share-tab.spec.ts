@@ -157,9 +157,13 @@ test.describe('share-tab: picker and terminal intent', () => {
     await expect.poll(() => broker.observed.discoveryMessages.some((frame) => frame.refresh === true)).toBe(true);
     await page.locator('#pairing-offline').check();
     await expect(page.locator('#discovery-panel')).toBeHidden();
+    const nearby = page.locator('[data-pairing-nearby]');
+    if (await nearby.count()) await expect(nearby).toBeHidden();
+    await expect(page.locator('#offline-note')).toBeVisible();
     expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
     await foreground(page);
     await page.locator('#pairing-online').check();
+    if (await nearby.count()) await expect(nearby).toBeVisible();
     expect(broker.observed.urls).toHaveLength(1);
     await expect(page.locator('#discovery-list button')).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).__tabQA.peers.length)).toBe(0);
