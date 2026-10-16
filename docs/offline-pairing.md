@@ -33,7 +33,9 @@ The native tool journeys cover:
   explicit talking, native received audio, quiet foreground return and End.
 - Voice Oncall: reply creation without microphone capture, separate Connect and
   Talk actions, password rejection/retry, two callers, host mute/unmute/removal
-  and End. Both voice adapters reject stale/expired pending exchanges.
+  and End. Cancel after password refusal and Disconnect during a delayed
+  microphone response retire the entire attempt, including a late track.
+  Both voice adapters reject stale/expired pending exchanges.
 
 The native camera/display/audio journeys run in Chromium because this suite's
 Linux WebKit build cannot supply the media fixtures those cases require. These

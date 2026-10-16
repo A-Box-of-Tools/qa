@@ -60,6 +60,58 @@ test('walkie-talkie: offline exchange reaches two receive-only listeners, keeps 
   await noOfflineServers(page, first, second);
 });
 
+test('voice-oncall: Cancel after password refusal and Disconnect during capture retire the whole offline attempt', async ({ page, context, browserName }) => {
+  test.skip(!hasOfflinePairing('voice-oncall'), 'Full offline voice pairing is awaiting the website release.');
+  test.skip(browserName !== 'chromium', 'Native microphone cleanup runs in Chromium; offline controls also run in WebKit.');
+  test.setTimeout(120_000);
+  const password = 'QA-offline-cancel-password';
+  await prepareVoice(page, 'voice-oncall', 'deny'); await page.locator('#vi-tab-host').click();
+  await page.locator('#vi-room-name').fill('Offline cancel QA'); await page.locator('#vi-password-required').check();
+  await page.locator('#vi-host-password').fill(password); await page.locator('#vi-start').click();
+  const offer = await readOfflineOffer(page, 'voice-oncall');
+  const caller = await context.newPage(); await prepareVoice(caller, 'voice-oncall', 'allow');
+  await acceptOfflineReply(page, await createOfflineReply(caller, 'voice-oncall', offer));
+  await expect(caller.locator('#vi-join')).toBeEnabled({ timeout: 20_000 });
+  await caller.locator('#vi-sender-password').fill('wrong-password'); await caller.locator('#vi-join').click();
+  await expect(caller.locator('#vi-status-text')).toContainText('That password did not match');
+  await caller.locator('#vi-offline-cancel').click(); await tracksStopped(caller); await offlinePeersClosed(caller);
+  for (const selector of ['#vi-tab-host', '#vi-tab-join', '#vi-start', '#offline-reply']) await expect(caller.locator(selector)).toBeEnabled();
+  await expect(caller.locator('#vi-offline-cancel')).toBeHidden();
+  await expect(caller.locator('#vi-leave')).toBeHidden();
+  await expect(page.locator('#vi-participants > li')).toHaveCount(0);
+
+  const next = await freshOfflineOffer(page, 'voice-oncall', offer);
+  await acceptOfflineReply(page, await createOfflineReply(caller, 'voice-oncall', next));
+  await expect(caller.locator('#vi-join')).toBeEnabled({ timeout: 20_000 });
+  await caller.evaluate(() => {
+    const media = navigator.mediaDevices, capture = media.getUserMedia.bind(media);
+    const pending = (window as any).__offlineCapture = { release: null as null | (() => void) };
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: new Proxy(media, {
+      get(target, property) {
+        if (property === 'getUserMedia') return async (constraints: MediaStreamConstraints) => {
+          const stream = await capture(constraints);
+          return new Promise<MediaStream>(resolve => { pending.release = () => resolve(stream); });
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) });
+  });
+  await caller.locator('#vi-sender-password').fill(password); await caller.locator('#vi-join').click();
+  await expect.poll(() => caller.evaluate(() => typeof (window as any).__offlineCapture.release)).toBe('function');
+  await expect(caller.locator('#pairing-auto')).toBeDisabled();
+  await caller.locator('#vi-leave').click();
+  await caller.evaluate(() => (window as any).__offlineCapture.release());
+  await tracksStopped(caller); await offlinePeersClosed(caller);
+  await expect(caller.locator('#vi-tab-host')).toBeEnabled(); await expect(caller.locator('#vi-start')).toBeEnabled();
+  await expect(caller.locator('#vi-leave')).toBeHidden();
+  await expect(page.locator('#vi-participants > li')).toHaveCount(0);
+  const calls = await caller.evaluate(() => (window as any).__voiceQA.calls.length);
+  await caller.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+  expect(await caller.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(calls);
+  await page.locator('#vi-end').click(); await offlinePeersClosed(page, caller); await noOfflineServers(page, caller);
+});
+
 test('voice-oncall: offline password, quiet Connect and moderation work for independently paired callers', async ({ page, context, browserName }) => {
   test.skip(!hasOfflinePairing('voice-oncall'), 'Full offline voice pairing is awaiting the website release.');
   test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; offline controls also run in WebKit.');
