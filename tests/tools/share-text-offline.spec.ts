@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { BASE_URL } from '../../lib/site';
 import { hasOfflinePairing, offlineHooks, offlinePage, readOfflineOffer, createOfflineReply,
   acceptOfflineReply, freshOfflineOffer, nativeOfflineOnly, offlinePeersClosed, noOfflineServers,
-  networkHint, offlinePeerSnapshot } from '../../lib/offline-pairing';
+  networkHint, offlinePeerSnapshot, independentOfflineProbe } from '../../lib/offline-pairing';
 
 const secret = 'Offline private text: exact bytes — 日本語\nSecond line 0123456789';
 
@@ -53,6 +53,8 @@ test.describe('share-text: native offline pairing', () => {
           body: JSON.stringify({ host: await offlinePeerSnapshot(page), reader: await offlinePeerSnapshot(first),
             hostStatus: await page.locator('#offline-accept-status').textContent(),
             readerStatus: await first.locator('#text-offline-status').textContent() }) });
+        await test.info().attach('independent-native-probe', { contentType: 'application/json',
+          body: JSON.stringify(await independentOfflineProbe(page, first)) });
         throw error;
       }
       await expect(page.locator('#requests button')).toHaveCount(0);

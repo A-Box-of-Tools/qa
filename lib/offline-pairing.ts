@@ -192,3 +192,54 @@ export async function offlinePeerSnapshot(page: Page) {
     return { sockets: qa.sockets, localTypes: qa.localTypes, remoteTypes: qa.remoteTypes, peers };
   });
 }
+
+/** A failed application handshake remains failed. This bounded control checks
+ * only whether the same native browser contexts can exchange host-only SCTP. */
+export async function independentOfflineProbe(host: Page, reader: Page) {
+  const initialize = async (page: Page, offer?: RTCSessionDescriptionInit) => page.evaluate(async offer => {
+    const peer = new RTCPeerConnection({ iceServers: [] });
+    const state = (window as any).__offlineNativeProbe = { peer, received: false, channel: null as RTCDataChannel | null };
+    const attach = (channel: RTCDataChannel) => {
+      state.channel = channel;
+      channel.onopen = () => { if (!offer) channel.send('ping'); };
+      channel.onmessage = event => {
+        if (event.data === 'ping') channel.send('pong');
+        if (event.data === 'pong') state.received = true;
+      };
+    };
+    peer.ondatachannel = event => attach(event.channel);
+    if (offer) await peer.setRemoteDescription(offer);
+    else attach(peer.createDataChannel('qa-offline-native-probe'));
+    await peer.setLocalDescription(offer ? await peer.createAnswer() : await peer.createOffer());
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('native probe gathering timeout')), 5_000);
+      const complete = () => {
+        if (peer.iceGatheringState !== 'complete') return;
+        clearTimeout(timer); peer.removeEventListener('icegatheringstatechange', complete); resolve();
+      };
+      peer.addEventListener('icegatheringstatechange', complete); complete();
+    });
+    return peer.localDescription!.toJSON();
+  }, offer);
+  try {
+    const offer = await initialize(host), answer = await initialize(reader, offer);
+    await host.evaluate(answer => (window as any).__offlineNativeProbe.peer.setRemoteDescription(answer), answer);
+    await host.evaluate(() => new Promise<void>(resolve => {
+      const state = (window as any).__offlineNativeProbe;
+      const timer = setTimeout(() => { clearInterval(poll); resolve(); }, 8_000);
+      const poll = setInterval(() => { if (state.received) { clearInterval(poll); clearTimeout(timer); resolve(); } }, 100);
+    }));
+    return await host.evaluate(() => {
+      const state = (window as any).__offlineNativeProbe;
+      return { received: state.received, connection: state.peer.connectionState,
+        ice: state.peer.iceConnectionState, channel: state.channel?.readyState };
+    });
+  } catch (error) {
+    return { error: error instanceof Error ? error.name : 'native probe failed' };
+  } finally {
+    for (const page of [host, reader]) await page.evaluate(() => {
+      const state = (window as any).__offlineNativeProbe;
+      state?.channel?.close(); state?.peer.close();
+    }).catch(() => {});
+  }
+}
