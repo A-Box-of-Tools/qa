@@ -73,12 +73,15 @@ test.describe('voice-oncall', () => {
 
   test('choosing a nearby pager from Host opens Connect without asking for a microphone', async ({ page }) => {
     test.skip(!topLevelNearby, 'The shared nearby area is awaiting the website release.');
-    const code = 'a'.repeat(64);
-    await voiceHooks(page, 'deny', true, [{ code, name: 'QA protected pager', locked: true }]);
+    const code = 'a'.repeat(64), openCode = 'b'.repeat(64);
+    await voiceHooks(page, 'deny', true, [{ code, name: 'QA protected pager', locked: true },
+      { code: openCode, name: 'QA open pager', locked: false }]);
     await page.goto(TOOL);
     await page.locator('#vi-tab-host').click();
     await expect(page.locator('#vi-nearby')).toBeVisible();
-    await page.locator(`#vi-rooms input[value="${code}"]`).check();
+    const protectedPager = page.locator(`#vi-rooms input[value="${code}"]`);
+    const openPager = page.locator(`#vi-rooms input[value="${openCode}"]`);
+    await protectedPager.check();
     await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#vi-sender-password')).toBeFocused();
     await expect(page.locator('#vi-sender-name')).toHaveCount(0);
@@ -88,6 +91,20 @@ test.describe('voice-oncall', () => {
         rooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/inbox/')).length,
         saved: sessionStorage.getItem('voice-oncall.senders') };
     })).toEqual({ calls: 0, peers: 0, rooms: 0, saved: null });
+    await page.locator('#vi-tab-host').click();
+    await protectedPager.focus(); await protectedPager.press('ArrowRight');
+    await expect(openPager).toBeChecked(); await expect(openPager).toBeFocused();
+    await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
+    await openPager.press('ArrowLeft');
+    await expect(protectedPager).toBeChecked(); await expect(protectedPager).toBeFocused();
+    expect(await page.evaluate(() => [(window as any).__voiceQA.calls.length,
+      (window as any).__voiceQA.peers.length,
+      (window as any).__voiceQA.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/inbox/')).length])).toEqual([0, 0, 0]);
+    // Clicking the already-selected pager must still return from Host to its
+    // confirmation controls; keyboard selection keeps native radio navigation.
+    await page.locator('#vi-tab-host').click(); await protectedPager.click();
+    await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#vi-sender-password')).toBeFocused();
     await page.locator('#vi-sender-password').fill('QA test password');
     await page.locator('#vi-join').click();
     await expect(page.locator('#vi-status-text')).toContainText('The microphone stopped or could not start.');
