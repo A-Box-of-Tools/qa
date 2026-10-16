@@ -12,6 +12,23 @@ const topLevelNearby = exists && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/
 // Discovery must recover within the live service's shared per-address budget.
 const DISCOVERY_TIMEOUT = 75_000;
 
+async function nativeRadioNavigation(page: Page) {
+  const probe = await page.context().newPage();
+  try {
+    await probe.setContent('<label>First<input id="first" type="radio" name="native-probe"></label><label>Last<input id="last" type="radio" name="native-probe" checked></label>');
+    const first = probe.locator('#first'), last = probe.locator('#last');
+    await last.focus(); await last.press('ArrowRight');
+    const edge = { first: await first.isChecked(), last: await last.isChecked() };
+    // WebKit stops at the group edge; Chromium wraps. The application's
+    // contract is preserving native adjacent navigation, not imposing wrap.
+    await last.check(); await last.focus(); await last.press('ArrowLeft');
+    await expect(first).toBeChecked(); await expect(first).toBeFocused();
+    await test.info().attach('native-radio-navigation', {
+      body: JSON.stringify({ edge, adjacentNavigation: 'passed' }), contentType: 'application/json',
+    });
+  } finally { await probe.close(); }
+}
+
 async function suspendVoicePage(page: Page) {
   await page.evaluate(() => {
     (window as any).__voiceLifecycle.setHidden(true);
@@ -73,6 +90,7 @@ test.describe('voice-oncall', () => {
 
   test('choosing a nearby pager from Host opens Connect without asking for a microphone', async ({ page }) => {
     test.skip(!topLevelNearby, 'The shared nearby area is awaiting the website release.');
+    await nativeRadioNavigation(page);
     const code = 'a'.repeat(64), openCode = 'b'.repeat(64);
     await voiceHooks(page, 'deny', true, [{ code, name: 'QA protected pager', locked: true },
       { code: openCode, name: 'QA open pager', locked: false }]);
@@ -92,10 +110,10 @@ test.describe('voice-oncall', () => {
         saved: sessionStorage.getItem('voice-oncall.senders') };
     })).toEqual({ calls: 0, peers: 0, rooms: 0, saved: null });
     await page.locator('#vi-tab-host').click();
-    await protectedPager.focus(); await protectedPager.press('ArrowRight');
+    await protectedPager.focus(); await protectedPager.press('ArrowLeft');
     await expect(openPager).toBeChecked(); await expect(openPager).toBeFocused();
     await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
-    await openPager.press('ArrowLeft');
+    await openPager.press('ArrowRight');
     await expect(protectedPager).toBeChecked(); await expect(protectedPager).toBeFocused();
     expect(await page.evaluate(() => [(window as any).__voiceQA.calls.length,
       (window as any).__voiceQA.peers.length,
