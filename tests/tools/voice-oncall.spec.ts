@@ -1,11 +1,14 @@
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
-import { BASE_URL } from '../../lib/site';
+import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
+import fs from 'node:fs';
+import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, outputRms, voiceSnapshot, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/voice-oncall/';
 const exists = discoverTools().includes('voice-oncall');
+const topLevelNearby = exists && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/voice-oncall/body.html'), 'utf8').includes('data-pairing-nearby');
 // Discovery must recover within the live service's shared per-address budget.
 const DISCOVERY_TIMEOUT = 75_000;
 
@@ -66,6 +69,29 @@ test.describe('voice-oncall', () => {
     })).toEqual({ calls: [{ audio: true, video: false }], tracks: 0, peers: 0, rooms: 0 });
     await page.locator('#vi-leave').click();
     await expect(page.locator('#vi-join-form')).toBeVisible();
+  });
+
+  test('choosing a nearby pager from Host opens Connect without asking for a microphone', async ({ page }) => {
+    test.skip(!topLevelNearby, 'The shared nearby area is awaiting the website release.');
+    const code = 'a'.repeat(64);
+    await voiceHooks(page, 'deny', true, [{ code, name: 'QA protected pager', locked: true }]);
+    await page.goto(TOOL);
+    await page.locator('#vi-tab-host').click();
+    await expect(page.locator('#vi-nearby')).toBeVisible();
+    await page.locator(`#vi-rooms input[value="${code}"]`).check();
+    await expect(page.locator('#vi-tab-join')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#vi-sender-password')).toBeFocused();
+    await expect(page.locator('#vi-sender-name')).toHaveCount(0);
+    expect(await page.evaluate(() => {
+      const qa = (window as any).__voiceQA;
+      return { calls: qa.calls.length, peers: qa.peers.length,
+        rooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/inbox/')).length,
+        saved: sessionStorage.getItem('voice-oncall.senders') };
+    })).toEqual({ calls: 0, peers: 0, rooms: 0, saved: null });
+    await page.locator('#vi-sender-password').fill('QA test password');
+    await page.locator('#vi-join').click();
+    await expect(page.locator('#vi-status-text')).toContainText('The microphone stopped or could not start.');
+    expect(await page.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(1);
   });
 
   test('a protected live pager preserves background audio and recovers capture without losing host moderation', async ({ page, browser, browserName }) => {

@@ -11,9 +11,10 @@ const exists = discoverTools().includes('remote-camera');
 // Production and a dev preview can use different discovery contracts while
 // a release awaits approval. The checked-out website source identifies each.
 const cameraSource = exists ? fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/src/main.js'), 'utf8') : '';
-const directDiscovery = cameraSource.includes("link.addEventListener('click'");
 const captureRecovery = cameraSource.includes('async function resumeCamera(');
 const cameraBody = exists ? fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/remote-camera/body.html'), 'utf8') : '';
+const selectNearby = cameraBody.includes('data-pairing-nearby');
+const directDiscovery = !selectNearby && cameraSource.includes("link.addEventListener('click'");
 const approvalPopup = cameraBody.includes('id="camera-request-dialog"');
 const connectionReports = cameraBody.includes('id="connection-report"');
 type CameraMode = 'allow' | 'deny' | 'pending';
@@ -324,16 +325,23 @@ async function requestCamera(viewer: Page, code: string, name: string, invitatio
 }
 
 async function requestListedCamera(viewer: Page, code: string, name: string) {
-  if (!directDiscovery) return requestCamera(viewer, code, name);
+  if (!directDiscovery && !selectNearby) return requestCamera(viewer, code, name);
   await viewer.goto(TOOL); await viewer.locator('#viewer-name').fill(name);
   await expect.poll(() => viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].some((socket: any) => socket.discovery && socket.readyState === 1))).toBe(true);
   await viewer.evaluate((code) => {
     const discovery = [...(window as any).__remoteCameraSockets.values()].find((socket: any) => socket.discovery && socket.readyState === 1) as any;
     discovery.receive({ type: 'shares', tool: 'remote-camera', list: [{ code, local: true }] });
   }, code);
-  const camera = viewer.locator('#discovery-list a'); await expect(camera).toHaveText(code);
+  const camera = viewer.locator(selectNearby ? '#discovery-list button' : '#discovery-list a');
+  await expect(camera).toContainText(code);
   await camera.focus(); await camera.press('Enter');
   await expect(viewer.locator('#viewer-code')).toHaveValue(code);
+  if (selectNearby) {
+    await expect(viewer.locator('#viewer-connect')).toBeFocused();
+    expect(await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => !socket.discovery).length)).toBe(0);
+    expect(await viewer.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
+    await viewer.locator('#viewer-connect').click();
+  }
   await expect(viewer.locator('#viewer-stop')).toBeFocused();
   expect(await viewer.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
   await expect.poll(() => viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()]
@@ -467,23 +475,47 @@ test.describe('remote-camera: camera lifecycle', () => {
   });
   test('a listed camera follows the shipped viewing request contract without capture', async ({ page }) => {
     await cameraHooks(page, 'deny', 'listed'); await page.goto(TOOL);
-    await expect(page.locator('#discovery-list a')).toHaveText('qa-listed-camera');
-    if (directDiscovery) await page.locator('#discovery-list a').evaluate((link: HTMLAnchorElement) => { link.click(); link.click(); (document.querySelector('#viewer-connect') as HTMLButtonElement).click(); });
-    else await page.locator('#discovery-list a').click();
+    const choice = page.locator(selectNearby ? '#discovery-list button' : '#discovery-list a');
+    await expect(choice).toContainText('qa-listed-camera');
+    if (directDiscovery) await choice.evaluate((link: HTMLElement) => { link.click(); link.click(); (document.querySelector('#viewer-connect') as HTMLButtonElement).click(); });
+    else await choice.click();
     await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
     await expect(page.locator('#viewer-panel')).toBeVisible();
     if (directDiscovery) {
       await expect(page.locator('#camera-panel')).toBeHidden(); await expect(page.locator('#camera-discovery')).toBeHidden();
       await expect(page.locator('#viewer-stop')).toBeFocused(); await expect(page.locator('#viewer-connect')).toBeDisabled();
     } else {
-      await expect(page.locator('#camera-discovery')).toBeVisible(); await expect(page.locator('#viewer-code')).toBeFocused();
+      await expect(page.locator('#camera-discovery')).toBeVisible();
+      await expect(page.locator(selectNearby ? '#viewer-connect' : '#viewer-code')).toBeFocused();
       await expect(page.locator('#viewer-connect')).toBeEnabled(); await expect(page.locator('#viewer-stop')).toBeHidden();
     }
     expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length, (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, directDiscovery ? 1 : 0]);
     expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => socket.discovery && socket.readyState === 1).map((socket: any) => new URL(socket.url).searchParams.get('tool')))).toEqual(['remote-camera']);
+    if (selectNearby) {
+      // Repeated selection cannot start the request; one deliberate Connect
+      // still opens exactly one room even if the click is delivered twice.
+      await choice.click();
+      expect(await page.evaluate(() => (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length)).toBe(0);
+      await page.locator('#viewer-connect').evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+      expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length,
+        (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 1]);
+      await expect(page.locator('#camera-discovery')).toBeHidden();
+    }
   });
-  test('a modified listed-camera click keeps its viewer link without pairing', async ({ page }) => {
+  test('a listed-camera choice preserves deliberate navigation and pairing', async ({ page }) => {
     await cameraHooks(page, 'deny', 'listed'); await page.goto(TOOL);
+    if (selectNearby) {
+      const choice = page.locator('#discovery-list button');
+      const before = page.url();
+      await expect(choice).toContainText('qa-listed-camera');
+      await choice.focus(); await choice.press('Enter');
+      await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
+      await expect(page.locator('#viewer-connect')).toBeFocused();
+      expect(page.url()).toBe(before);
+      expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length,
+        (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+      return;
+    }
     const camera = page.locator('#discovery-list a'); await expect(camera).toHaveText('qa-listed-camera');
     expect(await camera.getAttribute('href')).toContain('#qa-listed-camera');
     const intercepted = await camera.evaluate((link) => {
