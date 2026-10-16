@@ -7,11 +7,26 @@ data channels, encoding, RTP, decoding and playback remain native. Advancing
 decoded frames, dimensions and inbound RTP bytes establish that video flows;
 a visible video element alone does not.
 
+`tests/tools/share-tab-auto.spec.ts` also checks Automatic method selection.
+Those cases supply `navigator.onLine` and online/offline notifications while
+the page's assets remain available. They test how the interface uses a browser
+hint, not whether that hint accurately identifies an outage or reachable peer.
+
 The controlled broker forwards opaque introduction envelopes. It neither
 creates SDP nor grants approval. These cases verify:
 
 - Opening an invitation does not capture or connect. An ordinary host is not
   discoverable, and Request to watch opens only a `tool=share-tab` room.
+- Automatic starts with collapsed overrides and creates no socket from page
+  load or a network notification. An offline hint reveals manual exchange;
+  explicit Online/Offline overrides remain fixed and are not remembered on a
+  fresh load. An invitation, online code draft or manual block draft keeps its
+  intended method. Pending pickers/viewers and active hosts keep their method
+  until the attempt ends. A controlled introduction error event reveals manual
+  fields in Automatic only; a missing room or capture refusal does not.
+  No manual reply or capture starts from that fallback. Sharing manually after
+  the failure needs another click and a new native track; the ended track is
+  never reused.
 - Nearby browsing requires an explicit click. A valid Share Tab code from the
   local listing only fills the invitation and focuses Request to watch: it
   creates no peer, capture or request. Other-tool codes and non-local entries
@@ -123,6 +138,11 @@ the record even if changing networks or restarting fixes the next attempt.
    available and do not establish offline cache or physical file-transfer
    behavior. Test isolated/corporate networks, VPNs and local-network browser
    permission refusal; neither mode supplies a network or an internet relay.
+   Check Automatic's notice and the explicit overrides when the browser's
+   network indicator disagrees with actual service availability. Changing a
+   network during the picker or an active attempt must not change its method
+   or open a new picker. After a service outage, manual exchange must start
+   with fresh host/viewer actions and still require host approval.
 
 Screenshots are not required for this QA-only change: it changes no website
 interface. CI runs the tests; no local suite is part of this workflow.

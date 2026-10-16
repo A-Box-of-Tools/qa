@@ -321,8 +321,18 @@ export function tabBroker({ holdDescriptions = false, injectNonHostCandidates = 
 export async function prepareTabPage(page: Page, code?: string) {
   await withoutThirdParties(page);
   await page.goto(code ? `${SHARE_TAB}#${code}` : SHARE_TAB);
-  await expect(page.locator('#viewer-connect')).toBeVisible();
+  await expect(page.locator('#viewer-name')).toBeVisible();
   await expect(page.locator('#boot-warning')).toHaveCount(0);
+}
+
+export async function selectTabPairing(page: Page, method: 'auto' | 'online' | 'offline') {
+  const options = page.locator('#pairing-options');
+  // The released page exposes both radios directly; Automatic moves overrides
+  // into a disclosure without changing the deliberate method-selection action.
+  if (await options.count() && !await options.evaluate((element: HTMLDetailsElement) => element.open)) {
+    await options.locator('summary').click();
+  }
+  await page.locator(`#pairing-${method}`).check();
 }
 
 export async function startTabHost(page: Page, discoverable = false) {
@@ -337,7 +347,7 @@ export async function startTabHost(page: Page, discoverable = false) {
 export async function startOfflineTabHost(page: Page) {
   await prepareTabPage(page);
   await page.locator('#host-discoverable').check();
-  await page.locator('#pairing-offline').check();
+  await selectTabPairing(page, 'offline');
   await page.locator('#host-start').click();
   await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
   await expect(page.locator('#host-invitation')).toBeHidden();
@@ -346,7 +356,7 @@ export async function startOfflineTabHost(page: Page) {
 
 export async function replyOfflineTab(viewer: Page, offer: string, note: string) {
   await prepareTabPage(viewer);
-  await viewer.locator('#pairing-offline').check();
+  await selectTabPairing(viewer, 'offline');
   await viewer.locator('#offline-offer-input').fill(offer);
   await viewer.locator('#viewer-name').fill(note);
   await viewer.locator('#offline-reply').click();

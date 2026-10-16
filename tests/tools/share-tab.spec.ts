@@ -5,7 +5,7 @@ import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { liveRendezvous } from '../../lib/rendezvous';
 import {
-  tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
+  tabHooks, tabBroker, prepareTabPage, selectTabPairing, startTabHost, requestTab, requestRow,
   startOfflineTabHost, replyOfflineTab, localTabOnly, noTabSockets,
   noTabMedia, flowingTab, stoppedTab, type CaptureMode,
 } from '../../lib/share-tab';
@@ -102,7 +102,7 @@ test.describe('share-tab: picker and terminal intent', () => {
     await tabHooks(context, { capture: 'pending' }); await tabBroker().install(context);
     await prepareTabPage(page);
     await page.locator('#host-discoverable').check();
-    if (offline) await page.locator('#pairing-offline').check();
+    if (offline) await selectTabPairing(page, 'offline');
     await page.locator('#host-start').click();
     await expect.poll(() => page.evaluate(() => typeof (window as any).__tabQA.releaseCapture)).toBe('function');
     await page.locator('#host-stop').click();
@@ -155,14 +155,14 @@ test.describe('share-tab: picker and terminal intent', () => {
     })).toEqual([0, 0, 0]);
     await page.locator('#discovery-refresh').click();
     await expect.poll(() => broker.observed.discoveryMessages.some((frame) => frame.refresh === true)).toBe(true);
-    await page.locator('#pairing-offline').check();
+    await selectTabPairing(page, 'offline');
     await expect(page.locator('#discovery-panel')).toBeHidden();
     const nearby = page.locator('[data-pairing-nearby]');
     if (await nearby.count()) await expect(nearby).toBeHidden();
     await expect(page.locator('#offline-note')).toBeVisible();
     expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
     await foreground(page);
-    await page.locator('#pairing-online').check();
+    await selectTabPairing(page, 'online');
     if (await nearby.count()) await expect(nearby).toBeVisible();
     expect(broker.observed.urls).toHaveLength(1);
     await expect(page.locator('#discovery-list button')).toHaveCount(0);
@@ -399,6 +399,10 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const broker = tabBroker({ holdDescriptions: true }); await tabHooks(context); await broker.install(context);
     const { code } = await startTabHost(page), viewer = await context.newPage();
     await requestTab(viewer, code, 'Local connection failure'); await directFailure(viewer);
+    if (await viewer.locator('#pairing-auto').count()) {
+      await expect(viewer.locator('#pairing-options')).toHaveAttribute('data-pairing-mode', 'online');
+      await expect(viewer.locator('#pairing-options')).not.toHaveAttribute('open');
+    }
     await foreground(viewer);
     expect(await viewer.evaluate(() => {
       const state = (window as any).__tabQA;
@@ -459,7 +463,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const hostDownload = page.waitForEvent('download'); await page.locator('#save-offer').click();
     const offerFile = await hostDownload; expect(offerFile.suggestedFilename()).toBe('tab-offer.json');
     const offerBytes = await readFile((await offerFile.path())!); expect(offerBytes.toString('utf8')).toBe(offer);
-    await prepareTabPage(viewer); await viewer.locator('#pairing-offline').check();
+    await prepareTabPage(viewer); await selectTabPairing(viewer, 'offline');
     const offerChooser = viewer.waitForEvent('filechooser'); await viewer.locator('#choose-offer').click();
     await (await offerChooser).setFiles({ name: 'tab-offer.json', mimeType: 'application/json', buffer: offerBytes });
     await expect(viewer.locator('#offline-offer-input')).toHaveValue(offer);
@@ -482,7 +486,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
   test('invalid, mismatched and retired offline blocks never grant viewing consent', async ({ page, context }) => {
     await tabHooks(context, { live: true });
     const offer = await startOfflineTabHost(page), viewer = await context.newPage();
-    await prepareTabPage(viewer); await viewer.locator('#pairing-offline').check();
+    await prepareTabPage(viewer); await selectTabPairing(viewer, 'offline');
     for (const invalid of ['not-json', JSON.stringify({ format: 'share-tab-offline-v1' })]) {
       await viewer.locator('#offline-offer-input').fill(invalid); await viewer.locator('#offline-reply').click();
       await expect(viewer.locator('#viewer-status')).toContainText('host block is incomplete or unsupported');
