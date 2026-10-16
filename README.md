@@ -24,6 +24,7 @@ remaining capability and scenario boundaries.
 | [`tests/tool-pages.spec.ts`](tests/tool-pages.spec.ts) | Every tool page (discovered from the checkout, not hand-listed): frame renders, drop zone is wired up, privacy panel toggles, no JS errors, and — specific to this site's no-upload promise — no request to a host outside `config/site.toml`'s own CSP allowlist |
 | [`tests/responsive.spec.ts`](tests/responsive.spec.ts) | Sampled horizontal overflow, tap targets and header layout across the four projects |
 | [`tests/paired-layout.spec.ts`](tests/paired-layout.spec.ts) | All five Connect Devices tools put nearby discovery before setup, display Wi-Fi and hotspot guidance, and fit desktop and phone viewports; tool journeys separately verify that selecting a listing waits for explicit connection |
+| [`tests/offline-pairing.spec.ts`](tests/offline-pairing.spec.ts) | Shared Automatic/Offline choices, first-load suppression of every discovery/introduction socket, draft preservation and malformed/cross-tool refusal; native text, file, audio and video journeys exercise each tool's manual exchange and consent rules, with [coverage boundaries](docs/offline-pairing.md) |
 | [`tests/locales/`](tests/locales) | Every maintained language must be deployed; translated copies preserve IDs, phrase keys and placeholders; translated URLs serve the expected language. These source/HTTP checks run once, under Desktop Chrome. |
 | [`tests/localized-runtime.spec.ts`](tests/localized-runtime.spec.ts) | Spanish and Portuguese interface text and accessible attributes on every tool, plus real loaded/result journeys for 18 tools and representative malformed-file errors; catches unresolved phrases/placeholders and translated phrases falling back to English |
 | [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` serious/critical checks on every English tool, the English/Chinese hubs, a guide and the page types; representative loaded/error/dark states and Tab-reachability of every file picker |
@@ -140,8 +141,9 @@ even if updating and relaunching makes the next attempt work.
 The offline matrix verifies installed page/module availability for every tool
 on engines supporting offline emulation, plus a small real operation, not
 every export format without a connection.
-Share-text's shell can reload offline; sharing itself deliberately needs the
-network. The controlled cache test uses the deployed worker's unchanged bytes
+The pairing tools' newer manual-exchange mode is tested separately with native
+local peers and no server connection; older pages require online introductions.
+The controlled cache test uses the deployed worker's unchanged bytes
 on a local origin and never modifies the preview or production deployment.
 Its fallback checks stop that server and close its sockets, avoiding the
 [WebKit offline-emulation bug](https://github.com/microsoft/playwright/issues/42775)

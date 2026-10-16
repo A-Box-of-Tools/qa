@@ -5,6 +5,9 @@ import { liveRendezvous } from '../../lib/rendezvous';
 import fs from 'node:fs';
 import path from 'node:path';
 import { canFakeCamera, hasCameraInterface, withoutThirdParties } from '../../lib/engine';
+import { hasOfflinePairing, offlineHooks, offlinePage, readOfflineOffer, createOfflineReply,
+  acceptOfflineReply, freshOfflineOffer, nativeOfflineOnly, offlinePeersClosed, noOfflineServers,
+  networkHint } from '../../lib/offline-pairing';
 
 const TOOL = '/remote-camera/';
 const exists = discoverTools().includes('remote-camera');
@@ -17,6 +20,90 @@ const selectNearby = cameraBody.includes('data-pairing-nearby');
 const directDiscovery = !selectNearby && cameraSource.includes("link.addEventListener('click'");
 const approvalPopup = cameraBody.includes('id="camera-request-dialog"');
 const connectionReports = cameraBody.includes('id="connection-report"');
+
+async function offlineCameraHooks(page: Page, mode: CameraMode = 'allow') {
+  await cameraHooks(page, mode, 'live'); await offlineHooks(page);
+  await page.addInitScript(() => {
+    const rtc = (window as any).__remoteCameraRTC = { peers: [] as RTCPeerConnection[], tracks: [] as MediaStreamTrack[] };
+    const NativePeer = window.RTCPeerConnection;
+    window.RTCPeerConnection = new Proxy(NativePeer, { construct(target, args) {
+      const peer = Reflect.construct(target, args) as RTCPeerConnection; rtc.peers.push(peer);
+      peer.addEventListener('track', event => rtc.tracks.push(event.track)); return peer;
+    } });
+  });
+}
+
+test.describe('remote-camera: native offline pairing', () => {
+  test.beforeEach(async ({ page, browserName }) => {
+    test.skip(!hasOfflinePairing('remote-camera'), 'Full offline camera pairing is awaiting the website release.');
+    test.skip(browserName !== 'chromium', 'Native canvas camera transport runs in Chromium; offline control and malformed-input checks also run in WebKit.');
+    test.skip(!await canFakeCamera(page), 'This engine cannot provide native canvas camera tracks.');
+    test.setTimeout(120_000);
+  });
+
+  test('fresh exchanges admit two viewers independently, preserve approval and ACK, and stop without servers', async ({ page, context }) => {
+    await offlineCameraHooks(page); await offlinePage(page, 'remote-camera');
+    await page.locator('#camera-start').click();
+    const firstOffer = await readOfflineOffer(page, 'remote-camera');
+    await networkHint(page, true);
+    await expect(page.locator('#pairing-options')).toHaveAttribute('data-pairing-mode', 'offline');
+    await expect(page.locator('#pairing-status')).toBeHidden();
+    const first = await context.newPage(); await offlineCameraHooks(first, 'deny'); await holdCameraApprovalAck(first);
+    await offlinePage(first, 'remote-camera'); await first.locator('#viewer-name').fill('Offline first camera viewer');
+    const firstReply = await createOfflineReply(first, 'remote-camera', firstOffer);
+    await acceptOfflineReply(page, firstReply);
+    await expect(page.locator('#camera-request-dialog')).toBeVisible({ timeout: 20_000 });
+    const firstRequest = await pendingCameraRequest(page, first, 'Offline first camera viewer');
+    await firstRequest.approve.click();
+    await expect.poll(() => first.evaluate(() => (window as any).__cameraAck.held)).toBe(true);
+    expect(await first.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject)).toBeNull();
+    expect(await page.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.getSenders().every(sender => !sender.track)))).toBe(true);
+    await first.evaluate(() => (window as any).__cameraAck.release()); await flowingCamera(first);
+
+    const secondOffer = await freshOfflineOffer(page, 'remote-camera', firstOffer);
+    await flowingCamera(first);
+    const second = await context.newPage(); await offlineCameraHooks(second, 'deny'); await offlinePage(second, 'remote-camera');
+    await second.locator('#viewer-name').fill('Offline second camera viewer');
+    await acceptOfflineReply(page, await createOfflineReply(second, 'remote-camera', secondOffer));
+    const secondRequest = await pendingCameraRequest(page, second, 'Offline second camera viewer');
+    await flowingCamera(first); await secondRequest.approve.click(); await flowingCamera(second);
+    await nativeOfflineOnly(page, first, second);
+    for (const viewer of [first, second]) expect(await viewer.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
+    await networkHint(page, false);
+    await stopSharedCamera(page); await tracksStopped(page); await offlinePeersClosed(page, first, second);
+    for (const viewer of [first, second]) await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
+    await expect(page.locator('#offline-offer')).toHaveValue('');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    expect(await page.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(1);
+    await noOfflineServers(page, first, second);
+  });
+
+  test('retired and expired replies never create a viewer or revive a stopped camera', async ({ page, context }) => {
+    await offlineCameraHooks(page); await offlinePage(page, 'remote-camera'); await page.locator('#camera-start').click();
+    const offer = await readOfflineOffer(page, 'remote-camera');
+    const viewer = await context.newPage(); await offlineCameraHooks(viewer, 'deny'); await offlinePage(viewer, 'remote-camera');
+    await viewer.locator('#viewer-name').fill('Retired offline camera viewer');
+    const oldReply = await createOfflineReply(viewer, 'remote-camera', offer);
+    const next = await freshOfflineOffer(page, 'remote-camera', offer);
+    await acceptOfflineReply(page, oldReply);
+    await expect(page.locator('#offline-accept-status')).toContainText(/match|invalid|another/i);
+    await expect(page.locator('#camera-requests [data-action=approve]')).toHaveCount(0);
+    expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject)).toBeNull();
+    await viewer.locator('#viewer-stop').click();
+    const fresh = await context.newPage(); await offlineCameraHooks(fresh, 'deny'); await offlinePage(fresh, 'remote-camera');
+    await fresh.locator('#viewer-name').fill('Expired offline camera viewer');
+    const reply = await createOfflineReply(fresh, 'remote-camera', next);
+    await page.evaluate(expires => { Date.now = () => expires + 1; }, JSON.parse(next).expires);
+    await acceptOfflineReply(page, reply);
+    await expect(page.locator('#offline-accept-status')).toContainText(/expired/i);
+    await expect(page.locator('#camera-requests [data-action=approve]')).toHaveCount(0);
+    await page.locator('#camera-stop').click();
+    if (await page.locator('#camera-stop-dialog').isVisible()) await page.locator('#camera-stop-confirm').click();
+    await fresh.locator('#viewer-stop').click();
+    await tracksStopped(page); await offlinePeersClosed(page, viewer, fresh);
+    await noOfflineServers(page, viewer, fresh);
+  });
+});
 type CameraMode = 'allow' | 'deny' | 'pending';
 
 /** Native moving video exercises capture, encoding, decoding and track cleanup.

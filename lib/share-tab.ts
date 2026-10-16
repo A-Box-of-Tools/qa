@@ -346,7 +346,7 @@ export async function startTabHost(page: Page, discoverable = false) {
 
 export async function startOfflineTabHost(page: Page) {
   await prepareTabPage(page);
-  await page.locator('#host-discoverable').check();
+  if (await page.locator('#host-discoverable').isVisible()) await page.locator('#host-discoverable').check();
   await selectTabPairing(page, 'offline');
   await page.locator('#host-start').click();
   await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
@@ -378,7 +378,10 @@ export async function localTabOnly(...pages: Page[]) {
 }
 
 export async function noTabSockets(...pages: Page[]) {
-  for (const page of pages) expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(0);
+  for (const page of pages) {
+    expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(0);
+    expect(await page.evaluate(() => (window as any).__offlineQA?.sockets ?? 0)).toBe(0);
+  }
 }
 
 export async function requestTab(page: Page, code: string, note: string) {
