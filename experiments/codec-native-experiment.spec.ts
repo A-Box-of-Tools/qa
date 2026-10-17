@@ -1,5 +1,6 @@
 import { test, expect, devices } from '@playwright/test';
 import os from 'node:os';
+import { readFile } from 'node:fs/promises';
 
 const full = { codec: 'avc1.640034', width: 320, height: 240, framerate: 30, bitrate: 1_200_000, avc: { format: 'avc' } };
 const minimal = { codec: full.codec, width: full.width, height: full.height };
@@ -208,7 +209,7 @@ for (const variant of experiments) {
   });
 }
 
-test('app: actual Images example and Create with only the Linux guard bypassed', async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const warm of [false, true]) test(`${warm ? 'warm' : 'app'}: actual Images example and Create with only the Linux guard bypassed`, async ({ playwright, browserName, baseURL }, testInfo) => {
   const own = await playwright[browserName].launch();
   const evidence: any = { engine: browserName, browserVersion: own.version(), runnerPlatform: os.platform(), runnerRelease: os.release(), actualSafari: false, navigatorPlatformOverride: 'MacIntel', phases: [], heartbeats: 0 };
   let outer: ReturnType<typeof setTimeout> | undefined;
@@ -248,6 +249,7 @@ test('app: actual Images example and Create with only the Linux guard bypassed',
     page.on('crash', () => { evidence.pageCrashed = true; });
     await page.goto(new URL('/images-to-video/', baseURL).href);
     evidence.nativeAPIs = await page.evaluate(() => ({ encoder: typeof VideoEncoder, frame: typeof VideoFrame, platform: navigator.platform }));
+    if (warm) evidence.canPlayWarmup = await page.evaluate(() => ({ result: document.createElement('video').canPlayType('video/mp4; codecs="avc1.640034"') }));
     await page.getByRole('button', { name: /try (an )?example/i }).click();
     await expect(page.locator('#image-list li')).toHaveCount(12);
     const button = page.locator('#export');
@@ -261,14 +263,22 @@ test('app: actual Images example and Create with only the Linux guard bypassed',
     const operation = (async () => {
       await page.mouse.click(point.x, point.y);
       await page.waitForFunction(() => !document.querySelector<HTMLElement>('#result')!.hidden || !document.querySelector<HTMLElement>('#error')!.hidden, undefined, { timeout: 12_000 });
-      return page.evaluate(async () => {
+      const visible = await page.evaluate(() => {
         const error = document.querySelector<HTMLElement>('#error')!;
         if (!error.hidden) return { outcome: 'readable-refusal', message: error.textContent };
         const link = document.querySelector<HTMLAnchorElement>('#download')!;
-        const blob = await (await fetch(link.href)).blob();
         const video = document.querySelector<HTMLVideoElement>('#result video');
-        return { outcome: 'output', bytes: blob.size, mimeType: blob.type, filename: link.download, width: video?.videoWidth, height: video?.videoHeight, duration: video?.duration };
+        return { outcome: 'output', filename: link.download, width: video?.videoWidth, height: video?.videoHeight, duration: video?.duration };
       });
+      if (visible.outcome !== 'output') return visible;
+      const downloadEvent = page.waitForEvent('download');
+      await page.locator('#download').click();
+      const download = await downloadEvent;
+      const path = await download.path();
+      if (!path) return { outcome: 'download-missing' };
+      const bytes = await readFile(path);
+      await testInfo.attach('actual-images-output', { body: bytes, contentType: 'video/mp4' });
+      return { ...visible, bytes: bytes.length, container: bytes.toString('ascii', 4, 8), suggestedFilename: download.suggestedFilename() };
     })().catch(error => ({ outcome: 'operation-error', message: error.message }));
     result = await Promise.race([operation, new Promise(resolve => { outer = setTimeout(() => resolve({ outcome: 'outer-deadline' }), 15_000); })]);
     if (result.outcome === 'output' || result.outcome === 'readable-refusal') await testInfo.attach('actual-images-result', { body: await page.screenshot(), contentType: 'image/png' });
@@ -281,5 +291,5 @@ test('app: actual Images example and Create with only the Linux guard bypassed',
   }
   expect(result.outcome).toBe('output');
   expect(result.bytes).toBeGreaterThan(1000);
-  expect(result.mimeType).toBe('video/mp4');
+  expect(result.container).toBe('ftyp');
 });

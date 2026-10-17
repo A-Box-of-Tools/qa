@@ -7,7 +7,7 @@ on:
         default: https://pr-594.abox-preview.pages.dev/
         required: true
       scope:
-        description: native, crop, app, or identity (identity runs no encoder queries)
+        description: native, crop, app, warm, or identity (identity runs no encoder queries)
         default: native
         required: true
 permissions:
@@ -58,6 +58,12 @@ jobs:
           BASE_URL: ${{ inputs.base_url }}
         run: >-
           npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep 'app: '
+      - name: Confirm real Images output after ordinary media initialization
+        if: inputs.scope == 'warm'
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: >-
+          npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep 'warm: '
       - uses: actions/upload-artifact@v4
         if: always()
         with:
