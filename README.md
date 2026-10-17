@@ -29,6 +29,9 @@ remaining capability and scenario boundaries.
 | [`tests/localized-runtime.spec.ts`](tests/localized-runtime.spec.ts) | Spanish and Portuguese interface text and accessible attributes on every tool, plus real loaded/result journeys for 18 tools and representative malformed-file errors; catches unresolved phrases/placeholders and translated phrases falling back to English |
 | [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` serious/critical checks on every English tool, the English/Chinese hubs, a guide and the page types; representative loaded/error/dark states and Tab-reachability of every file picker |
 | [`tests/loaded-accessibility.spec.ts`](tests/loaded-accessibility.spec.ts) | Additional loaded/result and error states across text, checksum, PDF, GIF, data-URI and audio interfaces |
+| [`tests/tools/codec-worker.spec.ts`](tests/tools/codec-worker.spec.ts) | A synchronous controlled codec query blocks a real same-origin worker while the parent page remains responsive, terminates it and refuses or retries; ordered answers and missing-worker refusal run under each tool's CSP. The safe fake codec uses an explicit MacIntel platform identity to exercise the normal worker path; this does not claim native Apple Safari coverage. |
+| [`tests/tools/codec-native-initialization.spec.ts`](tests/tools/codec-native-initialization.spec.ts) | All twelve H.264 consumers and the Convert to MP4 VP8 example preserve native support and responsive retries. Linux WebKit's ordinary media initialization must precede its worker. Images to Video exports the real example twice, plays each result and downloads MP4 bytes checked by an independent box reader. The encoder, platform and native media answers are unmodified; these cases do not borrow the fixture's initialization. |
+| [`tests/tools/codec-native.spec.ts`](tests/tools/codec-native.spec.ts) | An isolated browser process independently queries the cold native encoder without product media initialization. A handshake records that the worker reached its validated invocation block, then records the parent acknowledgment and authorization to resume before the native call. The observed Linux WebKit failure remains an expected failure with JSON evidence; native recovery becomes an unexpected pass requiring review of the workaround. Unknown setup failures still fail. Missing APIs and observed crashes on other identities remain annotated diagnostic gaps. |
 | [`tests/offline.spec.ts`](tests/offline.spec.ts) | On engines passing an independent offline-emulation probe, every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML, independent nested caches and fallback after that origin is stopped. |
 | [`tests/handoff.spec.ts`](tests/handoff.spec.ts) | A generated PDF reaches the next tool byte-for-byte, is consumed once, and storage refusal opens the destination without partial input |
 | [`tests/tools/share-tab.spec.ts`](tests/tools/share-tab.spec.ts) | Native online/offline data-channel pairing, opt-in nearby discovery and withdrawal, selection without automatic connection, approval and acknowledgement before flowing video, pending/single-viewer limits, denial, receive-only controls, picker refusal/late grants, Stop/track-ended intent, host-only ICE filtering, offline block/file exchange and live discovery-to-video pairing; see the [coverage and physical acceptance boundaries](docs/share-tab-acceptance.md) |
@@ -119,6 +122,32 @@ WebKit's codec and storage capabilities differ from native Safari's. Firefox
 and physical devices are not projects in this suite. Native Safari/device
 checks remain useful for those boundaries; emulated phone viewports do not
 prove a hardware codec, camera or touch implementation.
+
+The [isolated native codec experiment](https://github.com/A-Box-of-Tools/qa/actions/runs/38999381961)
+observed Linux WebKit 26.5 stop its parent heartbeat before the parent deadline
+could fire after every tested native encoder query: full or minimal High
+profile, software preference, Baseline profile, and classic or module workers.
+All ten Chromium controls answered. The
+[identity-only run](https://github.com/A-Box-of-Tools/qa/actions/runs/38999678872)
+recorded the public Linux platform and Apple vendor even under Safari device
+emulation; those compatibility strings are distinct from the actual runner OS.
+The [initialization comparison](https://github.com/A-Box-of-Tools/qa/actions/runs/39002500749)
+then found that an ordinary main-page `video.canPlayType()` call let the same
+native worker query answer promptly. The
+[real export confirmation](https://github.com/A-Box-of-Tools/qa/actions/runs/39002694504)
+produced downloaded MP4 files in both engines after that initialization;
+native encoder APIs and the deployed worker were unchanged. This explains why
+the existing crop journey, which first loads a video, could already encode.
+The product initializes media on the affected runtime instead of discarding
+working Linux encoders. Native regression cases must preserve that output,
+while the independent cold query stays visible as an expected failure.
+Neither result proves native Safari encoding or promises that workers can
+contain every browser-process failure.
+
+During website PR #594 review, the user confirmed that Try an example followed
+by Create produced an MP4 on a real iPhone in Safari. The exact preview revision
+and Safari version were not recorded, so this is manual Apple-device evidence
+for that journey rather than a substitute for the exact-head CI results.
 
 Local network sharing uses bundled Chromium in two separate processes, plus a
 Windows slice using real versioned Chrome for Testing executables. The Windows
