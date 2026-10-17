@@ -130,7 +130,7 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
     test.fail(guardedRuntime && nativeObservation,
       'Known Linux WebKit native encoder failure (website #317); the unmodified product path must refuse before this query. A native pass requires reviewing the guard.');
     test.skip(result.outcome === 'unavailable', 'This independent native worker has no VideoEncoder capability API; native Safari encoding remains unverified.');
-    test.skip(!guardedRuntime && result.outcome === 'process-crashed' && evidence.queryPosted,
+    test.skip(!guardedRuntime && result.outcome === 'process-crashed' && evidence.queryEntered,
       'The independent native query crashed its browser process; a worker cannot contain this engine-wide failure. Native Safari remains unverified.');
     expect(['supported', 'unsupported', 'query-rejected', 'stalled-responsive']).toContain(result.outcome);
     expect(result.terminated).toBe(true);
