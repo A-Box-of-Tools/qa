@@ -7,7 +7,7 @@ data channels, encoding, RTP, decoding and playback remain native. Advancing
 decoded frames, dimensions and inbound RTP bytes establish that video flows;
 a visible video element alone does not.
 
-`tests/tools/share-tab-auto.spec.ts` also checks Automatic method selection.
+`tests/tools/share-tab-network.spec.ts` also checks network-state changes.
 Those cases supply `navigator.onLine` and online/offline notifications while
 the page's assets remain available. They test how the interface uses a browser
 hint, not whether that hint accurately identifies an outage or reachable peer.
@@ -17,20 +17,10 @@ creates SDP nor grants approval. These cases verify:
 
 - Opening an invitation does not capture or connect. An ordinary host is not
   discoverable, and Request to watch opens only a `tool=share-tab` room.
-- Automatic starts with collapsed overrides and creates no socket from page
-  load or a network notification. An offline hint reveals manual exchange;
-  explicit Online/Offline overrides remain fixed and are not remembered on a
-  fresh load. An invitation, online code draft or manual block draft keeps its
-  intended method. Pending pickers/viewers and active hosts keep their method
-  until the attempt ends. A controlled introduction error event reveals manual
-  fields in Automatic only; a missing room or capture refusal does not.
-  No manual reply or capture starts from that fallback. Sharing manually after
-  the failure needs another click and a new native track; the ended track is
-  never reused.
 - Nearby browsing requires an explicit click. A valid Share Tab code from the
   local listing only fills the invitation and focuses Request to watch: it
   creates no peer, capture or request. Other-tool codes and non-local entries
-  are ignored. Refresh, Stop looking, switching to Offline and pagehide are
+  are ignored. Refresh, Stop looking and pagehide are
   exercised; returning online or receiving pageshow does not reopen discovery.
 - Host discoverability is unchecked initially and frozen during capture. The
   opted-in room requests a local discovery lease, and only that lease permits
@@ -55,20 +45,11 @@ creates SDP nor grants approval. These cases verify:
   track's ended event and explicit Stop retire capture and peers; foreground
   notifications never request capture again. Starting again requires a click
   and a fresh invitation.
-- Both pairing methods construct peers with no ICE servers. A controlled
+- Pairing constructs peers with no ICE servers. A controlled
   failure stays terminal, with no automatic retry or internet relay control.
   Injected server-reflexive and relay candidates in both SDP and trickle
   traffic are removed before reaching the native peer, while the untouched
   native host candidates still establish moving video.
-- Offline mode exchanges real gathered data-only offers and replies through
-  the visible text fields and native file download/upload controls. It
-  constructs no WebSocket, even when the host first selected discoverability
-  before switching modes. Host acceptance still needs a separate approval
-  plus the encrypted acknowledgement before attaching video. Invalid,
-  mismatched, expired and retired exchange blocks grant no media access.
-  The expiry case advances only the host's Date.now at acceptance; it does
-  not wait ten minutes or replace native transport timers.
-
 One callback-ordering regression postpones the local open notification until
 after a real data-channel message. It masks readyState only during application
 listener registration, then uses the native writable channel. Both directions
@@ -86,7 +67,7 @@ an explicitly held native acknowledgement before moving video. Received
 listings contain only code/local fields; publications contain only code/lease,
 and the private introduction note stays out of introduction traffic. A third
 browser page observes the listing disappear after host Stop, since requesting
-a view closes that viewer's listing socket. Online and offline attempts must have empty ICE
+a view closes that viewer's listing socket. Pairing attempts must have empty ICE
 server configuration and host-only advertised/accepted candidates. There is
 no STUN/TURN fallback in Share Tab's current contract.
 
@@ -130,19 +111,13 @@ the record even if changing networks or restarting fixes the next attempt.
    button, tool Stop, tab closing and Wi-Fi loss. Confirm indicators, tracks
    and remote video end as appropriate. Returning never opens a picker;
    starting again requires a deliberate click and fresh invitation.
-5. Exercise online pairing and offline text/file exchange on a reachable
-   Wi-Fi, Ethernet or hotspot with separate devices. For offline acceptance,
-   first install/cache the real page, disconnect internet and exchange the
-   blocks through a local method. Verify reload, current-block expiry and
-   old replies after Stop. The automated cases keep the website HTTP origin
-   available and do not establish offline cache or physical file-transfer
-   behavior. Test isolated/corporate networks, VPNs and local-network browser
-   permission refusal; neither mode supplies a network or an internet relay.
-   Check Automatic's notice and the explicit overrides when the browser's
-   network indicator disagrees with actual service availability. Changing a
-   network during the picker or an active attempt must not change its method
-   or open a new picker. After a service outage, manual exchange must start
-   with fresh host/viewer actions and still require host approval.
+5. Pair separate devices on a reachable home Wi-Fi or Ethernet network with
+   internet available for the introduction. Test isolated/corporate networks,
+   VPNs and local-network browser permission refusal; the tool does not supply
+   an internet relay. A network hint during a picker or an active attempt must
+   not open another picker, submit a draft or restart a stopped session. A
+   service outage must explain the failure; starting again requires fresh
+   host/viewer actions and host approval. Manual offline pairing is not offered.
 
 Screenshots are not required for this QA-only change: it changes no website
 interface. CI runs the tests; no local suite is part of this workflow.

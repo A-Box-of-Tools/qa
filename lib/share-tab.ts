@@ -325,16 +325,6 @@ export async function prepareTabPage(page: Page, code?: string) {
   await expect(page.locator('#boot-warning')).toHaveCount(0);
 }
 
-export async function selectTabPairing(page: Page, method: 'auto' | 'online' | 'offline') {
-  const options = page.locator('#pairing-options');
-  // The released page exposes both radios directly; Automatic moves overrides
-  // into a disclosure without changing the deliberate method-selection action.
-  if (await options.count() && !await options.evaluate((element: HTMLDetailsElement) => element.open)) {
-    await options.locator('summary').click();
-  }
-  await page.locator(`#pairing-${method}`).check();
-}
-
 export async function startTabHost(page: Page, discoverable = false) {
   await prepareTabPage(page);
   if (discoverable) await page.locator('#host-discoverable').check();
@@ -342,26 +332,6 @@ export async function startTabHost(page: Page, discoverable = false) {
   await expect(page.locator('#share-link')).toHaveValue(/#tab-[a-z2-7]{16}$/, { timeout: 20_000 });
   const invitation = await page.locator('#share-link').inputValue();
   return { invitation, code: new URL(invitation).hash.slice(1) };
-}
-
-export async function startOfflineTabHost(page: Page) {
-  await prepareTabPage(page);
-  if (await page.locator('#host-discoverable').isVisible()) await page.locator('#host-discoverable').check();
-  await selectTabPairing(page, 'offline');
-  await page.locator('#host-start').click();
-  await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
-  await expect(page.locator('#host-invitation')).toBeHidden();
-  return page.locator('#offline-offer').inputValue();
-}
-
-export async function replyOfflineTab(viewer: Page, offer: string, note: string) {
-  await prepareTabPage(viewer);
-  await selectTabPairing(viewer, 'offline');
-  await viewer.locator('#offline-offer-input').fill(offer);
-  await viewer.locator('#viewer-name').fill(note);
-  await viewer.locator('#offline-reply').click();
-  await expect(viewer.locator('#offline-answer')).not.toHaveValue('', { timeout: 20_000 });
-  return viewer.locator('#offline-answer').inputValue();
 }
 
 export async function localTabOnly(...pages: Page[]) {
@@ -380,7 +350,6 @@ export async function localTabOnly(...pages: Page[]) {
 export async function noTabSockets(...pages: Page[]) {
   for (const page of pages) {
     expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(0);
-    expect(await page.evaluate(() => (window as any).__offlineQA?.sockets ?? 0)).toBe(0);
   }
 }
 

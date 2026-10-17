@@ -1,13 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { liveRendezvous } from '../../lib/rendezvous';
-import { offlineHooks, usesSharedPairingUI } from '../../lib/offline-pairing';
 import {
-  tabHooks, tabBroker, prepareTabPage, selectTabPairing, startTabHost, requestTab, requestRow,
-  startOfflineTabHost, replyOfflineTab, localTabOnly, noTabSockets,
+  tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
+  localTabOnly, noTabSockets,
   noTabMedia, flowingTab, stoppedTab, type CaptureMode,
 } from '../../lib/share-tab';
 
@@ -97,13 +95,12 @@ test.describe('share-tab: picker and terminal intent', () => {
     });
   }
 
-  for (const offline of [false, true]) test(`Stop retires a pending ${offline ? 'offline' : 'online'} picker and closes its late grant without recapturing`, async ({ page, context }) => {
+  test('Stop retires a pending picker and closes its late grant without recapturing', async ({ page, context }) => {
     test.skip(!await page.evaluate(() => typeof HTMLCanvasElement.prototype.captureStream === 'function'),
       'This engine has no independent native canvas track for the supplied picker result.');
     await tabHooks(context, { capture: 'pending' }); await tabBroker().install(context);
     await prepareTabPage(page);
     await page.locator('#host-discoverable').check();
-    if (offline) await selectTabPairing(page, 'offline');
     await page.locator('#host-start').click();
     await expect.poll(() => page.evaluate(() => typeof (window as any).__tabQA.releaseCapture)).toBe('function');
     await page.locator('#host-stop').click();
@@ -135,7 +132,7 @@ test.describe('share-tab: picker and terminal intent', () => {
     await expect(page.locator('#viewer-connect')).toBeEnabled();
   });
 
-  test('nearby browsing is explicit, selection only fills the code, and offline mode closes discovery', async ({ page, context }) => {
+  test('nearby browsing is explicit, selection only fills the code, and closing remains final', async ({ page, context }) => {
     const code = 'tab-abcdefghijklmnop';
     const broker = tabBroker({ discoveryList: [{ code, local: true },
       { code: 'camera-other-tool', local: true }, { code: 'tab-ponmlkjihgfedcba', local: false }] });
@@ -156,20 +153,6 @@ test.describe('share-tab: picker and terminal intent', () => {
     })).toEqual([0, 0, 0]);
     await page.locator('#discovery-refresh').click();
     await expect.poll(() => broker.observed.discoveryMessages.some((frame) => frame.refresh === true)).toBe(true);
-    await selectTabPairing(page, 'offline');
-    await expect(page.locator('#discovery-panel')).toBeHidden();
-    const nearby = page.locator('[data-pairing-nearby]');
-    if (await nearby.count()) await expect(nearby).toBeHidden();
-    await expect(page.locator('#offline-note, #offline-help').first()).toBeVisible();
-    expect(await page.evaluate(() => (window as any).__tabQA.sockets.every((socket: WebSocket) => socket.readyState === 3))).toBe(true);
-    await foreground(page);
-    await selectTabPairing(page, 'online');
-    if (await nearby.count()) await expect(nearby).toBeVisible();
-    expect(broker.observed.urls).toHaveLength(1);
-    await expect(page.locator('#discovery-list button')).toHaveCount(0);
-    expect(await page.evaluate(() => (window as any).__tabQA.peers.length)).toBe(0);
-    await page.locator('#discovery-start').click();
-    await expect(choice).toBeVisible();
     await page.locator('#discovery-close').click();
     await expect(page.locator('#discovery-start')).toBeFocused();
     await expect(page.locator('#discovery-panel')).toBeHidden();
@@ -400,10 +383,6 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const broker = tabBroker({ holdDescriptions: true }); await tabHooks(context); await broker.install(context);
     const { code } = await startTabHost(page), viewer = await context.newPage();
     await requestTab(viewer, code, 'Local connection failure'); await directFailure(viewer);
-    if (await viewer.locator('#pairing-auto').count()) {
-      await expect(viewer.locator('#pairing-options')).toHaveAttribute('data-pairing-mode', 'online');
-      await expect(viewer.locator('#pairing-options')).not.toHaveAttribute('open');
-    }
     await foreground(viewer);
     expect(await viewer.evaluate(() => {
       const state = (window as any).__tabQA;
@@ -426,106 +405,6 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     expect(broker.observed.candidates.every((type) => type === 'host')).toBe(true);
     expect(broker.observed.relayRequests).toBe(0);
     await page.locator('#host-stop').click(); await stoppedTab(viewer); await stoppedTab(page, true);
-  });
-
-  test('offline block exchange still needs approval plus ACK before native video and Stop retires the exchange', async ({ page, context }) => {
-    await offlineHooks(context);
-    await tabHooks(context, { holdAck: true, live: true });
-    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
-    const answer = await replyOfflineTab(viewer, offer, 'Offline approval boundary');
-    for (const block of [offer, answer]) {
-      const parsed = JSON.parse(block);
-      expect(parsed.format).toBe('share-tab-offline-v1');
-      expect(parsed.description.sdp.match(/^m=\w+/gm)).toEqual(['m=application']);
-      expect([...parsed.description.sdp.matchAll(/^a=candidate:[^\r\n]*\styp\s+(\w+)/gm)].map((match: RegExpMatchArray) => match[1]))
-        .toEqual(expect.arrayContaining(['host']));
-    }
-    await noTabMedia(page, viewer); await noTabSockets(page, viewer);
-    await page.locator('#offline-answer-input').fill(answer); await page.locator('#offline-accept').click();
-    const row = requestRow(page, 'Offline approval boundary'); await expect(row).toBeVisible({ timeout: 20_000 });
-    await noTabMedia(page, viewer);
-    await row.locator('[data-action="host.approve"]').click();
-    await expect.poll(() => viewer.evaluate(() => (window as any).__tabQA.ackHeld)).toBe(true);
-    await noTabMedia(page, viewer);
-    await viewer.evaluate(() => (window as any).__tabQA.releaseAck());
-    await flowingTab(viewer); await localTabOnly(page, viewer); await noTabSockets(page, viewer);
-    await expect(page.locator('#offline-accept')).toBeDisabled();
-    expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].getSenders().every((sender: RTCRtpSender) => !sender.track))).toBe(true);
-    await page.locator('#host-stop').click(); await stoppedTab(page, true); await stoppedTab(viewer);
-    await foreground(page); await foreground(viewer); await noTabSockets(page, viewer);
-    await expect(page.locator('#offline-offer')).toHaveValue('');
-    await expect(page.locator('#offline-answer-input')).toHaveValue('');
-    expect(await page.evaluate(() => [(window as any).__tabQA.captures.length, (window as any).__tabQA.peers.length])).toEqual([1, 1]);
-    expect(await viewer.evaluate(() => [(window as any).__tabQA.captures.length, (window as any).__tabQA.peers.length])).toEqual([0, 1]);
-  });
-
-  test('offline host and reply files round-trip complete native blocks without a WebSocket', async ({ page, context }) => {
-    await offlineHooks(context);
-    await tabHooks(context, { live: true });
-    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
-    const hostDownload = page.waitForEvent('download'); await page.locator('#save-offer').click();
-    const offerFile = await hostDownload; expect(offerFile.suggestedFilename()).toBe(usesSharedPairingUI('share-tab') ? 'pairing-offer.json' : 'tab-offer.json');
-    const offerBytes = await readFile((await offerFile.path())!); expect(offerBytes.toString('utf8')).toBe(offer);
-    await prepareTabPage(viewer); await selectTabPairing(viewer, 'offline');
-    const offerChooser = viewer.waitForEvent('filechooser'); await viewer.locator('#choose-offer').click();
-    await (await offerChooser).setFiles({ name: 'tab-offer.json', mimeType: 'application/json', buffer: offerBytes });
-    await expect(viewer.locator('#offline-offer-input')).toHaveValue(offer);
-    await viewer.locator('#viewer-name').fill('Offline file viewer'); await viewer.locator('#offline-reply').click();
-    await expect(viewer.locator('#offline-answer')).not.toHaveValue('', { timeout: 20_000 });
-    const answer = await viewer.locator('#offline-answer').inputValue();
-    const replyDownload = viewer.waitForEvent('download'); await viewer.locator('#save-answer').click();
-    const answerFile = await replyDownload; expect(answerFile.suggestedFilename()).toBe(usesSharedPairingUI('share-tab') ? 'pairing-answer.json' : 'tab-answer.json');
-    const answerBytes = await readFile((await answerFile.path())!); expect(answerBytes.toString('utf8')).toBe(answer);
-    const answerChooser = page.waitForEvent('filechooser'); await page.locator('#choose-answer').click();
-    await (await answerChooser).setFiles({ name: 'tab-answer.json', mimeType: 'application/json', buffer: answerBytes });
-    await expect(page.locator('#offline-answer-input')).toHaveValue(answer);
-    await page.locator('#offline-accept').click(); await noTabMedia(page, viewer);
-    await approve(page, viewer, 'Offline file viewer'); await localTabOnly(page, viewer); await noTabSockets(page, viewer);
-    await viewer.locator('#viewer-stop').click(); await stoppedTab(viewer);
-    await expect(page.locator('#host-stop')).toBeHidden(); await stoppedTab(page, true);
-    await foreground(page); await foreground(viewer); await noTabSockets(page, viewer);
-  });
-
-  test('invalid, mismatched and retired offline blocks never grant viewing consent', async ({ page, context }) => {
-    await offlineHooks(context);
-    await tabHooks(context, { live: true });
-    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
-    await prepareTabPage(viewer); await selectTabPairing(viewer, 'offline');
-    for (const invalid of ['not-json', JSON.stringify({ format: 'share-tab-offline-v1' })]) {
-      await viewer.locator('#offline-offer-input').fill(invalid); await viewer.locator('#offline-reply').click();
-      await expect(viewer.locator('#viewer-status')).toContainText((await viewer.locator('[data-phrase="offline.invalid-offer"]').textContent())!.trim());
-      expect(await viewer.evaluate(() => [(window as any).__tabQA.peers.length, (window as any).__tabQA.captures.length])).toEqual([0, 0]);
-    }
-    const answer = await replyOfflineTab(viewer, offer, 'Unapproved offline viewer');
-    const mismatch = JSON.parse(answer); mismatch.session = mismatch.session === '0'.repeat(32) ? '1'.repeat(32) : '0'.repeat(32);
-    for (const invalid of ['not-json', offer, JSON.stringify(mismatch)]) {
-      await page.locator('#offline-answer-input').fill(invalid); await page.locator('#offline-accept').click();
-      await expect(page.locator('#offline-accept-status')).toContainText('reply does not match');
-      await expect(page.locator('#offline-accept')).toBeEnabled();
-      await expect(page.locator('#viewer-requests li')).toHaveCount(0); await noTabMedia(page, viewer);
-    }
-    await page.locator('#host-stop').click(); await stoppedTab(page, true);
-    await page.locator('#host-start').click(); await expect(page.locator('#offline-offer')).not.toHaveValue('', { timeout: 20_000 });
-    expect(JSON.parse(await page.locator('#offline-offer').inputValue()).session).not.toBe(JSON.parse(offer).session);
-    await page.locator('#offline-answer-input').fill(answer); await page.locator('#offline-accept').click();
-    await expect(page.locator('#offline-accept-status')).toContainText('reply does not match');
-    await noTabMedia(page, viewer); await noTabSockets(page, viewer);
-    await page.locator('#host-stop').click(); await viewer.locator('#viewer-stop').click();
-    await stoppedTab(page, true); await stoppedTab(viewer);
-  });
-
-  test('an offline reply accepted after the host deadline is refused without media', async ({ page, context }) => {
-    await offlineHooks(context);
-    await tabHooks(context, { live: true });
-    const offer = await startOfflineTabHost(page), viewer = await context.newPage();
-    const answer = await replyOfflineTab(viewer, offer, 'Expired offline viewer');
-    await page.evaluate((expires) => { Date.now = () => expires + 1; }, JSON.parse(offer).expires);
-    await page.locator('#offline-answer-input').fill(answer); await page.locator('#offline-accept').click();
-    await expect(page.locator('#offline-accept-status')).toContainText('expired');
-    await expect(page.locator('#viewer-requests li')).toHaveCount(0);
-    await noTabMedia(page, viewer); await noTabSockets(page, viewer);
-    await page.locator('#host-stop').click(); await viewer.locator('#viewer-stop').click();
-    await stoppedTab(page, true); await stoppedTab(viewer);
   });
 
   test('live nearby discovery selects a code but Request, approval and ACK still precede native video', async ({ page, context }) => {
