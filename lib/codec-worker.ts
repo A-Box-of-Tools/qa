@@ -10,8 +10,8 @@ export async function codecWorkerFixture(
 ) {
   await context.addInitScript(({ workerFilename }) => {
     // This fixture replaces the codec with safe JavaScript, so it explicitly
-    // exercises the normal worker path. Unmodified runtime guard coverage is
-    // separate in codec-native-guard.spec.ts and never changes this identity.
+    // exercises the normal worker path without Linux media initialization.
+    // Unmodified runtime coverage is separate in codec-native-initialization.spec.ts.
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
     const state = {
       mainQueries: 0, encoderConstructions: 0, ticks: 0,
