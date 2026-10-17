@@ -7,7 +7,7 @@ on:
         default: https://pr-594.abox-preview.pages.dev/
         required: true
       scope:
-        description: native, crop, or identity (identity runs no encoder queries)
+        description: native, crop, app, or identity (identity runs no encoder queries)
         default: native
         required: true
 permissions:
@@ -50,6 +50,11 @@ jobs:
         env:
           BASE_URL: ${{ inputs.base_url }}
         run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep runtime-identity
+      - name: Compare native initialization and actual Images output
+        if: inputs.scope == 'app'
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep '^app:'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

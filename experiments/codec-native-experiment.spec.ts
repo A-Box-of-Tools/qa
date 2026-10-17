@@ -43,6 +43,7 @@ const experiments = [
   { type: 'module' as const, name: 'crop-exact-cold', configs: [{ ...full, width: 240, height: 160, framerate: 20, bitrate: 200_000 }], warmRecorder: false, scope: 'crop' },
   { type: 'module' as const, name: 'known-cold', configs: [full], warmRecorder: false, scope: 'crop' },
   { type: 'module' as const, name: 'known-after-native-recorder', configs: [full], warmRecorder: true, scope: 'crop' },
+  { type: 'module' as const, name: 'known-after-can-play-type', configs: [full], warmRecorder: false, warmCanPlay: true, scope: 'app' },
 ];
 
 for (const variant of experiments) {
@@ -104,6 +105,15 @@ for (const variant of experiments) {
         maxTouchPoints: navigator.maxTouchPoints,
         userAgentData: (navigator as any).userAgentData?.toJSON?.() ?? null,
       }));
+      if ('warmCanPlay' in variant && variant.warmCanPlay) {
+        let warmDeadline: ReturnType<typeof setTimeout> | undefined;
+        evidence.canPlayWarmup = await Promise.race([
+          page.evaluate(() => ({ result: document.createElement('video').canPlayType('video/mp4; codecs="avc1.640034"') })),
+          new Promise(resolve => { warmDeadline = setTimeout(() => resolve({ outcome: 'warmup-outer-deadline' }), 5_000); }),
+        ]);
+        clearTimeout(warmDeadline);
+        if (evidence.canPlayWarmup.outcome === 'warmup-outer-deadline') throw new Error('canPlayType warm-up exceeded its external deadline.');
+      }
       if (variant.warmRecorder) {
         let warmDeadline: ReturnType<typeof setTimeout> | undefined;
         evidence.recorderWarmup = await Promise.race([
@@ -197,3 +207,79 @@ for (const variant of experiments) {
     expect(evidence.phases.some((event: any) => event.phase === 'after-terminate')).toBe(true);
   });
 }
+
+test('app: actual Images example and Create with only the Linux guard bypassed', async ({ playwright, browserName, baseURL }, testInfo) => {
+  const own = await playwright[browserName].launch();
+  const evidence: any = { engine: browserName, browserVersion: own.version(), runnerPlatform: os.platform(), runnerRelease: os.release(), actualSafari: false, navigatorPlatformOverride: 'MacIntel', phases: [], heartbeats: 0 };
+  let outer: ReturnType<typeof setTimeout> | undefined;
+  let result: any;
+  try {
+    const context = await own.newContext();
+    await context.exposeFunction('__qaNativeAppProgress', (update: any) => {
+      if (update.phase) evidence.phases.push(update);
+      if (Number.isInteger(update.ticks)) evidence.heartbeats = update.ticks;
+    });
+    await context.addInitScript(() => {
+      // This experiment removes only the proposed Linux guard. All codec APIs,
+      // settings, workers and output processing remain the production ones.
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+      const report = (update: any) => (window as any).__qaNativeAppProgress(update);
+      let ticks = 0;
+      setInterval(() => { void report({ ticks: ++ticks }); }, 100);
+      const NativeWorker = Worker;
+      Object.defineProperty(window, 'Worker', { configurable: true, value: class extends NativeWorker {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          super(url, options);
+          void report({ phase: 'worker-created', url: String(url) });
+          this.addEventListener('message', event => { void report({ phase: 'worker-reply', answer: event.data }); });
+        }
+        postMessage(data: any, transferOrOptions?: any) {
+          void report({ phase: 'worker-query-posted', configs: data?.configs });
+          return super.postMessage(data, transferOrOptions);
+        }
+        terminate() {
+          void report({ phase: 'worker-terminate-called' });
+          super.terminate();
+          void report({ phase: 'worker-terminate-returned' });
+        }
+      } });
+    });
+    const page = await context.newPage();
+    page.on('crash', () => { evidence.pageCrashed = true; });
+    await page.goto(new URL('/images-to-video/', baseURL).href);
+    evidence.nativeAPIs = await page.evaluate(() => ({ encoder: typeof VideoEncoder, frame: typeof VideoFrame, platform: navigator.platform }));
+    await page.getByRole('button', { name: /try (an )?example/i }).click();
+    await expect(page.locator('#image-list li')).toHaveCount(12);
+    const button = page.locator('#export');
+    await button.scrollIntoViewIfNeeded();
+    await expect(button).toBeEnabled();
+    const box = await button.boundingBox();
+    expect(box).not.toBeNull();
+    const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    expect(await page.evaluate(point => document.elementFromPoint(point.x, point.y)?.closest('#export') != null, point)).toBe(true);
+    evidence.phases.push({ phase: 'before-create', ticks: evidence.heartbeats });
+    const operation = (async () => {
+      await page.mouse.click(point.x, point.y);
+      await page.waitForFunction(() => !document.querySelector<HTMLElement>('#result')!.hidden || !document.querySelector<HTMLElement>('#error')!.hidden, undefined, { timeout: 12_000 });
+      return page.evaluate(async () => {
+        const error = document.querySelector<HTMLElement>('#error')!;
+        if (!error.hidden) return { outcome: 'readable-refusal', message: error.textContent };
+        const link = document.querySelector<HTMLAnchorElement>('#download')!;
+        const blob = await (await fetch(link.href)).blob();
+        const video = document.querySelector<HTMLVideoElement>('#result video');
+        return { outcome: 'output', bytes: blob.size, mimeType: blob.type, filename: link.download, width: video?.videoWidth, height: video?.videoHeight, duration: video?.duration };
+      });
+    })().catch(error => ({ outcome: 'operation-error', message: error.message }));
+    result = await Promise.race([operation, new Promise(resolve => { outer = setTimeout(() => resolve({ outcome: 'outer-deadline' }), 15_000); })]);
+    if (result.outcome === 'output' || result.outcome === 'readable-refusal') await testInfo.attach('actual-images-result', { body: await page.screenshot(), contentType: 'image/png' });
+  } finally {
+    clearTimeout(outer);
+    evidence.result = result ?? { outcome: 'setup-error' };
+    await testInfo.attach('native-codec-phases', { body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json' });
+    console.log(JSON.stringify(evidence));
+    await own.close();
+  }
+  expect(result.outcome).toBe('output');
+  expect(result.bytes).toBeGreaterThan(1000);
+  expect(result.mimeType).toBe('video/mp4');
+});
