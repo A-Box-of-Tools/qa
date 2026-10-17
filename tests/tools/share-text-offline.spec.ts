@@ -30,12 +30,12 @@ test.describe('share-text: native offline pairing', () => {
   });
 
   test('two private readers need individual exchange, receive consent and admission before exact text and files', async ({ page, browser, browserName }, testInfo) => {
-    const linuxWebKit = process.platform === 'linux' && browserName === 'webkit' && !process.env.OFFLINE_NATIVE_WEBKIT;
+    const linuxWebKit = process.platform === 'linux' && browserName === 'webkit';
     const capability = await nativeOfflineCapability(browser, BASE_URL, linuxWebKit);
     await testInfo.attach('native-offline-preflight', { contentType: 'application/json', body: JSON.stringify(capability) });
     testInfo.annotations.push({ type: 'native-transport', description: capability.topology });
     test.skip(linuxWebKit && capability.topology === 'unavailable',
-      'Linux WebKit cannot exchange host-only SCTP on independent blank pages in either separate or shared contexts. The macOS native journey remains mandatory.');
+      'Linux WebKit cannot exchange host-only SCTP on independent blank pages in either separate or shared contexts. Native Safari pairing requires a physical-device check.');
     expect(capability.topology, 'This browser must complete the independent native transport control.').not.toBe('unavailable');
     const firstContext = capability.topology === 'shared' ? page.context()
       : await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });

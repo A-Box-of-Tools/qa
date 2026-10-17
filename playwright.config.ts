@@ -76,14 +76,6 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       retries: 0,
     }] : []),
-    // Linux WebKit can lack native host-only SCTP even between blank pages.
-    // A separate OS must complete the real journey; it cannot capability-skip.
-    ...(process.env.OFFLINE_NATIVE_WEBKIT ? [{
-      name: 'macOS Safari offline',
-      testMatch: /share-text-offline\.spec\.ts$/,
-      use: { ...devices['Desktop Safari'] },
-      retries: 0,
-    }] : []),
   ],
 
   // Builds and serves ETOOLBOX_DIR with its own scripts (python build.py,

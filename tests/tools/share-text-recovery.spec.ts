@@ -97,8 +97,11 @@ test('share-text: Automatic initial service failure requires a fresh manual atte
 test('share-text: recovery after an initial socket failure exposes the link and Stop, which stays terminal', async ({ page }) => {
   test.skip(!recoveredHostControls, 'This website source predates host controls being initialized on every successful socket opening.');
   await controlledPeer(page, false, true);
-  await page.clock.install();
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
   await page.goto('/share-text/');
+  // Runner latency during the Stop click must not consume the queued retry's
+  // five-second window. Pause before any host attempt, from a fixed baseline.
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
   if (await page.locator('#pairing-options').count()) await selectPairing(page, 'online');
   await page.locator('#code').fill('qa-initial-host-retry');
   await page.locator('#private').check();
