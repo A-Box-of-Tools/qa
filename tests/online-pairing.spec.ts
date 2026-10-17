@@ -17,12 +17,9 @@ const removed = '#pairing-options, #pairing-auto, #pairing-online, #pairing-offl
 const site = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config/site.toml'), 'utf8');
 
 for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${tool.slug}: ${query ? 'a retired manual-mode URL' : 'the normal page'} keeps online pairing and nearby choices`, async ({ page }) => {
-  const source = path.join(ETOOLBOX_DIR, 'tools', tool.slug, 'body.html');
-  const body = fs.existsSync(source) ? fs.readFileSync(source, 'utf8') : '';
   // Only the not-yet-released production tree can lack this contract. A preview
   // which reintroduces controls or loses the normal UI must fail its assertions.
-  test.skip(onProductionDomain() && (!body.includes('data-pairing-nearby')
-    || /pairing-options|offline-offer-input/.test(body) || !/^pairing_cached\s*=/m.test(site)),
+  test.skip(onProductionDomain() && !/^pairing_cached\s*=/m.test(site),
     'The simplified online pairing interface is awaiting the website release.');
   await withoutThirdParties(page);
   // A browser's hint is not evidence about service availability. This supplies

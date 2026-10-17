@@ -5,11 +5,8 @@ import { ETOOLBOX_DIR, onProductionDomain } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { tabHooks, tabBroker, prepareTabPage, startTabHost, noTabSockets, stoppedTab } from '../../lib/share-tab';
 
-const source = path.join(ETOOLBOX_DIR, 'tools/share-tab/body.html');
-const body = fs.existsSync(source) ? fs.readFileSync(source, 'utf8') : '';
 const site = fs.readFileSync(path.join(ETOOLBOX_DIR, 'config/site.toml'), 'utf8');
-const awaitingProduction = onProductionDomain() && (!body || /pairing-options|offline-offer-input/.test(body)
-  || !/^pairing_cached\s*=/m.test(site));
+const awaitingProduction = onProductionDomain() && !/^pairing_cached\s*=/m.test(site);
 const code = 'tab-abcdefghijklmnop';
 
 async function networkHint(context: BrowserContext, online = true) {
