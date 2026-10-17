@@ -39,12 +39,12 @@ jobs:
         if: inputs.scope == 'native'
         env:
           BASE_URL: ${{ inputs.base_url }}
-        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep '^native:'
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep 'native: module:|native: classic:'
       - name: Compare cold crop settings and native recorder warm-up
         if: inputs.scope == 'crop'
         env:
           BASE_URL: ${{ inputs.base_url }}
-        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep '^crop:'
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep 'crop: module:'
       - name: Read only public runtime identity
         if: inputs.scope == 'identity'
         env:
@@ -54,7 +54,7 @@ jobs:
         if: inputs.scope == 'app'
         env:
           BASE_URL: ${{ inputs.base_url }}
-        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep '^app:'
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep 'app: '
       - uses: actions/upload-artifact@v4
         if: always()
         with:
