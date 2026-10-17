@@ -2,13 +2,17 @@ import { expect, type BrowserContext, type Page } from '@playwright/test';
 
 export type CodecFixtureMode = 'blocking' | 'supported' | 'missing';
 
-/** Keep the real worker, CSP and protocol, replacing only the platform query. */
+/** Keep the real worker, CSP and protocol around a controlled codec query. */
 export async function codecWorkerFixture(
   context: BrowserContext,
   workerFilename: string,
   mode: CodecFixtureMode,
 ) {
   await context.addInitScript(({ workerFilename }) => {
+    // This fixture replaces the codec with safe JavaScript, so it explicitly
+    // exercises the normal worker path. Unmodified runtime guard coverage is
+    // separate in codec-native-guard.spec.ts and never changes this identity.
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
     const state = {
       mainQueries: 0, encoderConstructions: 0, ticks: 0,
       workers: [] as Array<{ url: string; terminated: boolean; queries: string[] }>,

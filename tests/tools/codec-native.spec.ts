@@ -61,6 +61,9 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
         if (update.posted) evidence.queryPosted = true;
       });
       await page.goto(pageURL);
+      evidence.publicNavigator = await page.evaluate(() => ({
+        userAgent: navigator.userAgent, platform: navigator.platform, vendor: navigator.vendor,
+      }));
       const work = page.evaluate((workerURL) => new Promise((resolve) => {
         let ticks = 0;
         let entered = false;
@@ -113,8 +116,21 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
       });
     }
     testInfo.annotations.push({ type: 'native-codec-worker', description: result.outcome });
+    const identity = evidence.publicNavigator;
+    const guardedRuntime = identity && /^Linux\b/i.test(identity.platform)
+      && identity.vendor === 'Apple Computer, Inc.' && /\bAppleWebKit\//.test(identity.userAgent)
+      && !/\b(?:Chromium|Chrome|CriOS|Edg|EdgA|EdgiOS|OPR|Firefox|FxiOS)\//.test(identity.userAgent);
+    // The independent query deliberately bypasses the product guard. Keep
+    // this engine failure visible and make a native recovery an unexpected
+    // pass, which signals that the conservative guard needs reconsideration.
+    // A setup failure before native query entry does not qualify.
+    const nativeObservation = evidence.queryEntered && [
+      'supported', 'unsupported', 'query-rejected', 'stalled-responsive', 'parent-unresponsive', 'process-crashed',
+    ].includes(result.outcome);
+    test.fail(guardedRuntime && nativeObservation,
+      'Known Linux WebKit native encoder failure (website #317); the unmodified product path must refuse before this query. A native pass requires reviewing the guard.');
     test.skip(result.outcome === 'unavailable', 'This independent native worker has no VideoEncoder capability API; native Safari encoding remains unverified.');
-    test.skip(result.outcome === 'process-crashed' && evidence.queryPosted,
+    test.skip(!guardedRuntime && result.outcome === 'process-crashed' && evidence.queryPosted,
       'The independent native query crashed its browser process; a worker cannot contain this engine-wide failure. Native Safari remains unverified.');
     expect(['supported', 'unsupported', 'query-rejected', 'stalled-responsive']).toContain(result.outcome);
     expect(result.terminated).toBe(true);
