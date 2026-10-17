@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR } from '../../lib/site';
 import { encodePng } from '../../lib/image-fixtures';
-import { codecWorkerFixture, codecState, responsiveDuringCodecQuery } from '../../lib/codec-worker';
+import { codecWorkerFixture, codecState, prepareCodecResponsiveness, responsiveDuringCodecQuery } from '../../lib/codec-worker';
 
 const workerFilename = 'codec-support-worker.js';
 const available = fs.existsSync(path.join(ETOOLBOX_DIR, 'shared', 'js', workerFilename));
@@ -65,12 +65,13 @@ for (const slug of tools) {
   test(`${slug}: a synchronously blocked codec worker cannot freeze the page or multiply the deadline`, async ({ page, context }) => {
     await codecWorkerFixture(context, workerFilename, 'blocking');
     await page.goto(`/${slug}/`);
+    const clickTarget = await prepareCodecResponsiveness(page);
     await startProbe(page, slug);
     // A missing asset or CSP refusal also returns null. Neither can satisfy
     // this marker proving the real worker entered the synchronous query.
     await expect.poll(async () => (await codecState(page)).workers[0]?.queries, { timeout: 5_000 })
       .toEqual(['avc1.640034']);
-    await responsiveDuringCodecQuery(page);
+    await responsiveDuringCodecQuery(page, clickTarget);
     await completedProbe(page, null);
     await onlyWorkerQueries(page, slug, ['avc1.640034']);
   });
@@ -111,11 +112,13 @@ test('images-to-video: a blocked worker yields a readable refusal and a fresh ex
   await codecWorkerFixture(context, workerFilename, 'blocking');
   await loadImages(page);
   for (const attempt of [1, 2]) {
+    await page.locator('#export').scrollIntoViewIfNeeded();
+    const clickTarget = await prepareCodecResponsiveness(page);
     await page.locator('#export').click({ timeout: 5_000 });
     await expect.poll(async () => (await codecState(page)).workers.length).toBe(attempt);
     await expect.poll(async () => (await codecState(page)).workers[attempt - 1]?.queries)
       .toEqual(['avc1.640034']);
-    await responsiveDuringCodecQuery(page);
+    await responsiveDuringCodecQuery(page, clickTarget);
     await refusedExport(page);
     await testInfo.attach(attempt === 1 ? 'codec-refusal' : 'codec-explicit-retry-refusal', {
       body: await page.screenshot(), contentType: 'image/png',
@@ -126,6 +129,7 @@ test('images-to-video: a blocked worker yields a readable refusal and a fresh ex
 test('convert-to-mp4: its VP8 example also isolates a blocked capability query', async ({ page, context }) => {
   await codecWorkerFixture(context, workerFilename, 'blocking');
   await page.goto('/convert-to-mp4/');
+  const clickTarget = await prepareCodecResponsiveness(page);
   await page.evaluate(async () => {
     const url = '/convert-to-mp4/src/example.js';
     const { makeExample } = await import(url);
@@ -136,7 +140,7 @@ test('convert-to-mp4: its VP8 example also isolates a blocked capability query',
       .finally(() => { state.done = true; });
   });
   await expect.poll(async () => (await codecState(page)).workers[0]?.queries).toEqual(['vp8']);
-  await responsiveDuringCodecQuery(page);
+  await responsiveDuringCodecQuery(page, clickTarget);
   await expect.poll(() => page.evaluate(() => (window as any).__codecExample.done), { timeout: 8_000 }).toBe(true);
   expect(await page.evaluate(() => (window as any).__codecExample.error)).toBe('example.novp8');
   await onlyWorkerQueries(page, 'convert-to-mp4', ['vp8']);
