@@ -6,6 +6,10 @@ on:
         description: Deployed origin whose CSP is preserved
         default: https://pr-594.abox-preview.pages.dev/
         required: true
+      scope:
+        description: identity runs no native encoder queries
+        default: native
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -32,9 +36,15 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.engine }}
       - name: Run only independent native codec variants
+        if: inputs.scope != 'identity'
         env:
           BASE_URL: ${{ inputs.base_url }}
-        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}"
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep-invert runtime-identity
+      - name: Read only public runtime identity
+        if: inputs.scope == 'identity'
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep runtime-identity
       - uses: actions/upload-artifact@v4
         if: always()
         with:

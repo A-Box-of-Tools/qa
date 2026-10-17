@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, devices } from '@playwright/test';
 import os from 'node:os';
 
 const full = { codec: 'avc1.640034', width: 320, height: 240, framerate: 30, bitrate: 1_200_000, avc: { format: 'avc' } };
@@ -10,6 +10,33 @@ const variants = [
   { name: 'high-minimal', configs: [minimal] },
   { name: 'high-minimal-then-full', configs: [minimal, full] },
 ];
+
+test('runtime-identity: public navigator strings in default and emulated contexts', async ({ playwright, browserName, baseURL }, testInfo) => {
+  const own = await playwright[browserName].launch();
+  const evidence: any = { engine: browserName, browserVersion: own.version(), runnerPlatform: os.platform(), runnerRelease: os.release(), runnerArchitecture: os.arch(), contexts: [] };
+  try {
+    for (const profile of ['default', 'Desktop Safari', 'iPhone 13']) {
+      const device = profile === 'default' ? {} : devices[profile];
+      const { userAgent, viewport, deviceScaleFactor, isMobile, hasTouch } = device;
+      const context = await own.newContext(profile === 'default' ? {} : { userAgent, viewport, deviceScaleFactor, isMobile, hasTouch });
+      const page = await context.newPage();
+      await page.route('**/*', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Identity only</title>' }));
+      await page.goto(new URL('/images-to-video/?qa-identity=1', baseURL).href);
+      const identity = await page.evaluate(() => ({
+        userAgent: navigator.userAgent, platform: navigator.platform, vendor: navigator.vendor,
+        maxTouchPoints: navigator.maxTouchPoints,
+        userAgentData: (navigator as any).userAgentData?.toJSON?.() ?? null,
+      }));
+      evidence.contexts.push({ configuredProfile: profile, configuredUserAgent: userAgent ?? null, publicNavigator: identity });
+      await context.close();
+    }
+  } finally {
+    await own.close();
+    await testInfo.attach('native-runtime-identity', { body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json' });
+    console.log(JSON.stringify(evidence));
+  }
+  expect(evidence.contexts).toHaveLength(3);
+});
 
 for (const type of ['module', 'classic'] as const) for (const variant of variants) {
   test(`${type}: ${variant.name}`, async ({ playwright, browserName, baseURL }, testInfo) => {
@@ -64,6 +91,11 @@ for (const type of ['module', 'classic'] as const) for (const variant of variant
         if (Number.isInteger(update.heartbeats)) evidence.heartbeats = update.heartbeats;
       });
       await page.goto(pageURL);
+      evidence.publicNavigator = await page.evaluate(() => ({
+        userAgent: navigator.userAgent, platform: navigator.platform, vendor: navigator.vendor,
+        maxTouchPoints: navigator.maxTouchPoints,
+        userAgentData: (navigator as any).userAgentData?.toJSON?.() ?? null,
+      }));
       const work = page.evaluate(({ workerURL, type, configs }) => new Promise(resolve => {
         const report = (update: any) => (window as any).__qaProgress(update);
         let settled = false;
