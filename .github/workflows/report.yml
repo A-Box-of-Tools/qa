@@ -7,7 +7,7 @@ on:
         default: https://pr-594.abox-preview.pages.dev/
         required: true
       scope:
-        description: identity runs no native encoder queries
+        description: native, crop, or identity (identity runs no encoder queries)
         default: native
         required: true
 permissions:
@@ -36,10 +36,15 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.engine }}
       - name: Run only independent native codec variants
-        if: inputs.scope != 'identity'
+        if: inputs.scope == 'native'
         env:
           BASE_URL: ${{ inputs.base_url }}
-        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep-invert runtime-identity
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep '^native:'
+      - name: Compare cold crop settings and native recorder warm-up
+        if: inputs.scope == 'crop'
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: npx playwright test --config=codec-experiment.config.ts --project="${{ matrix.project }}" --grep '^crop:'
       - name: Read only public runtime identity
         if: inputs.scope == 'identity'
         env:

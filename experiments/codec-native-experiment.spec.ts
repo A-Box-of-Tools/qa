@@ -38,8 +38,16 @@ test('runtime-identity: public navigator strings in default and emulated context
   expect(evidence.contexts).toHaveLength(3);
 });
 
-for (const type of ['module', 'classic'] as const) for (const variant of variants) {
-  test(`${type}: ${variant.name}`, async ({ playwright, browserName, baseURL }, testInfo) => {
+const experiments = [
+  ...(['module', 'classic'] as const).flatMap(type => variants.map(variant => ({ type, ...variant, warmRecorder: false, scope: 'native' }))),
+  { type: 'module' as const, name: 'crop-exact-cold', configs: [{ ...full, width: 240, height: 160, framerate: 20, bitrate: 200_000 }], warmRecorder: false, scope: 'crop' },
+  { type: 'module' as const, name: 'known-cold', configs: [full], warmRecorder: false, scope: 'crop' },
+  { type: 'module' as const, name: 'known-after-native-recorder', configs: [full], warmRecorder: true, scope: 'crop' },
+];
+
+for (const variant of experiments) {
+  const { type } = variant;
+  test(`${variant.scope}: ${type}: ${variant.name}`, async ({ playwright, browserName, baseURL }, testInfo) => {
     // Every question receives a new native browser process. A failed native
     // query cannot poison the engine used to ask the next question.
     const own = await playwright[browserName].launch();
@@ -96,6 +104,39 @@ for (const type of ['module', 'classic'] as const) for (const variant of variant
         maxTouchPoints: navigator.maxTouchPoints,
         userAgentData: (navigator as any).userAgentData?.toJSON?.() ?? null,
       }));
+      if (variant.warmRecorder) {
+        let warmDeadline: ReturnType<typeof setTimeout> | undefined;
+        evidence.recorderWarmup = await Promise.race([
+          page.evaluate(async () => {
+            if (typeof MediaRecorder !== 'function') return { outcome: 'unavailable', available: false };
+            const mimeType = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp8', 'video/webm'].find(type => MediaRecorder.isTypeSupported(type));
+            if (!mimeType) return { outcome: 'no-supported-mime', available: true };
+            const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240;
+            const drawing = canvas.getContext('2d')!;
+            const stream = canvas.captureStream(20);
+            const chunks: Blob[] = [];
+            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_200_000 });
+            const done = new Promise<any>(resolve => {
+              recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+              recorder.onstop = () => resolve({ outcome: 'recorded', available: true, mimeType: recorder.mimeType, bytes: chunks.reduce((sum, chunk) => sum + chunk.size, 0) });
+              recorder.onerror = event => resolve({ outcome: 'recorder-error', available: true, name: (event as any).error?.name ?? 'Error' });
+            });
+            let frame = 0;
+            const draw = setInterval(() => { drawing.fillStyle = frame++ % 2 ? 'red' : 'blue'; drawing.fillRect(0, 0, 320, 240); }, 40);
+            try {
+              recorder.start();
+              await new Promise(resolve => setTimeout(resolve, 400));
+              recorder.stop();
+              return await done;
+            } finally { clearInterval(draw); stream.getTracks().forEach(track => track.stop()); }
+          }).catch(error => ({ outcome: 'warmup-error', message: error.message })),
+          new Promise(resolve => { warmDeadline = setTimeout(() => resolve({ outcome: 'warmup-outer-deadline' }), 5_000); }),
+        ]);
+        clearTimeout(warmDeadline);
+        // Absence is evidence too: a separate Chromium fixture generator cannot
+        // warm the WebKit process that will receive this native question.
+        if (evidence.recorderWarmup.outcome === 'warmup-outer-deadline') throw new Error('Native recorder warm-up exceeded its external deadline.');
+      }
       const work = page.evaluate(({ workerURL, type, configs }) => new Promise(resolve => {
         const report = (update: any) => (window as any).__qaProgress(update);
         let settled = false;
