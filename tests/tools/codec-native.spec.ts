@@ -16,7 +16,8 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
     const evidence: any = {
       engine: own.browserType().name(), version: own.version(), project: testInfo.project.name,
       native: true, pageCode: 'independent blank page', workerCode: 'independent native query',
-      queryPosted: false, queryEntered: false, heartbeats: 0, pageCrashed: false,
+      queryPosted: false, queryEntered: false, entryAcknowledged: false,
+      resumeAuthorized: false, heartbeats: 0, pageCrashed: false,
     };
     let result: any;
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -33,14 +34,22 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
       });
       await context.route(workerURL, (route) => route.fulfill({
         status: 200, contentType: 'application/javascript', body: `
+          let pendingConfig = null;
           self.onmessage = async ({ data }) => {
-            if (typeof self.VideoEncoder?.isConfigSupported !== 'function') {
-              self.postMessage({ kind: 'unavailable' });
+            if (data.kind === 'prepare') {
+              if (typeof self.VideoEncoder?.isConfigSupported !== 'function') {
+                self.postMessage({ kind: 'unavailable' });
+                return;
+              }
+              pendingConfig = data.config;
+              self.postMessage({ kind: 'entered' });
               return;
             }
-            self.postMessage({ kind: 'entered' });
+            if (data.kind !== 'resume' || !pendingConfig) return;
+            const config = pendingConfig;
+            pendingConfig = null;
             try {
-              const answer = await self.VideoEncoder.isConfigSupported(data);
+              const answer = await self.VideoEncoder.isConfigSupported(config);
               self.postMessage({ kind: 'answered', supported: answer?.supported === true });
             } catch (error) {
               self.postMessage({ kind: 'rejected', name: error?.name || 'Error' });
@@ -57,6 +66,8 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
       });
       await page.exposeFunction('__qaNativeProgress', (update: any) => {
         if (update.entered) evidence.queryEntered = true;
+        if (update.entryAcknowledged) evidence.entryAcknowledged = true;
+        if (update.resumeAuthorized) evidence.resumeAuthorized = true;
         if (Number.isInteger(update.heartbeats)) evidence.heartbeats = update.heartbeats;
         if (update.posted) evidence.queryPosted = true;
       });
@@ -67,6 +78,7 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
       const work = page.evaluate((workerURL) => new Promise((resolve) => {
         let ticks = 0;
         let entered = false;
+        let resumed = false;
         let settled = false;
         const start = performance.now();
         const worker = new Worker(workerURL, { type: 'module' });
@@ -79,13 +91,28 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
           settled = true;
           clearTimeout(timer); clearInterval(heartbeat);
           worker.terminate();
-          resolve({ outcome, entered, ticks, terminated: true, elapsed: performance.now() - start, ...extra });
+          resolve({ outcome, entered, resumed, ticks, terminated: true, elapsed: performance.now() - start, ...extra });
         };
-        const timer = setTimeout(() => finish(entered ? 'stalled-responsive' : 'worker-no-entry'), 3_000);
-        worker.onmessage = ({ data }) => {
+        const timer = setTimeout(() => finish(resumed ? 'stalled-responsive'
+          : entered ? 'entry-acknowledgment-timeout' : 'worker-no-entry'), 3_000);
+        worker.onmessage = async ({ data }) => {
           if (data.kind === 'entered') {
             entered = true;
-            void (window as any).__qaNativeProgress({ entered: true });
+            // This proves the worker reached its validated invocation block,
+            // not that the native call has already returned or even begun.
+            // Keep it paused until Node has recorded entry: an immediate
+            // native process freeze can otherwise swallow this message.
+            try {
+              await (window as any).__qaNativeProgress({ entered: true });
+              if (settled) return;
+              await (window as any).__qaNativeProgress({ entryAcknowledged: true, resumeAuthorized: true });
+              if (!settled) {
+                worker.postMessage({ kind: 'resume' });
+                resumed = true;
+              }
+            } catch (error) {
+              finish('progress-error', { message: (error as Error).message });
+            }
           } else if (data.kind === 'unavailable') finish('unavailable');
           else if (data.kind === 'answered') finish(data.supported ? 'supported' : 'unsupported');
           else if (data.kind === 'rejected') finish('query-rejected', { errorName: data.name });
@@ -97,10 +124,10 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
         // Record the boundary outside this renderer before invoking the
         // native query, so a process crash cannot erase that observation.
         void (window as any).__qaNativeProgress({ posted: true }).then(() => {
-          if (!settled) worker.postMessage({
+          if (!settled) worker.postMessage({ kind: 'prepare', config: {
             codec: 'avc1.640034', width: 320, height: 240, framerate: 30,
             bitrate: 1_200_000, avc: { format: 'avc' },
-          });
+          } });
         }).catch((error: Error) => finish('progress-error', { message: error.message }));
       }), workerURL).catch((error) => ({ outcome: evidence.pageCrashed ? 'process-crashed' : 'evaluation-error', message: error.message }));
       result = await Promise.race([
@@ -123,8 +150,10 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
     // The independent query deliberately omits product media initialization. Keep
     // this engine failure visible and make a native recovery an unexpected
     // pass, which signals that the initialization workaround needs reconsideration.
-    // A setup failure before native query entry does not qualify.
-    const nativeObservation = evidence.queryEntered && [
+    // Both the validated worker entry and its parent/Node acknowledgment
+    // must be recorded before execution is authorized. A posted query or an
+    // unrelated setup error alone can never qualify as the known failure.
+    const nativeObservation = evidence.queryEntered && evidence.entryAcknowledged && evidence.resumeAuthorized && [
       'supported', 'unsupported', 'query-rejected', 'stalled-responsive', 'parent-unresponsive', 'process-crashed',
     ].includes(result.outcome);
     test.fail(affectedRuntime && nativeObservation,
@@ -136,6 +165,7 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
     expect(result.terminated).toBe(true);
     if (result.outcome === 'stalled-responsive') {
       expect(result.entered).toBe(true);
+      expect(result.resumed).toBe(true);
       expect(result.ticks).toBeGreaterThan(0);
     }
   });

@@ -130,6 +130,9 @@ for (const slug of tools) {
 }
 
 test('images-to-video: native initialization produces a playable MP4 and permits another real export', async ({ page, context }, testInfo) => {
+  // Two complete exports include playback, real downloads and evidence capture.
+  // Keep their phase deadlines while allowing both journeys to finish on WebKit.
+  test.setTimeout(90_000);
   const identity = await observeNativePage(context, page, 'images-to-video');
   await testInfo.attach('unmodified-native-runtime', { body: Buffer.from(JSON.stringify(identity)), contentType: 'application/json' });
   await page.getByRole('button', { name: /try (an )?example/i }).click();
