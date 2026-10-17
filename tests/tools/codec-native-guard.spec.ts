@@ -47,24 +47,54 @@ async function observeNativePage(context: BrowserContext, page: Page, slug: stri
     button.id = 'qa-native-responsive';
     button.type = 'button';
     button.textContent = 'Check page responsiveness';
-    button.style.cssText = 'position:fixed;top:4px;left:4px;z-index:2147483647;width:210px;height:44px;';
+    button.style.cssText = 'all:initial;display:block;position:fixed;top:4px;left:4px;'
+      + 'z-index:2147483647;width:210px;height:44px;box-sizing:border-box;'
+      + 'font:14px sans-serif;text-align:center;background:white;color:black;'
+      + 'border:1px solid black;pointer-events:auto;touch-action:manipulation';
     button.onclick = event => {
-      if (event.isTrusted) (window as any).__nativeGuardQA.clicks++;
+      const state = (window as any).__nativeGuardQA;
+      if (event.isTrusted) state.clicks++;
+      state.lastClick = { trusted: event.isTrusted, elapsed: state.armedAt == null ? null : performance.now() - state.armedAt };
     };
     document.body.append(button);
   });
   await page.locator('#qa-native-responsive').click();
   expect(await page.evaluate(() => (window as any).__nativeGuardQA.clicks)).toBe(1);
+  const box = await page.locator('#qa-native-responsive').boundingBox();
+  expect(box, 'The baseline input target must have a visible stable box').not.toBeNull();
+  await page.evaluate(point => { (window as any).__nativeGuardQA.point = point; },
+    { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
   return identity;
 }
 
 async function responsiveWithoutWorker(page: Page) {
-  const before = await page.evaluate(() => ({ ...(window as any).__nativeGuardQA }));
-  await page.locator('#qa-native-responsive').click({ timeout: 2_000 });
+  const before = await page.evaluate(() => {
+    const state = (window as any).__nativeGuardQA;
+    state.armedAt = performance.now();
+    return { ticks: state.ticks, clicks: state.clicks, workers: state.workers, point: state.point,
+      hitTarget: document.elementFromPoint(state.point.x, state.point.y) === document.querySelector('#qa-native-responsive') };
+  });
+  expect(before.workers).toEqual([]);
+  expect(before.hitTarget, 'The baseline input target must still receive the real pointer event').toBe(true);
+  // The baseline proved layout and actionability. Measure real input at that
+  // same hit-tested box without waiting again on WebKit animation frames.
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      page.mouse.click(before.point.x, before.point.y),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('Native guard pointer input did not complete within 2000ms')), 2_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(deadline);
+  }
   await expect.poll(() => page.evaluate(() => (window as any).__nativeGuardQA.ticks), { timeout: 2_000 })
     .toBeGreaterThan(before.ticks);
   const after = await page.evaluate(() => (window as any).__nativeGuardQA);
   expect(after.clicks).toBe(before.clicks + 1);
+  expect(after.lastClick.trusted).toBe(true);
+  expect(after.lastClick.elapsed).toBeLessThan(2_000);
   expect(after.workers, 'The affected native encoder must be refused before any worker is created').toEqual([]);
 }
 
