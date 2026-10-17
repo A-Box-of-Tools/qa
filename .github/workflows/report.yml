@@ -341,6 +341,7 @@ jobs:
           # Part of the same matrix so provisioning or compatibility failure
           # reaches the merged report and the website's qa/preview status.
           - { slice: windows-chrome-compatibility, project: Windows Chrome compatibility, part: compatibility, runner: windows-latest, compatibility: true }
+          - { slice: macos-safari-offline, project: macOS Safari offline, part: offline, runner: macos-latest, offline_native: true }
     steps:
       # A rerun does no work in the projects that had no failure - eight or ten
       # of these sixteen, each of which would otherwise spend a minute checking
@@ -359,6 +360,7 @@ jobs:
           PROJECT: ${{ matrix.project }}
           TOOLS: ${{ needs.announce.outputs.tools }}
           COMPATIBILITY: ${{ matrix.compatibility }}
+          OFFLINE_NATIVE: ${{ matrix.offline_native }}
         run: |
           set -euo pipefail
           wanted=yes
@@ -366,10 +368,10 @@ jobs:
             wanted=no
             echo "::notice::Nothing failed in $PROJECT in run $RERUN, so this slice has nothing to re-run."
           fi
-          if [ -z "$RERUN" ] && [ "$COMPATIBILITY" = 'true' ] && [ -n "$TOOLS" ] \
+          if [ -z "$RERUN" ] && { [ "$COMPATIBILITY" = 'true' ] || [ "$OFFLINE_NATIVE" = 'true' ]; } && [ -n "$TOOLS" ] \
               && ! printf '%s' "$TOOLS" | tr ', ' '\n\n' | grep -qx 'share-text'; then
             wanted=no
-            echo '::notice::This tool scope does not include share-text compatibility.'
+            echo '::notice::This tool scope does not include the dedicated share-text slice.'
           fi
           echo "wanted=$wanted" >> "$GITHUB_OUTPUT"
 
@@ -422,7 +424,7 @@ jobs:
       # and skips the download, but --with-deps also puts the OS packages
       # WebKit needs on to a fresh runner, and those are not in the cache.
       - name: Remember the browsers between runs
-        if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
+        if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility && !matrix.offline_native
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -434,8 +436,13 @@ jobs:
       # WebKit, Chrome included, so the WebKit slices are not a luxury - they
       # are what an iPhone visitor actually gets - but a Chrome slice has no
       # use for a WebKit download, and each engine is a minute of setup.
-      - if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
+      - if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility && !matrix.offline_native
         run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
+
+      # This journey uses only native data channels, so macOS needs no fixture
+      # Chromium. Its strict capability check cannot inherit Linux's skip.
+      - if: steps.slice.outputs.wanted == 'yes' && matrix.offline_native
+        run: npx playwright install --with-deps webkit
 
       # A failure-only rerun must use the original full versions, even if
       # Stable has moved since then. Missing metadata is an error, not a
@@ -532,6 +539,7 @@ jobs:
           RERUN: ${{ needs.announce.outputs.rerun }}
           TOOLS: ${{ needs.announce.outputs.tools }}
           COMPATIBILITY: ${{ matrix.compatibility }}
+          OFFLINE_NATIVE_WEBKIT: ${{ matrix.offline_native && '1' || '' }}
           SHARE_CROSS_VERSION_MANIFEST: ${{ matrix.compatibility && format('{0}/chrome-versions.json', github.workspace) || '' }}
           SHARE_CROSS_VERSION_CACHE_DIR: ${{ runner.temp }}/share-chrome
         run: |
@@ -559,11 +567,14 @@ jobs:
             # This slice has one file. Empty selection means lost coverage,
             # whereas the normal sharded projects can validly have no cases.
             only="${only/--pass-with-no-tests/}"
+          elif [ -n "$OFFLINE_NATIVE_WEBKIT" ]; then
+            files='tests/tools/share-text-offline.spec.ts'
+            only="${only/--pass-with-no-tests/}"
           else
             files=$(node scripts/slice-files.mjs "${{ matrix.project }}" "${{ matrix.part }}")
           fi
           npx playwright test --project="${{ matrix.project }}" \
-            $files $only --reporter=blob,github ${{ matrix.compatibility && '--workers=1 --retries=0' || '' }}
+            $files $only --reporter=blob,github ${{ (matrix.compatibility || matrix.offline_native) && '--workers=1 --retries=0' || '' }}
 
       # The traces this slice kept for its failures. Out of git and expiring,
       # for the reasons in the header.

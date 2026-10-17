@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { BASE_URL } from '../../lib/site';
 import { hasOfflinePairing, offlineHooks, offlinePage, readOfflineOffer, createOfflineReply,
   acceptOfflineReply, freshOfflineOffer, nativeOfflineOnly, offlinePeersClosed, noOfflineServers,
-  networkHint, offlinePeerSnapshot, independentOfflineProbe } from '../../lib/offline-pairing';
+  networkHint, offlinePeerSnapshot, nativeOfflineCapability } from '../../lib/offline-pairing';
 
 const secret = 'Offline private text: exact bytes — 日本語\nSecond line 0123456789';
 
@@ -29,9 +29,18 @@ test.describe('share-text: native offline pairing', () => {
     test.setTimeout(150_000);
   });
 
-  test('two private readers need individual exchange, receive consent and admission before exact text and files', async ({ page, browser }) => {
-    const firstContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
-    const secondContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
+  test('two private readers need individual exchange, receive consent and admission before exact text and files', async ({ page, browser, browserName }, testInfo) => {
+    const linuxWebKit = process.platform === 'linux' && browserName === 'webkit' && !process.env.OFFLINE_NATIVE_WEBKIT;
+    const capability = await nativeOfflineCapability(browser, BASE_URL, linuxWebKit);
+    await testInfo.attach('native-offline-preflight', { contentType: 'application/json', body: JSON.stringify(capability) });
+    testInfo.annotations.push({ type: 'native-transport', description: capability.topology });
+    test.skip(linuxWebKit && capability.topology === 'unavailable',
+      'Linux WebKit cannot exchange host-only SCTP on independent blank pages in either separate or shared contexts. The macOS native journey remains mandatory.');
+    expect(capability.topology, 'This browser must complete the independent native transport control.').not.toBe('unavailable');
+    const firstContext = capability.topology === 'shared' ? page.context()
+      : await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
+    const secondContext = capability.topology === 'shared' ? page.context()
+      : await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
       await prepare(page); const localBefore = await page.locator('#local').isChecked();
       await page.locator('#text').fill(secret); await page.locator('#private').check();
@@ -53,8 +62,6 @@ test.describe('share-text: native offline pairing', () => {
           body: JSON.stringify({ host: await offlinePeerSnapshot(page), reader: await offlinePeerSnapshot(first),
             hostStatus: await page.locator('#offline-accept-status').textContent(),
             readerStatus: await first.locator('#text-offline-status').textContent() }) });
-        await test.info().attach('independent-native-probe', { contentType: 'application/json',
-          body: JSON.stringify(await independentOfflineProbe(page, first)) });
         throw error;
       }
       await expect(page.locator('#requests button')).toHaveCount(0);
@@ -93,7 +100,10 @@ test.describe('share-text: native offline pairing', () => {
       expect(await page.locator('#local').isChecked()).toBe(localBefore);
       await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
       await noOfflineServers(page, first, second);
-    } finally { await firstContext.close(); await secondContext.close(); }
+    } finally {
+      if (firstContext !== page.context()) await firstContext.close();
+      if (secondContext !== page.context()) await secondContext.close();
+    }
   });
 
   test('a fresh reader exchange rejects retired and expired replies, and Stop cancels pending consent', async ({ page, context }) => {

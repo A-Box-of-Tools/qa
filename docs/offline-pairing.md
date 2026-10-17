@@ -39,9 +39,20 @@ The native tool journeys cover:
   Both voice adapters reject stale/expired pending exchanges.
 
 The native camera/display/audio journeys run in Chromium because this suite's
-Linux WebKit build cannot supply the media fixtures those cases require. These
-are explicit capability exclusions, separate from source-gated production
-skips. The all-engine control tests still run in WebKit.
+Linux WebKit build cannot supply the media fixtures those cases require. The
+all-engine control tests and Share Text's native data journey also run in WebKit.
+Before that journey, fresh blank pages test native host-only data channels in
+separate contexts. Linux WebKit may try a shared context only after the separate
+contexts fail; only failure of both independent controls permits an annotated
+capability skip with connection-state evidence. Once a control passes, the real
+application journey must pass in that topology. A product timeout never becomes
+a capability skip.
+
+A dedicated macOS WebKit job must complete the real Share Text journey in
+separate contexts and cannot capability-skip. These platform checks are separate
+from source-gated skips for an older production page. A green run containing a
+capability skip leaves that platform's coverage gap visible; a phone viewport
+is not a physical iPhone or Android device, and Playwright WebKit is not Safari.
 
 The offline hint is controlled while page assets remain reachable. It is not a
 claim that a page can be installed for the first time without internet, that a

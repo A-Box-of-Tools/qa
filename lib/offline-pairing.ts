@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { ETOOLBOX_DIR } from './site';
 import { withoutThirdParties } from './engine';
 
@@ -193,8 +193,7 @@ export async function offlinePeerSnapshot(page: Page) {
   });
 }
 
-/** A failed application handshake remains failed. This bounded control checks
- * only whether the same native browser contexts can exchange host-only SCTP. */
+/** A bounded control with no application library, relay or candidate rewriting. */
 export async function independentOfflineProbe(host: Page, reader: Page) {
   const initialize = async (page: Page, offer?: RTCSessionDescriptionInit) => page.evaluate(async offer => {
     const peer = new RTCPeerConnection({ iceServers: [] });
@@ -229,11 +228,17 @@ export async function independentOfflineProbe(host: Page, reader: Page) {
       const timer = setTimeout(() => { clearInterval(poll); resolve(); }, 8_000);
       const poll = setInterval(() => { if (state.received) { clearInterval(poll); clearTimeout(timer); resolve(); } }, 100);
     }));
-    return await host.evaluate(() => {
-      const state = (window as any).__offlineNativeProbe;
-      return { received: state.received, connection: state.peer.connectionState,
-        ice: state.peer.iceConnectionState, channel: state.channel?.readyState };
+    const snapshot = (page: Page) => page.evaluate(async () => {
+      const state = (window as any).__offlineNativeProbe, peer = state.peer as RTCPeerConnection;
+      const pairs: Record<string, unknown>[] = [];
+      (await peer.getStats()).forEach(stat => {
+        if (stat.type === 'candidate-pair') pairs.push(Object.fromEntries(['state', 'nominated', 'requestsSent',
+          'responsesReceived', 'requestsReceived', 'responsesSent'].map(key => [key, stat[key]])));
+      });
+      return { received: state.received, connection: peer.connectionState, ice: peer.iceConnectionState,
+        gathering: peer.iceGatheringState, sctp: peer.sctp?.state, channel: state.channel?.readyState, pairs };
     });
+    return { host: await snapshot(host), reader: await snapshot(reader) };
   } catch (error) {
     return { error: error instanceof Error ? error.name : 'native probe failed' };
   } finally {
@@ -242,4 +247,35 @@ export async function independentOfflineProbe(host: Page, reader: Page) {
       state?.channel?.close(); state?.peer.close();
     }).catch(() => {});
   }
+}
+
+/** Probe fresh, same-origin blank pages before any product code, hooks, drafts
+ * or clock changes exist. A successful topology is then fixed for the journey;
+ * an application timeout can never be converted into a capability skip. */
+export async function nativeOfflineCapability(browser: Browser, baseURL: string, allowSameContext: boolean) {
+  const attempt = async (sameContext: boolean) => {
+    const hostContext = await browser.newContext();
+    const readerContext = sameContext ? hostContext : await browser.newContext();
+    try {
+      const blankURL = new URL('/qa-native-offline-probe/', baseURL).href;
+      for (const context of new Set([hostContext, readerContext])) await context.route('**/*', route =>
+        route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Native transport control</title>' }));
+      const host = await hostContext.newPage(), reader = await readerContext.newPage();
+      await Promise.all([host.goto(blankURL), reader.goto(blankURL)]);
+      const result = await independentOfflineProbe(host, reader);
+      // A broken control script or browser operation is a harness failure,
+      // not evidence that this runner lacks a native transport capability.
+      expect(result, 'The independent native control must execute successfully.').not.toHaveProperty('error');
+      return result;
+    } finally {
+      await hostContext.close();
+      if (readerContext !== hostContext) await readerContext.close();
+    }
+  };
+  const independent = await attempt(false);
+  if ('host' in independent && independent.host?.received) return { topology: 'independent' as const, independent };
+  if (!allowSameContext) return { topology: 'unavailable' as const, independent };
+  const shared = await attempt(true);
+  return { topology: 'host' in shared && shared.host?.received ? 'shared' as const : 'unavailable' as const,
+    independent, shared };
 }
