@@ -1,16 +1,14 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
-import { ETOOLBOX_DIR } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
+import { pairingMarkup } from '../../lib/offline-pairing';
 import {
   tabHooks, tabBroker, prepareTabPage, selectTabPairing, startTabHost,
   noTabSockets, stoppedTab,
 } from '../../lib/share-tab';
 
 const available = discoverTools().includes('share-tab')
-  && fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/share-tab/body.html'), 'utf8').includes('id="pairing-auto"');
+  && pairingMarkup('share-tab').includes('id="pairing-auto"');
 const code = 'tab-abcdefghijklmnop';
 
 // This controls the browser's hint only. Assets stay reachable; these cases do
@@ -33,7 +31,7 @@ async function pairingMode(page: Page, mode: 'online' | 'offline') {
   await expect(page.locator('#pairing-options')).toHaveAttribute('data-pairing-mode', mode);
   await expect(page.locator('#online-viewer-fields')).toBeVisible({ visible: mode === 'online' });
   await expect(page.locator('#offline-viewer-fields')).toBeVisible({ visible: mode === 'offline' });
-  await expect(page.locator('#offline-note')).toBeVisible({ visible: mode === 'offline' });
+  await expect(page.locator('#offline-note, #offline-help').first()).toBeVisible({ visible: mode === 'offline' });
 }
 
 async function idle(page: Page) {
