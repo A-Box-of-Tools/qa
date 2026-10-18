@@ -5,9 +5,9 @@ import { test, expect, type Browser, type BrowserContext, type Page } from '@pla
 import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
 import { liveRendezvous } from '../../lib/rendezvous';
 import { withoutThirdParties } from '../../lib/engine';
-import { cameraHooks } from '../../lib/camera-fixtures';
+import { cameraHooks, movingVideo } from '../../lib/camera-fixtures';
 import { tabHooks, flowingTab, noTabMedia } from '../../lib/share-tab';
-import { voiceHooks, receivedAudio, microphoneEnabled, outputRms } from '../../lib/voice-fixtures';
+import { voiceHooks, receivedAudio, microphoneEnabled, outputRms, voiceSnapshot } from '../../lib/voice-fixtures';
 import { observePairing, pairingSnapshot, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
@@ -89,14 +89,19 @@ test.beforeEach(() => {
 
 async function newSide(browser: Browser, tool: Tool, role: 'host' | 'client', tls443 = false) {
   const context = await browser.newContext({ baseURL: BASE_URL });
-  await observePairing(context, tls443);
-  if (tool === 'share-tab') await tabHooks(context, { live: true });
-  const page = await context.newPage();
-  await withoutThirdParties(page);
-  if (tool === 'remote-camera') await cameraHooks(page, role === 'host' ? 'allow' : 'deny', 'live');
-  if (tool === 'walkie-talkie') await voiceHooks(page, role === 'host' ? 'allow' : 'deny');
-  if (tool === 'voice-oncall') await voiceHooks(page, role === 'client' ? 'allow' : 'deny');
-  return { context, page };
+  try {
+    await observePairing(context, tls443);
+    if (tool === 'share-tab') await tabHooks(context, { live: true });
+    const page = await context.newPage();
+    await withoutThirdParties(page);
+    if (tool === 'remote-camera') await cameraHooks(page, role === 'host' ? 'allow' : 'deny', 'live');
+    if (tool === 'walkie-talkie') await voiceHooks(page, role === 'host' ? 'allow' : 'deny');
+    if (tool === 'voice-oncall') await voiceHooks(page, role === 'client' ? 'allow' : 'deny');
+    return { context, page };
+  } catch (error) {
+    await context.close().catch(() => {});
+    throw error;
+  }
 }
 
 async function startHost(host: Page, tool: Tool, mode = 'relay') {
@@ -201,18 +206,23 @@ async function approveAndDeliver(host: Page, client: Page, tool: Tool) {
     await expect(request).toBeVisible({ timeout: 30_000 });
     await noTabMedia(host, client);
     await request.getByRole('button', { name: /Allow|Approve/ }).click();
-    await flowingTab(client);
+    await flowingTab(client, { pixelEvidence: true });
   } else if (tool === 'remote-camera') {
     await expect(host.locator('#camera-request-dialog')).toBeVisible({ timeout: 30_000 });
     expect(await client.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
     await host.locator('#camera-request-later').click();
     await expect(host.locator('#camera-request-dialog')).toBeHidden();
     await host.locator('[data-action="approve"]').click();
-    await expect.poll(() => client.locator('#remote-video').evaluate((video: HTMLVideoElement) =>
-      video.videoWidth > 0 && video.getVideoPlaybackQuality().totalVideoFrames > 2), { timeout: 20_000 }).toBe(true);
-    const first = await client.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
-    await expect.poll(() => client.locator('#remote-video').evaluate((video: HTMLVideoElement) =>
-      video.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(first + 2);
+    await movingVideo(client);
+    const decoded = async () => {
+      const state = await pairingSnapshot(client);
+      return state.peers.filter((peer: any) => peer.connection === 'connected')
+        .flatMap((peer: any) => peer.media).filter((media: any) => media.type === 'inbound-rtp' && media.kind === 'video')
+        .reduce((sum: number, media: any) => sum + (media.bytesReceived > 0 ? media.framesDecoded ?? 0 : 0), 0);
+    };
+    await expect.poll(decoded).toBeGreaterThan(2);
+    const first = await decoded();
+    await expect.poll(decoded).toBeGreaterThan(first + 2);
     expect(await client.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
   } else if (tool === 'walkie-talkie') {
     await expect(client.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 30_000 });
@@ -265,12 +275,45 @@ async function closed(page: Page) {
 }
 
 async function withPair(browser: Browser, tool: Tool, work: (host: Page, client: Page) => Promise<void>, tls443 = false) {
-  const host = await newSide(browser, tool, 'host', tls443);
-  const client = await newSide(browser, tool, 'client', tls443);
-  try { await work(host.page, client.page); }
+  let host: Awaited<ReturnType<typeof newSide>> | undefined;
+  let client: Awaited<ReturnType<typeof newSide>> | undefined;
+  let completed = false;
+  try {
+    host = await newSide(browser, tool, 'host', tls443);
+    client = await newSide(browser, tool, 'client', tls443);
+    await work(host.page, client.page);
+    completed = true;
+  }
   finally {
-    await attachPairingDiagnostics(test.info(), { host: host.page, client: client.page }, 'final');
-    await Promise.all([host.context.close(), client.context.close()]);
+    try {
+      const pages: Record<string, Page> = {};
+      if (host) pages.host = host.page;
+      if (client) pages.client = client.page;
+      try { await attachPairingDiagnostics(test.info(), pages, 'final'); }
+      catch { test.info().annotations.push({ type: 'diagnostics', description: 'Pairing diagnostics could not be attached.' }); }
+      if (tool === 'walkie-talkie' || tool === 'voice-oncall') {
+        const audio: Record<string, unknown> = {};
+        for (const [role, page] of Object.entries(pages)) {
+          try {
+            audio[role] = { ...await voiceSnapshot(page), page: await page.evaluate(() => ({
+              focused: document.hasFocus(), visibility: document.visibilityState,
+              activated: navigator.userActivation?.hasBeenActive ?? null,
+              captureClock: ((window as any).__voiceQA?.captureContexts ?? []).map((context: AudioContext) =>
+                ({ state: context.state, time: context.currentTime })),
+            })) };
+          } catch { audio[role] = { unavailable: true }; }
+        }
+        try {
+          await test.info().attach('address-free-voice-diagnostics', {
+            body: JSON.stringify(audio, null, 2), contentType: 'application/json',
+          });
+        } catch { test.info().annotations.push({ type: 'diagnostics', description: 'Voice diagnostics could not be attached.' }); }
+      }
+    } finally {
+      const contexts = [host?.context, client?.context].filter((context): context is BrowserContext => Boolean(context));
+      const closing = await Promise.allSettled(contexts.map(context => context.close()));
+      if (completed && closing.some(result => result.status === 'rejected')) throw new Error('A QA browser context could not be closed.');
+    }
   }
 }
 

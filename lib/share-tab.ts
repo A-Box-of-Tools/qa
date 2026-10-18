@@ -1,6 +1,7 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { withoutThirdParties } from './engine';
 import { liveRendezvous } from './rendezvous';
+import { movingVideo } from './camera-fixtures';
 
 export const SHARE_TAB = '/share-tab/';
 export type CaptureMode = 'allow' | 'denied' | 'cancelled' | 'pending' | 'window' | 'monitor' | 'unknown';
@@ -369,10 +370,13 @@ export async function noTabMedia(host: Page, viewer: Page) {
   expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
 }
 
-export async function flowingTab(viewer: Page) {
+export async function flowingTab(viewer: Page, { pixelEvidence = false } = {}) {
   await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => [video.videoWidth, video.videoHeight]), { timeout: 20_000 }).toEqual([640, 360]);
-  const first = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
-  await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames), { timeout: 10_000 }).toBeGreaterThan(first + 2);
+  if (pixelEvidence) await movingVideo(viewer);
+  else {
+    const first = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
+    await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames), { timeout: 10_000 }).toBeGreaterThan(first + 2);
+  }
   expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => (video.srcObject as MediaStream).getTracks().map((track) => track.kind))).toEqual(['video']);
   await expect.poll(() => viewer.evaluate(async () => {
     const peer = (window as any).__tabQA.peers.at(-1) as RTCPeerConnection;

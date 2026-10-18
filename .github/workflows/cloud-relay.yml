@@ -12,11 +12,16 @@ on:
         required: true
         type: string
       engines:
-        description: Start with Chromium; all explicitly adds Firefox and WebKit
+        description: Native engine to exercise; all runs the three relay projects
         required: true
         default: chromium
         type: choice
-        options: [chromium, all]
+        options: [chromium, firefox, webkit, all]
+      case_filter:
+        description: Optional Playwright title filter for investigating a failed case
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -33,6 +38,7 @@ jobs:
       BASE_URL: ${{ inputs.base_url }}
       WEBSITE_SHA: ${{ inputs.website_sha }}
       ENGINES: ${{ inputs.engines }}
+      CASE_FILTER: ${{ inputs.case_filter }}
       RUN_CLOUD_RELAY: '1'
       ETOOLBOX_DIR: ${{ github.workspace }}/website
       PAIRING_EXPECTED_DIR: ${{ github.workspace }}/.relay-expected-site
@@ -57,20 +63,36 @@ jobs:
         working-directory: website
         run: python build.py --out "$PAIRING_EXPECTED_DIR" --clean --only share-text --only share-tab --only remote-camera --only walkie-talkie --only voice-oncall --locale en --quiet
       - run: npm ci
+      - name: Verify the bounded relay project selection before opening sessions
+        run: |
+          npx playwright test --config=playwright.relay.config.ts --list --reporter=json > relay-plan.json
+          node -e "const p=require('./relay-plan.json'); const names=p.config.projects.map(x=>x.name).sort(); if(JSON.stringify(names)!==JSON.stringify(['Relay Chromium','Relay Firefox','Relay WebKit'])) throw new Error('Unexpected relay project selection'); console.log('Verified three explicit relay projects');"
       - name: Install requested native engines
         run: |
           if [ "$ENGINES" = all ]; then
             npx playwright install --with-deps chromium firefox webkit
           else
-            npx playwright install --with-deps chromium
+            npx playwright install --with-deps "$ENGINES"
           fi
+      - name: Provide a local audio sink for native audio contexts
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=relay_qa sink_properties=device.description=Relay_QA
+          pactl set-default-sink relay_qa
+          test "$(pactl get-default-sink)" = relay_qa
       - name: Exercise short real TURN sessions
         run: |
-          if [ "$ENGINES" = all ]; then
-            npx playwright test --config=playwright.relay.config.ts
-          else
-            npx playwright test --config=playwright.relay.config.ts --project="Relay Chromium"
-          fi
+          args=(test --config=playwright.relay.config.ts)
+          case "$ENGINES" in
+            chromium) args+=(--project="Relay Chromium") ;;
+            firefox) args+=(--project="Relay Firefox") ;;
+            webkit) args+=(--project="Relay WebKit") ;;
+            all) ;;
+            *) exit 1 ;;
+          esac
+          if [ -n "$CASE_FILTER" ]; then args+=(--grep "$CASE_FILTER"); fi
+          npx playwright "${args[@]}"
       - name: Retain bounded reports without socket traces or screenshots
         if: always()
         uses: actions/upload-artifact@v4

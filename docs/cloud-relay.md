@@ -11,7 +11,10 @@ JS graph version, stylesheet and every emitted source module with that build.
 A stale preview or mixed deployment fails this gate before pairing begins.
 
 The default run uses Chromium, one worker and no retries. An explicit `all`
-selection adds Firefox and Playwright WebKit. Those engines run the same native
+selection adds Firefox and Playwright WebKit. A single engine and optional title
+filter can isolate a failed case; those partial runs do not count as all-engine
+acceptance. CI verifies the exact three relay projects before opening sessions
+and provides a local PulseAudio sink for native audio contexts. Those engines run the same native
 journeys; a pass is not evidence for a real iPhone, Android device, corporate
 policy or OS screen lock. Synthetic canvas and oscillator inputs replace only
 permission/device capture, not peer connections, codecs, transport or statistics.

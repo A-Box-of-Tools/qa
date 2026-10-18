@@ -7,6 +7,9 @@ export async function observePairing(context: BrowserContext, tls443 = false) {
   await context.addInitScript(({ tls443 }) => {
     const qa = (window as any).__pairingQA = {
       peers: [] as RTCPeerConnection[], sockets: [] as WebSocket[],
+      socketEvents: new Map<WebSocket, { closeCode: number | null; errors: number }>(),
+      iceErrors: new Map<RTCPeerConnection, Record<string, number>>(),
+      constructorFailures: [] as Record<string, unknown>[], constructorFailuresDropped: 0,
       relayRequests: 0, credentialReplies: 0, credentialErrors: 0,
       sentCandidateTypes: [] as string[], tlsOnly: tls443, tlsConfigurations: 0,
     };
@@ -24,8 +27,54 @@ export async function observePairing(context: BrowserContext, tls443 = false) {
           args = [{ ...configuration, iceServers }];
           qa.tlsConfigurations++;
         }
-        const peer = Reflect.construct(target, args) as RTCPeerConnection;
+        let peer: RTCPeerConnection;
+        try { peer = Reflect.construct(target, args) as RTCPeerConnection; }
+        catch (error) {
+          try {
+          if (qa.constructorFailures.length >= 8) qa.constructorFailuresDropped++;
+          else {
+            const failure = error as Error;
+            const names = ['TypeError', 'SyntaxError', 'InvalidAccessError', 'NotSupportedError', 'SecurityError', 'InvalidStateError', 'OperationError'];
+            const reasons = ['Empty ICE servers list', 'STUN/TURN URL should be opaque-path',
+              'Invalid TURN URL query string', 'ICE server protocol not supported', 'Invalid STUN URL'];
+            const details: any = { name: names.includes(failure?.name) ? failure.name : 'other',
+              reason: reasons.includes(failure?.message) ? failure.message : 'other',
+              serverCount: 0, schemes: {}, ports: {}, transports: {}, fields: [] };
+            const selected = args[0] as RTCConfiguration | undefined;
+            const servers = Array.isArray(selected?.iceServers) ? selected.iceServers : [];
+            details.serverCount = servers.length;
+            const field = (value: unknown) => ({ type: value === null ? 'null' : typeof value,
+              ...(typeof value === 'string' ? { length: value.length } : {}) });
+            const count = (values: Record<string, number>, key: string) => { values[key] = (values[key] ?? 0) + 1; };
+            for (const server of servers.slice(0, 12)) {
+              const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+              details.fields.push({ urls: Array.isArray(server.urls) ? 'array' : typeof server.urls,
+                urlCount: urls.length, username: field(server.username), credential: field(server.credential) });
+              for (const url of urls.slice(0, 16)) {
+                if (typeof url !== 'string') { count(details.schemes, 'other'); continue; }
+                const scheme = url.match(/^([a-z]+):/i)?.[1]?.toLowerCase();
+                count(details.schemes, scheme && ['turn', 'turns', 'stun', 'stuns'].includes(scheme) ? scheme : 'other');
+                const port = url.match(/:(\d{1,5})(?:\?|$)/)?.[1];
+                count(details.ports, port && Number(port) <= 65535 ? String(Number(port)) : 'unspecified');
+                const query = new URLSearchParams(url.split('?')[1] ?? '');
+                const transport = query.get('transport');
+                count(details.transports, transport === null ? 'unspecified' : ['udp', 'tcp'].includes(transport) ? transport : 'other');
+              }
+            }
+            qa.constructorFailures.push(details);
+          }
+          } catch {
+            if (qa.constructorFailures.length < 8) qa.constructorFailures.push({ name: 'other', reason: 'other', diagnosticUnavailable: true });
+          }
+          throw error;
+        }
         qa.peers.push(peer);
+        const errors: Record<string, number> = {};
+        qa.iceErrors.set(peer, errors);
+        peer.addEventListener('icecandidateerror', event => {
+          const code = (event as RTCPeerConnectionIceErrorEvent).errorCode;
+          if (Number.isInteger(code) && code >= 0 && code <= 999) errors[code] = (errors[code] ?? 0) + 1;
+        });
         return peer;
       },
     });
@@ -34,6 +83,10 @@ export async function observePairing(context: BrowserContext, tls443 = false) {
       construct(target, args) {
         const socket = Reflect.construct(target, args) as WebSocket;
         qa.sockets.push(socket);
+        const events = { closeCode: null as number | null, errors: 0 };
+        qa.socketEvents.set(socket, events);
+        socket.addEventListener('close', event => { events.closeCode = event.code; });
+        socket.addEventListener('error', () => { events.errors++; });
         socket.addEventListener('message', event => {
           try {
             const frame = JSON.parse(String(event.data));
@@ -69,6 +122,7 @@ export async function pairingSnapshot(page: Page): Promise<{
   observed: boolean; peers: any[]; relayRequests: number; credentialReplies: number; credentialErrors: number;
   candidateTypes: string[]; tlsOnly: boolean; tlsConfigurations: number; sockets: any[];
   capture: { calls: number; tracks: any[] } | null; browser?: { family: string; version: string; platform: string };
+  constructorFailures?: Record<string, unknown>[]; constructorFailuresDropped?: number;
 }> {
   return page.evaluate(async () => {
     const qa = (window as any).__pairingQA;
@@ -80,6 +134,7 @@ export async function pairingSnapshot(page: Page): Promise<{
         connection: peer.connectionState, ice: peer.iceConnectionState,
         gathering: peer.iceGatheringState, signaling: peer.signalingState,
         policy: peer.getConfiguration().iceTransportPolicy ?? 'all',
+        candidateErrors: { ...qa.iceErrors.get(peer) },
         selected: [], pairs: {}, checks: { requestsSent: 0, responsesReceived: 0, requestsReceived: 0, responsesSent: 0 },
         media: [], channels: [],
       };
@@ -120,8 +175,10 @@ export async function pairingSnapshot(page: Page): Promise<{
       observed: true, peers, browser: { family: browser?.[1] ?? 'unknown', version: browser?.[2] ?? 'unknown', platform: navigator.platform },
       relayRequests: qa.relayRequests, credentialReplies: qa.credentialReplies, credentialErrors: qa.credentialErrors,
       candidateTypes: [...new Set<string>(qa.sentCandidateTypes)].sort(),
+      constructorFailures: qa.constructorFailures, constructorFailuresDropped: qa.constructorFailuresDropped,
       tlsOnly: qa.tlsOnly, tlsConfigurations: qa.tlsConfigurations,
-      sockets: qa.sockets.map((socket: WebSocket) => ({ state: socket.readyState, discovery: new URL(socket.url).pathname === '/discover' })),
+      sockets: qa.sockets.map((socket: WebSocket) => ({ state: socket.readyState,
+        discovery: new URL(socket.url).pathname === '/discover', ...qa.socketEvents.get(socket) })),
       capture: capture ? { calls: capture.calls.length, tracks: capture.tracks.map((track: MediaStreamTrack) =>
         ({ kind: track.kind, state: track.readyState, enabled: track.enabled, muted: track.muted })) } : null,
     };

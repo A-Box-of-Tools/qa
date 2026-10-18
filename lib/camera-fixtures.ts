@@ -1,4 +1,27 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+
+/** Firefox decoded hundreds of native relay frames while its media-element
+ * quality counter remained zero. Inspect the video element's changing pixels
+ * instead; this still fails for paused, frozen or unpainted media. */
+export async function movingVideo(page: Page, selector = '#remote-video') {
+  const sample = () => page.locator(selector).evaluate((video: HTMLVideoElement) => {
+    if (video.paused || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
+    const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 18;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let signature = 2166136261;
+    for (const value of pixels) signature = Math.imul(signature ^ value, 16777619);
+    return signature >>> 0;
+  });
+  await expect.poll(sample, { timeout: 20_000 }).not.toBeNull();
+  const first = await sample();
+  expect(first).not.toBeNull();
+  await expect.poll(async () => {
+    const next = await sample();
+    return next !== null && next !== first;
+  }, { timeout: 10_000 }).toBe(true);
+}
 
 type CameraMode = 'allow' | 'deny' | 'pending';
 
