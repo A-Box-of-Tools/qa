@@ -7,11 +7,47 @@ export async function observePairing(context: BrowserContext, tls443 = false) {
   await context.addInitScript(({ tls443 }) => {
     const qa = (window as any).__pairingQA = {
       peers: [] as RTCPeerConnection[], sockets: [] as WebSocket[],
-      socketEvents: new Map<WebSocket, { closeCode: number | null; errors: number }>(),
+      socketEvents: new Map<WebSocket, { closeCode: number | null; errors: number;
+        sent: Record<string, number>; received: Record<string, number>; frameErrors: Record<string, number> }>(),
       iceErrors: new Map<RTCPeerConnection, Record<string, number>>(),
       constructorFailures: [] as Record<string, unknown>[], constructorFailuresDropped: 0,
+      descriptions: [] as Record<string, unknown>[], descriptionsDropped: 0,
       relayRequests: 0, credentialReplies: 0, credentialErrors: 0,
       sentCandidateTypes: [] as string[], tlsOnly: tls443, tlsConfigurations: 0,
+    };
+    const frameTypes = new Set(['auth', 'host-ready', 'ready', 'join', 'leave', 'waiting', 'check',
+      'offer', 'answer', 'candidate', 'signal', 'status', 'end', 'ended', 'replaced', 'moderated', 'kicked',
+      'moderate', 'kick', 'error', 'relay-request', 'relay-credentials', 'publish', 'browse', 'shares']);
+    const frameErrors = new Set(['invalid', 'stale', 'password', 'unauthorized', 'full', 'timeout',
+      'transport-mismatch', 'relay-unavailable', 'unavailable', 'limited', 'forbidden', 'moderation-full']);
+    const count = (values: Record<string, number>, key: string) => { values[key] = (values[key] ?? 0) + 1; };
+    const describe = (frame: any, direction: 'sent' | 'received') => {
+      const value = frame?.data ?? frame;
+      if (!['offer', 'answer'].includes(value?.type) || typeof value.sdp !== 'string') return;
+      if (qa.descriptions.length >= 12) { qa.descriptionsDropped++; return; }
+      // These structural counts explain admission failures without keeping even
+      // part of an SDP line, a sender identity, or an introduction capability.
+      const lines = value.sdp.slice(0, 65_536).split(/\r?\n/).filter(Boolean);
+      const media = { audio: 0, video: 0, application: 0, other: 0 };
+      const directions = { sendonly: 0, recvonly: 0, sendrecv: 0, inactive: 0 };
+      let audioProtocolMatches = 0;
+      for (const line of lines) {
+        if (line.startsWith('m=')) {
+          const kind = line.match(/^m=(audio|video|application) /)?.[1] as keyof typeof media | undefined;
+          media[kind ?? 'other']++;
+          if (/^m=audio \d{1,5} (?:UDP|TCP)\/TLS\/RTP\/SAVPF [0-9 ]+$/.test(line)) audioProtocolMatches++;
+        }
+        const mode = line.match(/^a=(sendonly|recvonly|sendrecv|inactive)$/)?.[1] as keyof typeof directions | undefined;
+        if (mode) directions[mode]++;
+      }
+      const uuid = (value: unknown) => typeof value === 'string'
+        && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+      qa.descriptions.push({ direction, type: value.type, media, directions, audioProtocolMatches,
+        lines: lines.length, bytes: value.sdp.length, versionFirst: lines[0] === 'v=0',
+        invalidLines: lines.filter(line => !/^[a-z]=[\x20-\x7e]*$/.test(line)).length,
+        generationUuid: uuid(value.generation), connectionUuid: uuid(value.connection),
+        recipient: value.to === undefined ? 'absent' : uuid(value.to) ? 'uuid'
+          : typeof value.to === 'string' && /^[a-f0-9]{64}$/.test(value.to) ? 'identity' : 'other' });
     };
     const NativePeer = window.RTCPeerConnection;
     if (NativePeer) window.RTCPeerConnection = new Proxy(NativePeer, {
@@ -83,13 +119,17 @@ export async function observePairing(context: BrowserContext, tls443 = false) {
       construct(target, args) {
         const socket = Reflect.construct(target, args) as WebSocket;
         qa.sockets.push(socket);
-        const events = { closeCode: null as number | null, errors: 0 };
+        const events = { closeCode: null as number | null, errors: 0,
+          sent: {} as Record<string, number>, received: {} as Record<string, number>, frameErrors: {} as Record<string, number> };
         qa.socketEvents.set(socket, events);
         socket.addEventListener('close', event => { events.closeCode = event.code; });
         socket.addEventListener('error', () => { events.errors++; });
         socket.addEventListener('message', event => {
           try {
             const frame = JSON.parse(String(event.data));
+            count(events.received, frameTypes.has(frame?.type) ? frame.type : 'other');
+            if (frame?.error !== undefined) count(events.frameErrors, frameErrors.has(frame.error) ? frame.error : 'other');
+            describe(frame, 'received');
             if (frame.type === 'relay-credentials') {
               qa.credentialReplies++;
               if (frame.error) qa.credentialErrors++;
@@ -101,6 +141,8 @@ export async function observePairing(context: BrowserContext, tls443 = false) {
           if (typeof data === 'string') {
             try {
               const frame = JSON.parse(data);
+              count(events.sent, frameTypes.has(frame?.type) ? frame.type : 'other');
+              describe(frame, 'sent');
               if (frame.type === 'relay-request') qa.relayRequests++;
               const value = frame.data ?? frame;
               const candidate = value.candidate?.candidate;
@@ -123,6 +165,7 @@ export async function pairingSnapshot(page: Page): Promise<{
   candidateTypes: string[]; tlsOnly: boolean; tlsConfigurations: number; sockets: any[];
   capture: { calls: number; tracks: any[] } | null; browser?: { family: string; version: string; platform: string };
   constructorFailures?: Record<string, unknown>[]; constructorFailuresDropped?: number;
+  descriptions?: Record<string, unknown>[]; descriptionsDropped?: number;
 }> {
   return page.evaluate(async () => {
     const qa = (window as any).__pairingQA;
@@ -176,6 +219,7 @@ export async function pairingSnapshot(page: Page): Promise<{
       relayRequests: qa.relayRequests, credentialReplies: qa.credentialReplies, credentialErrors: qa.credentialErrors,
       candidateTypes: [...new Set<string>(qa.sentCandidateTypes)].sort(),
       constructorFailures: qa.constructorFailures, constructorFailuresDropped: qa.constructorFailuresDropped,
+      descriptions: qa.descriptions, descriptionsDropped: qa.descriptionsDropped,
       tlsOnly: qa.tlsOnly, tlsConfigurations: qa.tlsConfigurations,
       sockets: qa.sockets.map((socket: WebSocket) => ({ state: socket.readyState,
         discovery: new URL(socket.url).pathname === '/discover', ...qa.socketEvents.get(socket) })),

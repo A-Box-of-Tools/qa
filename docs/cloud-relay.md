@@ -19,6 +19,13 @@ journeys; a pass is not evidence for a real iPhone, Android device, corporate
 policy or OS screen lock. Synthetic canvas and oscillator inputs replace only
 permission/device capture, not peer connections, codecs, transport or statistics.
 
+A shared pacing ledger reserves ten introductions per case and allows at most
+twenty reservations in a 61-second window, below the development Worker's
+thirty-per-minute address limit. It survives a failed test worker, records actual
+socket openings, and counts the deliberate pre-start wait separately from the
+unchanged functional deadlines. Exceeding a reservation fails the test instead
+of hiding repeated reconnects or raising the service's limit.
+
 All five tools must establish selected relay candidate pairs and deliver their
 actual content after explicit connection and any host approval. Text also
 downloads a 16 KiB binary file; the video tools must decode advancing frames;
@@ -38,7 +45,8 @@ Ordinary browser coverage also retains Direct as the initial choice, selection
 without capture/connection, and Direct failure without an automatic relay retry.
 
 Each relay test saves only allowlisted states, candidate types, traffic counts
-and media counters. Raw statistics, SDP, socket addresses, pairing capabilities,
+and media counters, plus bounded signal-type and SDP-structure counts when
+diagnosing admission failures. Raw statistics, SDP, socket addresses, pairing capabilities,
 names and TURN credentials are excluded. Socket traces, screenshots and videos
 are disabled for this workflow because a trace can contain credential replies.
 Sessions end in cleanup even after failure, and the three-day report retention

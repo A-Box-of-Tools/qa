@@ -9,6 +9,7 @@ import { cameraHooks, movingVideo } from '../../lib/camera-fixtures';
 import { tabHooks, flowingTab, noTabMedia } from '../../lib/share-tab';
 import { voiceHooks, receivedAudio, microphoneEnabled, outputRms, voiceSnapshot } from '../../lib/voice-fixtures';
 import { observePairing, pairingSnapshot, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
+import { reserveRelayStart } from '../../lib/relay-pacing';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
 type Tool = typeof tools[number];
@@ -275,6 +276,7 @@ async function closed(page: Page) {
 }
 
 async function withPair(browser: Browser, tool: Tool, work: (host: Page, client: Page) => Promise<void>, tls443 = false) {
+  const budget = await reserveRelayStart(test.info(), delay => test.setTimeout(test.info().timeout + delay));
   let host: Awaited<ReturnType<typeof newSide>> | undefined;
   let client: Awaited<ReturnType<typeof newSide>> | undefined;
   let completed = false;
@@ -311,7 +313,24 @@ async function withPair(browser: Browser, tool: Tool, work: (host: Page, client:
       }
     } finally {
       const contexts = [host?.context, client?.context].filter((context): context is BrowserContext => Boolean(context));
+      let observed = 0;
+      for (const side of [host, client]) {
+        if (!side) continue;
+        try { observed += await side.page.evaluate(() => (window as any).__pairingQA?.sockets.length ?? 0); }
+        catch { /* A closed page cannot create further introductions. */ }
+      }
       const closing = await Promise.allSettled(contexts.map(context => context.close()));
+      let budgetFailure = false, exceeded = false;
+      try {
+        const usage = budget.finish(observed);
+        exceeded = usage.exceeded;
+        test.info().annotations.push({ type: 'relay-budget', description: JSON.stringify(usage) });
+      } catch {
+        budgetFailure = true;
+        test.info().annotations.push({ type: 'relay-budget', description: 'The completed case could not update its pacing ledger.' });
+      }
+      if (completed && budgetFailure) throw new Error('The relay pacing ledger could not be updated.');
+      if (completed && exceeded) throw new Error('The relay case exceeded its ten-connection QA reservation.');
       if (completed && closing.some(result => result.status === 'rejected')) throw new Error('A QA browser context could not be closed.');
     }
   }
