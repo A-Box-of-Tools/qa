@@ -17,6 +17,12 @@ on:
         default: chromium
         type: choice
         options: [chromium, firefox, webkit, all]
+      host_os:
+        description: Standard runner; macOS can distinguish Apple playback from Linux WebKit media limitations
+        required: false
+        default: ubuntu-latest
+        type: choice
+        options: [ubuntu-latest, macos-15]
       case_filter:
         description: Optional Playwright title filter for investigating a failed case
         required: false
@@ -32,7 +38,7 @@ concurrency:
 
 jobs:
   relay:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.host_os == 'macos-15' && 'macos-15' || 'ubuntu-latest' }}
     timeout-minutes: 35
     env:
       BASE_URL: ${{ inputs.base_url }}
@@ -75,6 +81,7 @@ jobs:
             npx playwright install --with-deps "$ENGINES"
           fi
       - name: Provide a local audio sink for native audio contexts
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
           pulseaudio --start --exit-idle-time=-1

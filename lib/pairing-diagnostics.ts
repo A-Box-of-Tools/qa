@@ -253,12 +253,25 @@ export async function videoSnapshot(page: Page, selector = '#remote-video') {
     const shown = (element: HTMLElement | null) => Boolean(element && !element.hidden && element.getClientRects().length
       && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none');
     const rectangle = video.getBoundingClientRect();
+    const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
+    const tracks = stream?.getTracks().slice(0, 8).map(track => {
+      const state: Record<string, unknown> = { kind: track.kind, readyState: track.readyState,
+        muted: track.muted, enabled: track.enabled };
+      if (track.kind === 'video') {
+        let settings: MediaTrackSettings = {};
+        try { settings = track.getSettings(); } catch { /* Some engines omit remote-track settings. */ }
+        state.width = Number.isFinite(settings.width) ? settings.width : null;
+        state.height = Number.isFinite(settings.height) ? settings.height : null;
+      }
+      return state;
+    }) ?? [];
     return { paused: video.paused, readyState: video.readyState,
       width: video.videoWidth, height: video.videoHeight, muted: video.muted,
       autoplay: video.autoplay, playsInline: video.playsInline, visible: shown(video),
       pageVisible: document.visibilityState === 'visible',
       inViewport: rectangle.bottom > 0 && rectangle.right > 0 && rectangle.top < innerHeight && rectangle.left < innerWidth,
       playControlVisible: shown(document.getElementById('viewer-play')),
+      hasStream: Boolean(stream), streamActive: stream?.active ?? null, tracks,
       errorCode: video.error?.code ?? null };
   }, selector);
 }
