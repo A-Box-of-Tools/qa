@@ -173,10 +173,17 @@ export async function pairingSnapshot(page: Page): Promise<{
       candidateTypes: [], tlsOnly: false, tlsConfigurations: 0, sockets: [], capture: null };
     const peers = [];
     for (const peer of qa.peers as RTCPeerConnection[]) {
+      const configuration = peer.getConfiguration();
+      const servers = configuration.iceServers ?? [];
+      const tls443Only = servers.length > 0 && servers.every(server => {
+        const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+        return urls.length > 0 && urls.every(url => typeof url === 'string'
+          && /^turns:[^?]+:443(?:\?transport=tcp)?$/i.test(url));
+      });
       const entry: any = {
         connection: peer.connectionState, ice: peer.iceConnectionState,
         gathering: peer.iceGatheringState, signaling: peer.signalingState,
-        policy: peer.getConfiguration().iceTransportPolicy ?? 'all',
+        policy: configuration.iceTransportPolicy ?? 'all', tls443Only,
         candidateErrors: { ...qa.iceErrors.get(peer) },
         selected: [], pairs: {}, checks: { requestsSent: 0, responsesReceived: 0, requestsReceived: 0, responsesSent: 0 },
         media: [], channels: [],
@@ -210,6 +217,14 @@ export async function pairingSnapshot(page: Page): Promise<{
           }
         });
       } catch { entry.statsUnavailable = true; }
+      const nativeProtocolAvailable = entry.selected.length > 0
+        && entry.selected.every((pair: any) => pair.relayProtocol !== 'unknown');
+      const constrainedRelay = tls443Only && entry.policy === 'relay' && entry.selected.length > 0
+        && entry.selected.every((pair: any) => pair.local === 'relay' && pair.remote === 'relay'
+          && pair.bytesSent > 0 && pair.bytesReceived > 0
+          && ['tls', 'unknown'].includes(pair.relayProtocol));
+      entry.tlsEvidence = { nativeProtocolAvailable, kind: !constrainedRelay ? 'unconfirmed'
+        : nativeProtocolAvailable ? 'native-protocol-and-configuration' : 'configuration-and-relay-traffic' };
       peers.push(entry);
     }
     const capture = (window as any).__voiceQA ?? (window as any).__cameraQA;

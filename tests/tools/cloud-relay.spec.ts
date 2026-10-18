@@ -181,8 +181,12 @@ async function relayConnected(page: Page, tls443 = false) {
   await expect(page.locator('#pairing-route')).toContainText('Cloud relay');
   if (tls443) {
     expect(state.tlsConfigurations).toBeGreaterThan(0);
+    // WebKit omits relayProtocol. Its native configuration must still contain
+    // exclusively TURNS/443, with traffic on both relay candidates. A protocol
+    // reported by any engine must be TLS; an absent field is labeled separately.
     expect(state.peers.filter((peer: any) => peer.connection === 'connected')
-      .every((peer: any) => peer.selected.every((pair: any) => pair.relayProtocol === 'tls'))).toBe(true);
+      .every((peer: any) => peer.tls443Only && peer.selected.every((pair: any) =>
+        ['tls', 'unknown'].includes(pair.relayProtocol) && pair.bytesSent > 0 && pair.bytesReceived > 0))).toBe(true);
   }
 }
 

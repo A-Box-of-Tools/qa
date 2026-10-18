@@ -33,8 +33,13 @@ voice must deliver packets and audible output while preserving quiet initial
 microphones. Oncall additionally checks a wrong password and host mute/unmute.
 Stop must close peers, stop owned capture and resist foreground notifications.
 The separate TLS/443 text case filters the real issued TURN endpoints to
-`turns:` on port 443 and requires native selected-pair TLS statistics. It proves
-that route specifically; the ordinary journeys leave server selection unchanged.
+`turns:` on port 443. Every connected peer's native configuration must contain
+only those endpoints, and its selected relay pairs must carry bytes in both
+directions after approved text and binary delivery. When native statistics
+report a relay protocol, it must be TLS. WebKit omits that field, so its report
+labels the evidence as constrained native configuration plus actual relay
+traffic, rather than claiming a native protocol reading. The ordinary journeys
+use the tool's normal endpoint selection.
 
 Expired credentials and cancellation deliberately alter only a credential
 response while authentication still uses the development service. Expiry is
