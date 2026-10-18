@@ -63,6 +63,19 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
   await expect(page.locator('[data-pairing-nearby]')).toBeVisible();
   await expect(page.locator(tool.action)).toBeVisible();
   await expect(page.locator(removed)).toHaveCount(0);
+  const toolConfig = path.join(ETOOLBOX_DIR, 'tools', tool.slug, 'tool.toml');
+  const relayAvailable = fs.existsSync(toolConfig)
+    && /^supports_relay\s*=\s*true\s*$/m.test(fs.readFileSync(toolConfig, 'utf8'));
+  if (relayAvailable) {
+    await expect(page.locator('#pairing-transport')).toHaveValue('direct');
+    await page.locator('#pairing-transport').selectOption('relay');
+    await expect(page.locator('#pairing-transport-note')).toContainText('Cloudflare');
+    expect(await page.evaluate(() => {
+      const { rooms, captures, peers } = (window as any).__onlinePairing;
+      return { rooms, captures, peers };
+    })).toEqual({ rooms: 0, captures: 0, peers: 0 });
+    await page.locator('#pairing-transport').selectOption('direct');
+  }
   const help = page.locator('[data-pairing-network-help]');
   await expect(help).toBeVisible(); await expect(help).toContainText(/internet/i);
   await expect(page.locator('[data-phrase="offline.ready"]')).toContainText('Internet is still needed to pair or reconnect devices.');
@@ -74,6 +87,7 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
     await expect(page.locator(removed)).toHaveCount(0);
     await expect(page.locator('[data-pairing-nearby]')).toBeVisible();
     await expect(page.locator(tool.action)).toBeVisible();
+    if (relayAvailable) await expect(page.locator('#pairing-transport')).toHaveValue('direct');
     expect(await page.evaluate(() => {
       const { rooms, captures, peers } = (window as any).__onlinePairing;
       return { rooms, captures, peers };

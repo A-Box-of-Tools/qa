@@ -1,0 +1,83 @@
+name: Cloud relay development QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Exact development preview URL (production is refused)
+        required: true
+        type: string
+      website_sha:
+        description: Full website commit SHA deployed at that preview
+        required: true
+        type: string
+      engines:
+        description: Start with Chromium; all explicitly adds Firefox and WebKit
+        required: true
+        default: chromium
+        type: choice
+        options: [chromium, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-relay-development
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      WEBSITE_SHA: ${{ inputs.website_sha }}
+      ENGINES: ${{ inputs.engines }}
+      RUN_CLOUD_RELAY: '1'
+      ETOOLBOX_DIR: ${{ github.workspace }}/website
+      PAIRING_EXPECTED_DIR: ${{ runner.temp }}/relay-expected-site
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate explicit development target
+        run: |
+          node -e "const u=new URL(process.env.BASE_URL); if(u.protocol!=='https:' || !u.hostname.endsWith('.abox-preview.pages.dev') || u.username || u.password || u.search || u.hash || !/^[a-f0-9]{40}$/.test(process.env.WEBSITE_SHA)) process.exit(1)"
+      - uses: actions/checkout@v4
+        with:
+          repository: A-Box-of-Tools/website
+          ref: ${{ inputs.website_sha }}
+          path: website
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the five tools from the pinned source for identity verification
+        working-directory: website
+        run: python build.py --out "$PAIRING_EXPECTED_DIR" --clean --only share-text --only share-tab --only remote-camera --only walkie-talkie --only voice-oncall --locale en --quiet
+      - run: npm ci
+      - name: Install requested native engines
+        run: |
+          if [ "$ENGINES" = all ]; then
+            npx playwright install --with-deps chromium firefox webkit
+          else
+            npx playwright install --with-deps chromium
+          fi
+      - name: Exercise short real TURN sessions
+        run: |
+          if [ "$ENGINES" = all ]; then
+            npx playwright test --config=playwright.relay.config.ts
+          else
+            npx playwright test --config=playwright.relay.config.ts --project="Relay Chromium"
+          fi
+      - name: Retain bounded reports without socket traces or screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-relay-${{ inputs.engines }}
+          path: |
+            playwright-report/
+            test-results/
+            relay-results.json
+          retention-days: 3
