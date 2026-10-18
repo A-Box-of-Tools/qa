@@ -73,6 +73,7 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
     await expectTransportMode(page, 'direct', action);
     if (compactTransport) {
       const control = transportControl(page, action);
+      await expect(control).toBeEnabled();
       await control.focus();
       await control.press('Space');
       await expectTransportMode(page, 'relay', action);
