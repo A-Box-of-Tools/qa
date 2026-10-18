@@ -35,7 +35,7 @@ jobs:
       ENGINES: ${{ inputs.engines }}
       RUN_CLOUD_RELAY: '1'
       ETOOLBOX_DIR: ${{ github.workspace }}/website
-      PAIRING_EXPECTED_DIR: ${{ runner.temp }}/relay-expected-site
+      PAIRING_EXPECTED_DIR: ${{ github.workspace }}/.relay-expected-site
     steps:
       - uses: actions/checkout@v4
       - name: Validate explicit development target
