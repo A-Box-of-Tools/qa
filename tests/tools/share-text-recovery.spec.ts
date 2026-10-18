@@ -68,6 +68,9 @@ async function controlledPeer(page: Page, alreadyOpen = false, holdHost = false)
       async setLocalDescription(value: object) { this.localDescription = value; }
       async setRemoteDescription() {}
       async addIceCandidate() {}
+      // This fixture controls channel timing, not a real transport. An empty
+      // report keeps the new route display unknown without inventing a pair.
+      async getStats() { return new Map(); }
       close() {
         this.connectionState = 'closed';
         state.channel?.close();
