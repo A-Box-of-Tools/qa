@@ -371,9 +371,9 @@ export async function noTabMedia(host: Page, viewer: Page) {
 }
 
 export async function flowingTab(viewer: Page, { pixelEvidence = false } = {}) {
-  await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => [video.videoWidth, video.videoHeight]), { timeout: 20_000 }).toEqual([640, 360]);
   if (pixelEvidence) await movingVideo(viewer);
-  else {
+  await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => [video.videoWidth, video.videoHeight]), { timeout: 20_000 }).toEqual([640, 360]);
+  if (!pixelEvidence) {
     const first = await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames);
     await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.getVideoPlaybackQuality().totalVideoFrames), { timeout: 10_000 }).toBeGreaterThan(first + 2);
   }

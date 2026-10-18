@@ -166,8 +166,9 @@ export async function pairingSnapshot(page: Page): Promise<{
   capture: { calls: number; tracks: any[] } | null; browser?: { family: string; version: string; platform: string };
   constructorFailures?: Record<string, unknown>[]; constructorFailuresDropped?: number;
   descriptions?: Record<string, unknown>[]; descriptionsDropped?: number;
+  video?: Record<string, unknown> | null;
 }> {
-  return page.evaluate(async () => {
+  const result = await page.evaluate(async () => {
     const qa = (window as any).__pairingQA;
     if (!qa) return { observed: false, peers: [], relayRequests: 0, credentialReplies: 0, credentialErrors: 0,
       candidateTypes: [], tlsOnly: false, tlsConfigurations: 0, sockets: [], capture: null };
@@ -242,6 +243,24 @@ export async function pairingSnapshot(page: Page): Promise<{
         ({ kind: track.kind, state: track.readyState, enabled: track.enabled, muted: track.muted })) } : null,
     };
   });
+  return { ...result, video: await videoSnapshot(page) };
+}
+
+export async function videoSnapshot(page: Page, selector = '#remote-video') {
+  return page.evaluate(selector => {
+    const video = document.querySelector(selector) as HTMLVideoElement | null;
+    if (!video) return null;
+    const shown = (element: HTMLElement | null) => Boolean(element && !element.hidden && element.getClientRects().length
+      && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none');
+    const rectangle = video.getBoundingClientRect();
+    return { paused: video.paused, readyState: video.readyState,
+      width: video.videoWidth, height: video.videoHeight, muted: video.muted,
+      autoplay: video.autoplay, playsInline: video.playsInline, visible: shown(video),
+      pageVisible: document.visibilityState === 'visible',
+      inViewport: rectangle.bottom > 0 && rectangle.right > 0 && rectangle.top < innerHeight && rectangle.left < innerWidth,
+      playControlVisible: shown(document.getElementById('viewer-play')),
+      errorCode: video.error?.code ?? null };
+  }, selector);
 }
 
 export async function attachPairingDiagnostics(info: TestInfo, pages: Record<string, Page>, stage = 'failure') {
