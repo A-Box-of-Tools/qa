@@ -71,7 +71,7 @@ async function reviewCameraRequestLater(source: Page) {
   await expect(dialog).toBeHidden();
 }
 
-async function cameraClipboard(page: Page) {
+async function cameraClipboard(page: Page | BrowserContext) {
   await page.addInitScript(() => {
     const state = (window as any).__cameraClipboard = { denied: false, writes: [] as string[] };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
@@ -94,6 +94,44 @@ async function copyCameraReport(page: Page) {
   await page.locator('#connection-copy').click();
   await expect.poll(() => page.evaluate(() => (window as any).__cameraClipboard.writes.length)).toBe(writes + 1);
   return page.evaluate(() => (window as any).__cameraClipboard.writes.at(-1) as string);
+}
+
+/** The product retains sanitized operation failures after its native peer closes.
+ * Export through its existing handler without waiting for a modal or animation:
+ * this is failure evidence, not a claim about the Copy button's usability. */
+async function attachCameraFailureReports(camera: Page, contexts: BrowserContext[]) {
+  if (!connectionReports) return;
+  const pages = { camera, ...Object.fromEntries(contexts.flatMap(context => context.pages())
+    .slice(0, 16).map((page, index) => [`viewer${index + 1}`, page])) };
+  const collect = async () => {
+    const reports: Record<string, unknown> = {};
+    for (const [role, page] of Object.entries(pages)) {
+      try {
+        if (page.isClosed()) { reports[role] = { closed: true }; continue; }
+        const text = await page.evaluate(() => {
+          const clipboard = (window as any).__cameraClipboard;
+          const button = document.querySelector<HTMLButtonElement>('#connection-copy');
+          if (!clipboard || !button) return null;
+          const before = clipboard.writes.length;
+          button.click();
+          return clipboard.writes.length > before ? clipboard.writes.at(-1) as string : null;
+        });
+        if (!text || text.length > 512_000) { reports[role] = { unavailable: true }; continue; }
+        const report = JSON.parse(text);
+        reports[role] = report.schema === 1 && report.tool === 'remote-camera'
+          && Array.isArray(report.attempts) && report.attempts.length <= 12 ? report : { unavailable: true };
+      } catch { reports[role] = { unavailable: true }; }
+    }
+    return reports;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const reports = await Promise.race([collect(), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 2_000); })]);
+  clearTimeout(timer);
+  if (!reports) return;
+  await test.info().attach('camera-product-connection-reports', {
+    body: JSON.stringify({ schema: 1, browserProject: test.info().project.name, reports }, null, 2),
+    contentType: 'application/json',
+  });
 }
 
 async function downloadCameraReport(page: Page) {
@@ -892,12 +930,14 @@ test.describe('remote-camera: native WebRTC media', () => {
   test('introduction and quiet microphone recovery preserve every viewer and independent leaving', async ({ page, context, browser }) => {
     test.setTimeout(120_000); const broker = localRendezvous(), viewerContexts: BrowserContext[] = [];
     try {
+      await cameraClipboard(context);
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await sourcePage(page);
       test.skip(await page.locator('#camera-bandwidth').count() === 0, 'Multiple camera viewers are awaiting the website release.');
       await page.locator('#camera-audio').check(); await page.locator('#camera-start').click(); await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/);
       const code = (await page.locator('#camera-code').textContent())!, invitation = await page.locator('#camera-link').inputValue(), viewers: Page[] = [];
       for (let index = 0; index < 2; index++) {
-        const viewerContext = await browser.newContext({ baseURL: BASE_URL }); viewerContexts.push(viewerContext); await broker.install(viewerContext);
+        const viewerContext = await browser.newContext({ baseURL: BASE_URL }); viewerContexts.push(viewerContext);
+        await cameraClipboard(viewerContext); await broker.install(viewerContext);
         const viewer = await viewerContext.newPage(); viewers.push(viewer); await withoutThirdParties(viewer); await cameraHooks(viewer, 'deny', 'broker');
         const name = `QA retained viewer ${index + 1}`; await requestCamera(viewer, code, name);
         const request = await pendingCameraRequest(page, viewer, name); await request.approve.click(); await flowingCamera(viewer, true);
@@ -1006,6 +1046,9 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect(page.locator('#camera-start')).toHaveText('Start camera');
       expect(await page.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(3);
       await expect.poll(() => viewers[1].locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
+    } catch (error) {
+      await attachCameraFailureReports(page, viewerContexts).catch(() => {});
+      throw error;
     } finally { for (const viewerContext of viewerContexts) await viewerContext.close(); }
   });
   test('introduction socket interruptions preserve established direct video until Stop', async ({ page, context, browser }) => {
@@ -1273,6 +1316,7 @@ test.describe('remote-camera: native WebRTC media', () => {
     test.setTimeout(60_000); const broker = localRendezvous();
     const viewerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
+      await cameraClipboard(context); await cameraClipboard(viewerContext);
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext);
       const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page);
       await page.locator('#camera-name').fill('QA Camera Room'); await page.locator('#camera-start').click();
@@ -1296,6 +1340,9 @@ test.describe('remote-camera: native WebRTC media', () => {
       await viewer.locator('#viewer-stop').click(); await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
       await page.locator('#camera-stop').click(); await tracksStopped(page);
+    } catch (error) {
+      await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+      throw error;
     } finally { await viewerContext.close(); }
   });
   test('closing the source clears an approved viewer and closes its peer', async ({ page, context, browser }) => {
@@ -1332,6 +1379,7 @@ test.describe('remote-camera: native WebRTC media', () => {
     const viewerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     let observedViewer: Page | undefined;
     try {
+      await cameraClipboard(context); await cameraClipboard(viewerContext);
       await observePairing(context); await observePairing(viewerContext);
       await monitor(context); await monitor(viewerContext); await cameraHooks(page, 'allow', 'live'); watch(page);
       const viewer = await viewerContext.newPage(); observedViewer = viewer; await withoutThirdParties(viewer); watch(viewer);
@@ -1348,7 +1396,8 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
     } catch (error) {
-      await attachPairingDiagnostics(test.info(), { camera: page, ...(observedViewer ? { viewer: observedViewer } : {}) });
+      await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+      await attachPairingDiagnostics(test.info(), { camera: page, ...(observedViewer ? { viewer: observedViewer } : {}) }).catch(() => {});
       throw error;
     } finally { await viewerContext.close(); }
   });

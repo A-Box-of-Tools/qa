@@ -37,7 +37,12 @@ async function directFailure(viewer: Page) {
     Object.defineProperty(peer, 'connectionState', { configurable: true, get: () => 'failed' });
     peer.dispatchEvent(new Event('connectionstatechange'));
   });
-  await expect(viewer.locator('#viewer-status')).toContainText('There is no internet relay');
+  if (await viewer.locator('#pairing-transport').count()) {
+    await expect(viewer.locator('#viewer-status')).toContainText('the mode never changes automatically');
+    await expect(viewer.locator('#pairing-transport')).toHaveValue('direct');
+  } else {
+    await expect(viewer.locator('#viewer-status')).toContainText('There is no internet relay');
+  }
   expect(await viewer.evaluate(() => (window as any).__tabQA.peers[0].signalingState)).toBe('closed');
 }
 
