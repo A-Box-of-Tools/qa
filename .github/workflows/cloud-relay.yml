@@ -1,0 +1,112 @@
+name: Cloud relay development QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Exact development preview URL (production is refused)
+        required: true
+        type: string
+      website_sha:
+        description: Full website commit SHA deployed at that preview
+        required: true
+        type: string
+      engines:
+        description: Native engine to exercise; all runs the three relay projects
+        required: true
+        default: chromium
+        type: choice
+        options: [chromium, firefox, webkit, all]
+      host_os:
+        description: Standard runner; macOS can distinguish Apple playback from Linux WebKit media limitations
+        required: false
+        default: ubuntu-latest
+        type: choice
+        options: [ubuntu-latest, macos-15]
+      case_filter:
+        description: Optional Playwright title filter for investigating a failed case
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-relay-development
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ${{ inputs.host_os == 'macos-15' && 'macos-15' || 'ubuntu-latest' }}
+    timeout-minutes: 35
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      WEBSITE_SHA: ${{ inputs.website_sha }}
+      ENGINES: ${{ inputs.engines }}
+      CASE_FILTER: ${{ inputs.case_filter }}
+      RUN_CLOUD_RELAY: '1'
+      ETOOLBOX_DIR: ${{ github.workspace }}/website
+      PAIRING_EXPECTED_DIR: ${{ github.workspace }}/.relay-expected-site
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate explicit development target
+        run: |
+          node -e "const u=new URL(process.env.BASE_URL); if(u.protocol!=='https:' || !u.hostname.endsWith('.abox-preview.pages.dev') || u.username || u.password || u.search || u.hash || !/^[a-f0-9]{40}$/.test(process.env.WEBSITE_SHA)) process.exit(1)"
+      - uses: actions/checkout@v4
+        with:
+          repository: A-Box-of-Tools/website
+          ref: ${{ inputs.website_sha }}
+          path: website
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the five tools from the pinned source for identity verification
+        working-directory: website
+        run: python build.py --out "$PAIRING_EXPECTED_DIR" --clean --only share-text --only share-tab --only remote-camera --only walkie-talkie --only voice-oncall --locale en --quiet
+      - run: npm ci
+      - name: Verify the bounded relay project selection before opening sessions
+        run: |
+          npx playwright test --config=playwright.relay.config.ts --list --reporter=json > relay-plan.json
+          node -e "const p=require('./relay-plan.json'); const names=p.config.projects.map(x=>x.name).sort(); if(JSON.stringify(names)!==JSON.stringify(['Relay Chromium','Relay Firefox','Relay WebKit'])) throw new Error('Unexpected relay project selection'); console.log('Verified three explicit relay projects');"
+      - name: Install requested native engines
+        run: |
+          if [ "$ENGINES" = all ]; then
+            npx playwright install --with-deps chromium firefox webkit
+          else
+            npx playwright install --with-deps "$ENGINES"
+          fi
+      - name: Provide a local audio sink for native audio contexts
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=relay_qa sink_properties=device.description=Relay_QA
+          pactl set-default-sink relay_qa
+          test "$(pactl get-default-sink)" = relay_qa
+      - name: Exercise short real TURN sessions
+        run: |
+          args=(test --config=playwright.relay.config.ts)
+          case "$ENGINES" in
+            chromium) args+=(--project="Relay Chromium") ;;
+            firefox) args+=(--project="Relay Firefox") ;;
+            webkit) args+=(--project="Relay WebKit") ;;
+            all) ;;
+            *) exit 1 ;;
+          esac
+          if [ -n "$CASE_FILTER" ]; then args+=(--grep "$CASE_FILTER"); fi
+          npx playwright "${args[@]}"
+      - name: Retain bounded reports without socket traces or screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-relay-${{ inputs.engines }}
+          path: |
+            playwright-report/
+            test-results/
+            relay-results.json
+          retention-days: 3

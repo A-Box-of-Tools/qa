@@ -5,6 +5,7 @@ import { withoutThirdParties } from '../../lib/engine';
 import { ETOOLBOX_DIR } from '../../lib/site';
 
 const source = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/share-text/src/main.js'), 'utf8');
+const explicitTransport = fs.readFileSync(path.join(ETOOLBOX_DIR, 'tools/share-text/body.html'), 'utf8').includes('paired-transport.html');
 const recoveredHostControls = source.includes('function hostSocket(code) {');
 
 /** The network suite still exercises real peers. This controlled peer stops
@@ -67,6 +68,9 @@ async function controlledPeer(page: Page, alreadyOpen = false, holdHost = false)
       async setLocalDescription(value: object) { this.localDescription = value; }
       async setRemoteDescription() {}
       async addIceCandidate() {}
+      // This fixture controls channel timing, not a real transport. An empty
+      // report keeps the new route display unknown without inventing a pair.
+      async getStats() { return new Map(); }
       close() {
         this.connectionState = 'closed';
         state.channel?.close();
@@ -100,7 +104,7 @@ test('share-text: recovery after an initial socket failure exposes the link and 
   const urls = await page.evaluate(() => (window as any).__shareRecovery.hosts.map((socket: any) => socket.url));
   expect(urls[1]).toBe(urls[0]);
   await page.evaluate(() => (window as any).__shareRecovery.hosts[1].open());
-  const link = new URL(page.url()); link.searchParams.set('local', '1'); link.hash = 'qa-initial-host-retry';
+  const link = new URL(page.url()); link.searchParams.set('local', '1'); if (explicitTransport) link.searchParams.set('transport', 'direct'); link.hash = 'qa-initial-host-retry';
   await expect(page.locator('#link')).toHaveValue(link.href);
   await expect(page.locator('#linkrow')).toBeVisible();
   await expect(page.locator('#stop')).toBeVisible();
@@ -182,7 +186,7 @@ test('share-text: a delivered private introduction waits for human admission wit
   await expect(page.locator('#panel')).toContainText('admitted text');
 });
 
-test('share-text: a peer that never opens offers the direct-connection failure and optional relay', async ({ page }) => {
+test('share-text: a peer that never opens keeps Direct mode and offers a fresh retry', async ({ page }) => {
   await controlledPeer(page);
   await page.clock.install();
   await page.goto('/share-text/#qa-controlled');
@@ -190,7 +194,16 @@ test('share-text: a peer that never opens offers the direct-connection failure a
   await page.clock.fastForward(20_100);
   await expect(page.locator('#view-status')).toContainText('Could not reach the sharer directly');
   await expect(page.locator('#retry')).toBeVisible();
-  await expect(page.locator('#relayrow')).toBeVisible();
+  if (explicitTransport) {
+    await expect(page.locator('#relayrow')).toBeHidden();
+    await expect(page.locator('#relay')).toHaveCount(0);
+    await expect(page.locator('#pairing-transport')).toHaveValue('direct');
+    await page.locator('#retry').click();
+    await expect(page.locator('#consent')).toBeVisible();
+    await expect(page.locator('#pairing-transport')).toHaveValue('direct');
+  } else {
+    await expect(page.locator('#relayrow')).toBeVisible();
+  }
 });
 
 test('share-text: a local peer that never opens times out without a relay and can retry', async ({ page }) => {

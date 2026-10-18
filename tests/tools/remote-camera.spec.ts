@@ -4,6 +4,8 @@ import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
 import { liveRendezvous } from '../../lib/rendezvous';
 import fs from 'node:fs';
 import path from 'node:path';
+import { cameraHooks } from '../../lib/camera-fixtures';
+import { observePairing, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
 import { canFakeCamera, hasCameraInterface, withoutThirdParties } from '../../lib/engine';
 
 const TOOL = '/remote-camera/';
@@ -17,84 +19,6 @@ const selectNearby = cameraBody.includes('data-pairing-nearby');
 const directDiscovery = !selectNearby && cameraSource.includes("link.addEventListener('click'");
 const approvalPopup = cameraBody.includes('id="camera-request-dialog"');
 const connectionReports = cameraBody.includes('id="connection-report"');
-
-type CameraMode = 'allow' | 'deny' | 'pending';
-
-/** Native moving video exercises capture, encoding, decoding and track cleanup.
- * Only the permission prompt and introduction socket are supplied by the suite.
- * The live worker contract is checked separately against an admitted origin. */
-async function cameraHooks(page: Page, mode: CameraMode = 'allow', socketMode = 'open') {
-  await page.addInitScript(({ mode, socketMode }) => {
-    const state = (window as any).__cameraQA = { calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[], sockets: [] as any[], release: null as null | (() => void), holdNext: false };
-    const devices = [{ kind: 'videoinput', deviceId: 'qa-camera-1', label: 'QA camera one' }, { kind: 'videoinput', deviceId: 'qa-camera-2', label: 'QA camera two' }];
-    const makeStream = (deviceId: string, includeAudio: boolean, includeVideo: boolean) => {
-      const stream = new MediaStream();
-      if (includeVideo) {
-        const canvas = document.createElement('canvas'); canvas.width = deviceId === 'qa-camera-2' ? 320 : 640; canvas.height = deviceId === 'qa-camera-2' ? 240 : 480;
-        const ctx = canvas.getContext('2d')!; let frame = 0;
-        const paint = () => { ctx.fillStyle = `hsl(${(frame++ * 37) % 360},70%,45%)`; ctx.fillRect(0, 0, 640, 480); ctx.fillStyle = '#fff'; ctx.fillRect(frame % 500, 150, 100, 100); };
-        paint(); const timer = setInterval(paint, 50);
-        canvas.captureStream(20).getVideoTracks().forEach((track) => {
-          const settings = track.getSettings.bind(track); track.getSettings = () => ({ ...settings(), deviceId });
-          stream.addTrack(track); state.tracks.push(track); const stop = track.stop.bind(track);
-          track.stop = () => { stop(); clearInterval(timer); };
-        });
-      }
-      if (includeAudio) {
-        const audio = new AudioContext(), oscillator = audio.createOscillator();
-        const destination = audio.createMediaStreamDestination();
-        oscillator.frequency.value = 440; oscillator.connect(destination); oscillator.start();
-        void audio.resume().catch(() => {});
-        const track = destination.stream.getAudioTracks()[0], stop = track.stop.bind(track);
-        state.tracks.push(track);
-        track.stop = () => { if (track.readyState === 'ended') return; stop(); oscillator.stop(); void audio.close().catch(() => {}); };
-        stream.addTrack(track);
-      }
-      return stream;
-    };
-    const getUserMedia = async (constraints: MediaStreamConstraints) => {
-      state.calls.push(constraints);
-      if (mode === 'deny') throw new DOMException('Permission denied', 'NotAllowedError');
-      if (mode === 'pending' || state.holdNext) { state.holdNext = false; await new Promise<void>((resolve) => { state.release = resolve; }); }
-      const video = constraints.video as MediaTrackConstraints;
-      const deviceId = typeof video?.deviceId === 'object' ? String(video.deviceId.exact ?? 'qa-camera-1') : 'qa-camera-1';
-      if (!devices.some((device) => device.deviceId === deviceId)) throw new DOMException('No such camera', 'OverconstrainedError');
-      return makeStream(deviceId, Boolean(constraints.audio), Boolean(constraints.video));
-    };
-    // A WebKit init script can run before the native mediaDevices getter is
-    // available. Bind the permission shim to navigator itself so navigation
-    // cannot silently leave the real permission prompt in place.
-    const media = navigator.mediaDevices;
-    const supplied = media ? new Proxy(media, { get(target, property) {
-      if (property === 'getUserMedia') return getUserMedia;
-      if (property === 'enumerateDevices') return async () => devices;
-      const value = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    } }) : { getUserMedia };
-    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: supplied });
-    if (socketMode === 'broker' || socketMode === 'live') return;
-    class QuietSocket extends EventTarget {
-      readyState = 0;
-      discovery: boolean;
-      constructor(public url: string) {
-        super(); this.discovery = new URL(url).pathname === '/discover'; state.sockets.push(this);
-        queueMicrotask(() => {
-          if (this.readyState !== 0) return;
-          const failed = !this.discovery && socketMode === 'fail';
-          this.readyState = failed ? 3 : 1;
-          this.emit(new Event(failed ? 'error' : 'open'));
-          if (this.discovery) this.emit(new MessageEvent('message', { data: JSON.stringify({
-            type: 'shares', tool: new URL(this.url).searchParams.get('tool'), list: socketMode === 'listed' ? [{ code: 'qa-listed-camera', local: true }] : [],
-          }) }));
-        });
-      }
-      emit(event: Event) { this.dispatchEvent(event); (this as any)[`on${event.type}`]?.(event); }
-      send(_data: string) {}
-      close() { if (this.readyState === 3) return; this.readyState = 3; this.emit(new CloseEvent('close', { code: 1000 })); }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: QuietSocket });
-  }, { mode, socketMode });
-}
 
 /** Native scoped workers stay active; permission and OS delivery are supplied. */
 async function notificationHooks(page: Page, reply: 'granted' | 'denied' | 'pending') {
@@ -147,7 +71,7 @@ async function reviewCameraRequestLater(source: Page) {
   await expect(dialog).toBeHidden();
 }
 
-async function cameraClipboard(page: Page) {
+async function cameraClipboard(page: Page | BrowserContext) {
   await page.addInitScript(() => {
     const state = (window as any).__cameraClipboard = { denied: false, writes: [] as string[] };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
@@ -170,6 +94,44 @@ async function copyCameraReport(page: Page) {
   await page.locator('#connection-copy').click();
   await expect.poll(() => page.evaluate(() => (window as any).__cameraClipboard.writes.length)).toBe(writes + 1);
   return page.evaluate(() => (window as any).__cameraClipboard.writes.at(-1) as string);
+}
+
+/** The product retains sanitized operation failures after its native peer closes.
+ * Export through its existing handler without waiting for a modal or animation:
+ * this is failure evidence, not a claim about the Copy button's usability. */
+async function attachCameraFailureReports(camera: Page, contexts: BrowserContext[]) {
+  if (!connectionReports) return;
+  const pages = { camera, ...Object.fromEntries(contexts.flatMap(context => context.pages())
+    .slice(0, 16).map((page, index) => [`viewer${index + 1}`, page])) };
+  const collect = async () => {
+    const reports: Record<string, unknown> = {};
+    for (const [role, page] of Object.entries(pages)) {
+      try {
+        if (page.isClosed()) { reports[role] = { closed: true }; continue; }
+        const text = await page.evaluate(() => {
+          const clipboard = (window as any).__cameraClipboard;
+          const button = document.querySelector<HTMLButtonElement>('#connection-copy');
+          if (!clipboard || !button) return null;
+          const before = clipboard.writes.length;
+          button.click();
+          return clipboard.writes.length > before ? clipboard.writes.at(-1) as string : null;
+        });
+        if (!text || text.length > 512_000) { reports[role] = { unavailable: true }; continue; }
+        const report = JSON.parse(text);
+        reports[role] = report.schema === 1 && report.tool === 'remote-camera'
+          && Array.isArray(report.attempts) && report.attempts.length <= 12 ? report : { unavailable: true };
+      } catch { reports[role] = { unavailable: true }; }
+    }
+    return reports;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const reports = await Promise.race([collect(), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 2_000); })]);
+  clearTimeout(timer);
+  if (!reports) return;
+  await test.info().attach('camera-product-connection-reports', {
+    body: JSON.stringify({ schema: 1, browserProject: test.info().project.name, reports }, null, 2),
+    contentType: 'application/json',
+  });
 }
 
 async function downloadCameraReport(page: Page) {
@@ -968,12 +930,14 @@ test.describe('remote-camera: native WebRTC media', () => {
   test('introduction and quiet microphone recovery preserve every viewer and independent leaving', async ({ page, context, browser }) => {
     test.setTimeout(120_000); const broker = localRendezvous(), viewerContexts: BrowserContext[] = [];
     try {
+      await cameraClipboard(context);
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await sourcePage(page);
       test.skip(await page.locator('#camera-bandwidth').count() === 0, 'Multiple camera viewers are awaiting the website release.');
       await page.locator('#camera-audio').check(); await page.locator('#camera-start').click(); await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/);
       const code = (await page.locator('#camera-code').textContent())!, invitation = await page.locator('#camera-link').inputValue(), viewers: Page[] = [];
       for (let index = 0; index < 2; index++) {
-        const viewerContext = await browser.newContext({ baseURL: BASE_URL }); viewerContexts.push(viewerContext); await broker.install(viewerContext);
+        const viewerContext = await browser.newContext({ baseURL: BASE_URL }); viewerContexts.push(viewerContext);
+        await cameraClipboard(viewerContext); await broker.install(viewerContext);
         const viewer = await viewerContext.newPage(); viewers.push(viewer); await withoutThirdParties(viewer); await cameraHooks(viewer, 'deny', 'broker');
         const name = `QA retained viewer ${index + 1}`; await requestCamera(viewer, code, name);
         const request = await pendingCameraRequest(page, viewer, name); await request.approve.click(); await flowingCamera(viewer, true);
@@ -1082,6 +1046,9 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect(page.locator('#camera-start')).toHaveText('Start camera');
       expect(await page.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(3);
       await expect.poll(() => viewers[1].locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
+    } catch (error) {
+      await attachCameraFailureReports(page, viewerContexts).catch(() => {});
+      throw error;
     } finally { for (const viewerContext of viewerContexts) await viewerContext.close(); }
   });
   test('introduction socket interruptions preserve established direct video until Stop', async ({ page, context, browser }) => {
@@ -1349,6 +1316,7 @@ test.describe('remote-camera: native WebRTC media', () => {
     test.setTimeout(60_000); const broker = localRendezvous();
     const viewerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
+      await cameraClipboard(context); await cameraClipboard(viewerContext);
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext);
       const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page);
       await page.locator('#camera-name').fill('QA Camera Room'); await page.locator('#camera-start').click();
@@ -1372,6 +1340,9 @@ test.describe('remote-camera: native WebRTC media', () => {
       await viewer.locator('#viewer-stop').click(); await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
       await page.locator('#camera-stop').click(); await tracksStopped(page);
+    } catch (error) {
+      await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+      throw error;
     } finally { await viewerContext.close(); }
   });
   test('closing the source clears an approved viewer and closes its peer', async ({ page, context, browser }) => {
@@ -1406,9 +1377,12 @@ test.describe('remote-camera: native WebRTC media', () => {
       } });
     });
     const viewerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
+    let observedViewer: Page | undefined;
     try {
+      await cameraClipboard(context); await cameraClipboard(viewerContext);
+      await observePairing(context); await observePairing(viewerContext);
       await monitor(context); await monitor(viewerContext); await cameraHooks(page, 'allow', 'live'); watch(page);
-      const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); watch(viewer);
+      const viewer = await viewerContext.newPage(); observedViewer = viewer; await withoutThirdParties(viewer); watch(viewer);
       await sourcePage(page); await page.locator('#camera-start').click();
       await expect(page.locator('#camera-code')).toHaveText(/^cam-[a-z2-7]{12}$/, { timeout: 20_000 });
       const code = (await page.locator('#camera-code').textContent())!, note = 'QA-camera-note-kept-off-signaling-7f3e';
@@ -1421,6 +1395,10 @@ test.describe('remote-camera: native WebRTC media', () => {
       await stopSharedCamera(page); await tracksStopped(page);
       await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
+    } catch (error) {
+      await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+      await attachPairingDiagnostics(test.info(), { camera: page, ...(observedViewer ? { viewer: observedViewer } : {}) }).catch(() => {});
+      throw error;
     } finally { await viewerContext.close(); }
   });
 });
