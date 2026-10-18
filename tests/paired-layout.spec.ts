@@ -3,8 +3,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
+import { compactTransport, expectTransportMode, expectTransportNearAction, type PairingAction } from '../lib/pairing-transport';
 
 const tools = ['share-text', 'share-tab', 'walkie-talkie', 'voice-oncall', 'remote-camera'];
+const actions: Record<string, Partial<Record<PairingAction, string>>> = {
+  'share-text': { host: '#publish', join: '#connect' },
+  'share-tab': { host: '#host-start', join: '#viewer-connect' },
+  'walkie-talkie': { host: '#wt-start', join: '#wt-connect-listener', nearby: '#wt-join' },
+  'voice-oncall': { host: '#vi-start', join: '#vi-join' },
+  'remote-camera': { host: '#camera-start', join: '#viewer-connect' },
+};
+const initialActions: Record<string, PairingAction[]> = {
+  'share-text': ['host'], 'share-tab': ['host', 'join'], 'walkie-talkie': ['nearby', 'host'],
+  'voice-oncall': ['join'], 'remote-camera': ['host', 'join'],
+};
 
 for (const tool of tools) test(`${tool}: nearby discovery comes before setup with readable Wi-Fi and hotspot guidance`, async ({ page }) => {
   const body = path.join(ETOOLBOX_DIR, 'tools', tool, 'body.html');
@@ -55,6 +67,14 @@ for (const tool of tools) test(`${tool}: nearby discovery comes before setup wit
   await expect(help).toContainText(/Wi-Fi/i);
   await expect(help).toContainText(/hotspot/i);
   await expect(help).toContainText(/internet/i);
+  if (compactTransport) {
+    await expectTransportMode(page, 'direct');
+    for (const action of initialActions[tool]) await expectTransportNearAction(page, action, actions[tool][action]!);
+    if (tool === 'voice-oncall') {
+      await page.locator('#vi-tab-host').click();
+      await expectTransportNearAction(page, 'host', '#vi-start');
+    }
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1),
     'The discovery area and expanded network guidance fit the desktop or phone viewport.').toBe(true);
   expect(await page.evaluate(() => (window as any).__pairedLayoutRoomAttempts)).toBe(0);

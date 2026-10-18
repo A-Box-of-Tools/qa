@@ -3,6 +3,7 @@ import { discoverTools } from '../../lib/tools';
 import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { liveRendezvous } from '../../lib/rendezvous';
+import { compactTransport, expectTransportMode } from '../../lib/pairing-transport';
 import {
   tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
   localTabOnly, noTabSockets,
@@ -37,9 +38,9 @@ async function directFailure(viewer: Page) {
     Object.defineProperty(peer, 'connectionState', { configurable: true, get: () => 'failed' });
     peer.dispatchEvent(new Event('connectionstatechange'));
   });
-  if (await viewer.locator('#pairing-transport').count()) {
+  if (compactTransport || await viewer.locator('#pairing-transport').count()) {
     await expect(viewer.locator('#viewer-status')).toContainText('the mode never changes automatically');
-    await expect(viewer.locator('#pairing-transport')).toHaveValue('direct');
+    await expectTransportMode(viewer, 'direct');
   } else {
     await expect(viewer.locator('#viewer-status')).toContainText('There is no internet relay');
   }

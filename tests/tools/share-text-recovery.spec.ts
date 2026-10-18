@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
+import { expectTransportMode } from '../../lib/pairing-transport';
 import { withoutThirdParties } from '../../lib/engine';
 import { ETOOLBOX_DIR } from '../../lib/site';
 
@@ -197,10 +198,10 @@ test('share-text: a peer that never opens keeps Direct mode and offers a fresh r
   if (explicitTransport) {
     await expect(page.locator('#relayrow')).toBeHidden();
     await expect(page.locator('#relay')).toHaveCount(0);
-    await expect(page.locator('#pairing-transport')).toHaveValue('direct');
+    await expectTransportMode(page, 'direct');
     await page.locator('#retry').click();
     await expect(page.locator('#consent')).toBeVisible();
-    await expect(page.locator('#pairing-transport')).toHaveValue('direct');
+    await expectTransportMode(page, 'direct');
   } else {
     await expect(page.locator('#relayrow')).toBeVisible();
   }

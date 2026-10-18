@@ -10,6 +10,8 @@ import { tabHooks, flowingTab, noTabMedia } from '../../lib/share-tab';
 import { voiceHooks, receivedAudio, microphoneEnabled, outputRms, voiceSnapshot } from '../../lib/voice-fixtures';
 import { observePairing, pairingSnapshot, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
 import { reserveRelayStart } from '../../lib/relay-pacing';
+import { chooseTransport, expectTransportLocked, expectTransportMode, expectTransportNearAction, revealTransportNote,
+  type TransportMode } from '../../lib/pairing-transport';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
 type Tool = typeof tools[number];
@@ -105,11 +107,14 @@ async function newSide(browser: Browser, tool: Tool, role: 'host' | 'client', tl
   }
 }
 
-async function startHost(host: Page, tool: Tool, mode = 'relay') {
+async function startHost(host: Page, tool: Tool, mode: TransportMode = 'relay') {
   await host.goto('/' + tool + '/');
-  await expect(host.locator('#pairing-transport')).toHaveValue('direct');
-  await host.locator('#pairing-transport').selectOption(mode);
-  if (mode === 'relay') await expect(host.locator('#pairing-transport-note')).toContainText('Cloudflare');
+  if (tool === 'voice-oncall') await host.locator('#vi-tab-host').click();
+  await expectTransportMode(host, 'direct', 'host');
+  await expectTransportNearAction(host, 'host', { 'share-text': '#publish', 'share-tab': '#host-start',
+    'remote-camera': '#camera-start', 'walkie-talkie': '#wt-start', 'voice-oncall': '#vi-start' }[tool]);
+  await chooseTransport(host, mode, 'host');
+  if (mode === 'relay') await expect(await revealTransportNote(host, 'host')).toContainText('Cloudflare');
   let input: string;
   if (tool === 'share-text') {
     await host.locator('#text').fill(TEXT);
@@ -132,7 +137,6 @@ async function startHost(host: Page, tool: Tool, mode = 'relay') {
     await host.locator('#wt-start').click();
     input = '#wt-link';
   } else {
-    await host.locator('#vi-tab-host').click();
     await host.locator('#vi-room-name').fill('QA relay pager');
     await host.locator('#vi-password-required').check();
     await host.locator('#vi-host-password').fill(PASSWORD);
@@ -143,14 +147,16 @@ async function startHost(host: Page, tool: Tool, mode = 'relay') {
   await expect.poll(async () => Boolean(await host.locator(input).inputValue()), { timeout: 25_000 }).toBe(true);
   const invitation = await host.locator(input).inputValue();
   expect(new URL(invitation).searchParams.get('transport')).toBe(mode);
-  await expect(host.locator('#pairing-transport')).toBeDisabled();
+  await expectTransportLocked(host);
   return invitation;
 }
 
 async function openClient(client: Page, tool: Tool, invitation: string) {
   await client.goto(invitation);
-  await expect(client.locator('#pairing-transport')).toHaveValue('relay');
-  await expect(client.locator('#pairing-transport-note')).toBeVisible();
+  await expectTransportMode(client, 'relay', 'join');
+  await expectTransportNearAction(client, 'join', { 'share-text': '#connect', 'share-tab': '#viewer-connect',
+    'remote-camera': '#viewer-connect', 'walkie-talkie': '#wt-connect-listener', 'voice-oncall': '#vi-join' }[tool]);
+  await expect(await revealTransportNote(client, 'join')).toContainText('Cloudflare');
   const state = await pairingSnapshot(client);
   expect(state.peers).toEqual([]);
   expect(state.relayRequests).toBe(0);
@@ -178,6 +184,7 @@ async function relayConnected(page: Page, tls443 = false) {
   expect(state.credentialErrors).toBe(0);
   expect(state.candidateTypes).not.toEqual(expect.arrayContaining(['host']));
   expect(state.candidateTypes).not.toEqual(expect.arrayContaining(['srflx']));
+  await expect(page.locator('#pairing-route')).toBeVisible();
   await expect(page.locator('#pairing-route')).toContainText('Cloud relay');
   if (tls443) {
     expect(state.tlsConfigurations).toBeGreaterThan(0);
@@ -357,6 +364,7 @@ for (const tool of tools) {
       await join(client, tool);
       await approveAndDeliver(host, client, tool);
       await relayConnected(host); await relayConnected(client);
+      await expectTransportLocked(host); await expectTransportLocked(client);
       await attachPairingDiagnostics(test.info(), { host, client }, 'connected');
       await stopHost(host, tool);
       await closed(host); await closed(client);
@@ -419,7 +427,7 @@ for (const tool of tools) {
       const text = await client.locator('[data-phrase="transport.invalid"]').textContent();
       await expect(client.locator(status[tool])).toContainText(text!, { timeout: 15_000 });
       expect((await pairingSnapshot(client)).peers).toEqual([]);
-      await expect(client.locator('#pairing-transport')).toHaveValue('relay');
+      await expectTransportMode(client, 'relay');
       await stopHost(host, tool);
     });
   });
@@ -450,7 +458,7 @@ test('voice-oncall: unavailable relay service stops capture and never widens to 
     await expect(client.locator('#vi-status-text')).toContainText(text!);
     expect((await pairingSnapshot(client)).peers).toEqual([]);
     await closed(client);
-    await expect(client.locator('#pairing-transport')).toHaveValue('relay');
+    await expectTransportMode(client, 'relay');
     await stopHost(host, 'voice-oncall');
   });
 });
@@ -464,7 +472,7 @@ test('walkie-talkie: a Direct invitation cannot join an authenticated relay chan
     await expect(client.locator('#wt-error-text')).toContainText(text!, { timeout: 20_000 });
     expect((await pairingSnapshot(client)).relayRequests).toBe(0);
     expect((await pairingSnapshot(client)).peers).toEqual([]);
-    await expect(client.locator('#pairing-transport')).toHaveValue('direct');
+    await expectTransportMode(client, 'direct');
     await stopHost(host, 'walkie-talkie');
   });
 });

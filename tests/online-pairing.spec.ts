@@ -3,13 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR, onProductionDomain } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
+import { compactTransport, chooseTransport, expectTransportMode, transportControl, revealTransportNote,
+  type PairingAction } from '../lib/pairing-transport';
 
 const tools = [
-  { slug: 'share-text', action: '#publish' },
-  { slug: 'share-tab', action: '#viewer-connect' },
-  { slug: 'walkie-talkie', action: '#wt-start' },
-  { slug: 'voice-oncall', action: '#vi-join' },
-  { slug: 'remote-camera', action: '#viewer-connect' },
+  { slug: 'share-text', action: '#publish', modeAction: 'host' },
+  { slug: 'share-tab', action: '#viewer-connect', modeAction: 'host' },
+  { slug: 'walkie-talkie', action: '#wt-start', modeAction: 'host' },
+  { slug: 'voice-oncall', action: '#vi-join', modeAction: 'join' },
+  { slug: 'remote-camera', action: '#viewer-connect', modeAction: 'host' },
 ];
 const removed = '#pairing-options, #pairing-auto, #pairing-online, #pairing-offline, '
   + '#offline-host, #offline-viewer-fields, #offline-offer, #offline-offer-input, '
@@ -67,14 +69,23 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
   const relayAvailable = fs.existsSync(toolConfig)
     && /^supports_relay\s*=\s*true\s*$/m.test(fs.readFileSync(toolConfig, 'utf8'));
   if (relayAvailable) {
-    await expect(page.locator('#pairing-transport')).toHaveValue('direct');
-    await page.locator('#pairing-transport').selectOption('relay');
-    await expect(page.locator('#pairing-transport-note')).toContainText('Cloudflare');
+    const action = tool.modeAction as PairingAction;
+    await expectTransportMode(page, 'direct', action);
+    if (compactTransport) {
+      const control = transportControl(page, action);
+      await control.focus();
+      await control.press('Space');
+      await expectTransportMode(page, 'relay', action);
+      await expect(control).toBeFocused();
+    } else await chooseTransport(page, 'relay', action);
+    await expect(await revealTransportNote(page, action)).toContainText('Cloudflare');
     expect(await page.evaluate(() => {
       const { rooms, captures, peers } = (window as any).__onlinePairing;
       return { rooms, captures, peers };
     })).toEqual({ rooms: 0, captures: 0, peers: 0 });
-    await page.locator('#pairing-transport').selectOption('direct');
+    if (compactTransport) await transportControl(page, action).press('Space');
+    else await chooseTransport(page, 'direct', action);
+    await expectTransportMode(page, 'direct', action);
   }
   const help = page.locator('[data-pairing-network-help]');
   await expect(help).toBeVisible(); await expect(help).toContainText(/internet/i);
@@ -87,7 +98,7 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
     await expect(page.locator(removed)).toHaveCount(0);
     await expect(page.locator('[data-pairing-nearby]')).toBeVisible();
     await expect(page.locator(tool.action)).toBeVisible();
-    if (relayAvailable) await expect(page.locator('#pairing-transport')).toHaveValue('direct');
+    if (relayAvailable) await expectTransportMode(page, 'direct', tool.modeAction as PairingAction);
     expect(await page.evaluate(() => {
       const { rooms, captures, peers } = (window as any).__onlinePairing;
       return { rooms, captures, peers };
