@@ -184,9 +184,11 @@ async function relayConnected(page: Page, tls443 = false) {
     // WebKit omits relayProtocol. Its native configuration must still contain
     // exclusively TURNS/443, with traffic on both relay candidates. A protocol
     // reported by any engine must be TLS; an absent field is labeled separately.
-    expect(state.peers.filter((peer: any) => peer.connection === 'connected')
-      .every((peer: any) => peer.tls443Only && peer.selected.every((pair: any) =>
-        ['tls', 'unknown'].includes(pair.relayProtocol) && pair.bytesSent > 0 && pair.bytesReceived > 0))).toBe(true);
+    const connected = state.peers.filter((peer: any) => peer.connection === 'connected');
+    expect(connected.length).toBeGreaterThan(0);
+    expect(connected.every((peer: any) => peer.policy === 'relay' && peer.tls443Only && peer.selected.length > 0
+      && peer.selected.every((pair: any) => pair.local === 'relay' && pair.remote === 'relay'
+        && ['tls', 'unknown'].includes(pair.relayProtocol) && pair.bytesSent > 0 && pair.bytesReceived > 0))).toBe(true);
   }
 }
 
