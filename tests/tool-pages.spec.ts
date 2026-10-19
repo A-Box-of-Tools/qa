@@ -1,8 +1,14 @@
 import { test, expect } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
 import { allowedExternalHosts, isKnownBenignHost } from '../lib/csp';
-import { BASE_URL } from '../lib/site';
+import { BASE_URL, ETOOLBOX_DIR } from '../lib/site';
 import { discoverTools, hasFilePicker } from '../lib/tools';
 import { quiet, withoutThirdParties } from '../lib/engine';
+
+const canonicalToolNames = fs.readFileSync(path.join(ETOOLBOX_DIR, 'templates', 'tool.html'), 'utf8')
+  .includes('<h1>{{ tool.name | e }}</h1>');
+let hubMarkup: Promise<string> | undefined;
 
 // One test.describe per shipped tool, discovered from the etoolbox checkout
 // itself (see lib/tools.ts) - add a tool there and it is covered here with
@@ -16,13 +22,27 @@ import { quiet, withoutThirdParties } from '../lib/engine';
 // load). The two that must listen from before the load each take their own.
 for (const slug of discoverTools()) {
   test.describe(`tool: ${slug}`, () => {
-    test('renders the frame, the drop zone and the privacy panel', async ({ page }) => {
+    test('renders the frame, the drop zone and the privacy panel', async ({ page, request }) => {
       await page.goto(`/${slug}/`);
 
       await test.step('the frame and the tool\'s own heading', async () => {
         await expect(page).toHaveTitle(/.+/);
         await expect(page.locator('header.topbar h1')).toBeVisible();
         await expect(page.locator('nav.crumbs [aria-current="page"]')).toBeVisible();
+        if (canonicalToolNames) {
+          // Compare the deployed card and page, not two copies of metadata.
+          // One cached hub response serves all tool cases in this worker.
+          hubMarkup ??= request.get('/').then(async response => {
+            expect(response.ok(), 'The tool catalogue must be readable.').toBe(true);
+            return response.text();
+          });
+          const cardName = await page.evaluate(({ html, slug }) => {
+            const hub = new DOMParser().parseFromString(html, 'text/html');
+            return hub.querySelector(`a.tool-card[data-tool="${slug}"] .tool-name`)?.textContent?.trim() ?? '';
+          }, { html: await hubMarkup, slug });
+          expect(cardName, `${slug} must have a named catalogue card.`).not.toBe('');
+          await expect(page.locator('header.topbar h1')).toHaveText(cardName);
+        }
       });
 
       // password-generator and qr-barcode generate a file rather than take

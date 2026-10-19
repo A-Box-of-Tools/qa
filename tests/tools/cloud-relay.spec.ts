@@ -11,6 +11,7 @@ import { voiceHooks, receivedAudio, microphoneEnabled, outputRms, voiceSnapshot 
 import { observePairing, pairingSnapshot, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
 import { reserveRelayStart } from '../../lib/relay-pacing';
 import { privateDiscovery, chooseTransport, expectTransportLocked, expectTransportMode, expectTransportNearAction, revealTransportNote,
+  expectHostTransportBadge, expectHostTransportRestored,
   type TransportMode } from '../../lib/pairing-transport';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
@@ -148,6 +149,7 @@ async function startHost(host: Page, tool: Tool, mode: TransportMode = 'relay') 
   const invitation = await host.locator(input).inputValue();
   expect(new URL(invitation).searchParams.get('transport')).toBe(mode);
   await expectTransportLocked(host);
+  await expectHostTransportBadge(host, mode);
   return invitation;
 }
 
@@ -273,6 +275,7 @@ async function stopHost(host: Page, tool: Tool) {
     'walkie-talkie': '#wt-end', 'voice-oncall': '#vi-end' }[tool];
   await host.locator(control).click();
   if (tool === 'remote-camera' && await host.locator('#camera-stop-dialog').isVisible()) await host.locator('#camera-stop-confirm').click();
+  await expectHostTransportRestored(host);
 }
 
 async function closed(page: Page) {

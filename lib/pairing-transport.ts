@@ -11,6 +11,13 @@ const partial = path.join(ETOOLBOX_DIR, 'templates', 'partials', 'paired-transpo
 export const compactTransport = fs.existsSync(partial)
   && fs.readFileSync(partial, 'utf8').includes('data-transport-toggle');
 export const privateDiscovery = fs.existsSync(path.join(ETOOLBOX_DIR, 'templates', 'partials', 'paired-discovery-group.html'));
+export const activeTransportBadge = fs.existsSync(path.join(ETOOLBOX_DIR, 'templates', 'partials', 'paired-transport-badge.html'));
+const walkieBody = path.join(ETOOLBOX_DIR, 'tools', 'walkie-talkie', 'body.html');
+export const oneStepNearbyJoin = fs.existsSync(walkieBody)
+  && fs.readFileSync(walkieBody, 'utf8').includes('Join {name} via Direct');
+const pairedStyles = path.join(ETOOLBOX_DIR, 'shared', 'css', 'paired-tools.css');
+export const borderlessConnectionIcons = fs.existsSync(pairedStyles)
+  && /\.paired-connection-icon\s*\{[^}]*\bborder:\s*0\s*;/.test(fs.readFileSync(pairedStyles, 'utf8'));
 
 export function transportControl(page: Page, action: PairingAction) {
   return compactTransport
@@ -75,6 +82,24 @@ export async function expectTransportLocked(page: Page, locked = true) {
     if (locked) await expect(control).toBeDisabled();
     else await expect(control).toBeEnabled();
   }
+}
+
+export async function expectHostTransportBadge(page: Page, mode: TransportMode) {
+  if (!activeTransportBadge) return;
+  await expect(page.locator('[data-transport-toggle]:visible')).toHaveCount(0);
+  const badge = page.locator('[data-transport-badge]:visible');
+  await expect(badge).toHaveCount(1);
+  await expect(badge.locator(`[data-transport-mode="${mode}"]`)).toBeVisible();
+  await expect(badge.locator(`[data-transport-mode="${mode === 'relay' ? 'direct' : 'relay'}"]`)).toBeHidden();
+  await expect(badge).toHaveText(mode === 'relay' ? 'Connection: Cloud relay' : 'Connection: Direct', { useInnerText: true });
+  await expect(badge.getByRole('switch')).toHaveCount(0);
+}
+
+export async function expectHostTransportRestored(page: Page) {
+  if (!activeTransportBadge) return;
+  await expect(page.locator('[data-transport-badge]:visible')).toHaveCount(0);
+  await expectTransportLocked(page, false);
+  await expect(transportControl(page, 'host')).toBeVisible();
 }
 
 export async function expectTransportNearAction(page: Page, action: PairingAction, buttonSelector: string) {
