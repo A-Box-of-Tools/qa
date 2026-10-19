@@ -138,7 +138,17 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     await expect(icon).toHaveAccessibleName(route === 'relay' ? /Cloud relay/ : /Direct/);
     await icon.focus();
     await expect(icon).toBeFocused();
-    await expect(icon.locator('.paired-icon-tip')).toBeVisible();
+    const tip = icon.locator('.paired-icon-tip');
+    await expect(tip).toBeVisible();
+    const bounds = await tip.boundingBox();
+    const viewport = await page.evaluate(() => ({ width: document.documentElement.clientWidth, height: innerHeight }));
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+    await icon.press('Escape');
+    await expect(tip).toBeHidden();
   }
   await expect(rows(page).first().locator('[data-connection-kind="open"]')).toBeVisible();
   await expect(rows(page).last().locator('[data-connection-kind="' + (tool === 'voice-oncall' ? 'password' : 'open') + '"]')).toBeVisible();
