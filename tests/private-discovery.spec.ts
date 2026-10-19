@@ -88,7 +88,21 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
       readyState = 0; bufferedAmount = 0; authenticated = false;
       constructor(public url: string) {
         super(); state.sockets.push(this);
-        if (new URL(url).pathname !== '/discover') { state.rooms++; return; }
+        const address = new URL(url);
+        if (address.pathname !== '/discover') {
+          state.rooms++;
+          // Share Text checks that a host is ready before showing Connect.
+          // This introduction creates no peer and cannot deliver content.
+          if (tool === 'share-text' && address.pathname === '/ws/' + codes[1]
+              && address.searchParams.get('role') === 'viewer'
+              && address.searchParams.get('transport') === 'relay') queueMicrotask(() => {
+            if (this.readyState !== 0) return;
+            this.readyState = 1;
+            this.emit(new Event('open'));
+            this.emit(new MessageEvent('message', { data: JSON.stringify({ type: 'ready' }) }));
+          });
+          return;
+        }
         queueMicrotask(() => {
           if (this.readyState !== 0) return;
           this.readyState = 1; this.emit(new Event('open'));
@@ -247,7 +261,7 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
   expect(await consentPage.evaluate(() => {
     const qa = (window as any).__groupQA;
     return { rooms: qa.rooms, captures: qa.captures, peers: qa.peers };
-  })).toEqual({ rooms: 0, captures: 0, peers: 0 });
+  })).toEqual({ rooms: tool === 'share-text' ? 1 : 0, captures: 0, peers: 0 });
   await noStoredGroup(consentPage, groupA);
 });
 
