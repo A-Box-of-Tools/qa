@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR, onProductionDomain } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
-import { compactTransport, chooseTransport, expectTransportMode, transportControl, revealTransportNote,
+import { compactTransport, privateDiscovery, chooseTransport, expectTransportMode, transportControl, revealTransportNote,
   type PairingAction } from '../lib/pairing-transport';
 
 const tools = [
@@ -69,7 +69,8 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
   const relayAvailable = fs.existsSync(toolConfig)
     && /^supports_relay\s*=\s*true\s*$/m.test(fs.readFileSync(toolConfig, 'utf8'));
   if (relayAvailable) {
-    const action = tool.modeAction as PairingAction;
+    const action = (privateDiscovery ? 'host' : tool.modeAction) as PairingAction;
+    if (privateDiscovery && tool.slug === 'voice-oncall') await page.locator('#vi-tab-host').click();
     await expectTransportMode(page, 'direct', action);
     if (compactTransport) {
       const control = transportControl(page, action);
@@ -87,6 +88,7 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
     if (compactTransport) await transportControl(page, action).press('Space');
     else await chooseTransport(page, 'direct', action);
     await expectTransportMode(page, 'direct', action);
+    if (privateDiscovery && tool.slug === 'voice-oncall') await page.locator('#vi-tab-join').click();
   }
   const help = page.locator('[data-pairing-network-help]');
   await expect(help).toBeVisible(); await expect(help).toContainText(/internet/i);
@@ -99,7 +101,7 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
     await expect(page.locator(removed)).toHaveCount(0);
     await expect(page.locator('[data-pairing-nearby]')).toBeVisible();
     await expect(page.locator(tool.action)).toBeVisible();
-    if (relayAvailable) await expectTransportMode(page, 'direct', tool.modeAction as PairingAction);
+    if (relayAvailable) await expectTransportMode(page, 'direct', privateDiscovery ? undefined : tool.modeAction as PairingAction);
     expect(await page.evaluate(() => {
       const { rooms, captures, peers } = (window as any).__onlinePairing;
       return { rooms, captures, peers };

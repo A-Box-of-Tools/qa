@@ -10,6 +10,7 @@ const partial = path.join(ETOOLBOX_DIR, 'templates', 'partials', 'paired-transpo
 // deployed page must fail, rather than silently falling back to an old select.
 export const compactTransport = fs.existsSync(partial)
   && fs.readFileSync(partial, 'utf8').includes('data-transport-toggle');
+export const privateDiscovery = fs.existsSync(path.join(ETOOLBOX_DIR, 'templates', 'partials', 'paired-discovery-group.html'));
 
 export function transportControl(page: Page, action: PairingAction) {
   return compactTransport
@@ -50,6 +51,11 @@ export async function expectTransportMode(page: Page, mode: TransportMode, actio
     else await expect(control).not.toBeChecked();
   }
   if (action) {
+    if (privateDiscovery && action !== 'host') {
+      await expect(transportControl(page, action)).toHaveCount(0);
+      await expect(page.locator(`[data-pairing-actions="${action}"] [data-connection-kind="${mode}"]`)).toBeVisible();
+      return;
+    }
     await expect(transportControl(page, action)).toHaveCount(1);
     await expect(transportControl(page, action)).toBeVisible();
   }
@@ -76,6 +82,10 @@ export async function expectTransportNearAction(page: Page, action: PairingActio
   const row = page.locator(`[data-pairing-actions="${action}"]`);
   await expect(row).toHaveCount(1);
   await expect(row.locator(buttonSelector)).toBeVisible();
+  if (privateDiscovery && action !== 'host') {
+    await expect(row.locator('[data-pairing-transport]')).toHaveCount(0);
+    return;
+  }
   await expect(transportControl(page, action)).toBeVisible();
   const layout = await row.evaluate((element, selector) => {
     const button = element.querySelector(selector)!.getBoundingClientRect();

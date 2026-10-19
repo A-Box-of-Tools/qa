@@ -10,7 +10,7 @@ import { tabHooks, flowingTab, noTabMedia } from '../../lib/share-tab';
 import { voiceHooks, receivedAudio, microphoneEnabled, outputRms, voiceSnapshot } from '../../lib/voice-fixtures';
 import { observePairing, pairingSnapshot, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
 import { reserveRelayStart } from '../../lib/relay-pacing';
-import { chooseTransport, expectTransportLocked, expectTransportMode, expectTransportNearAction, revealTransportNote,
+import { privateDiscovery, chooseTransport, expectTransportLocked, expectTransportMode, expectTransportNearAction, revealTransportNote,
   type TransportMode } from '../../lib/pairing-transport';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
@@ -156,7 +156,7 @@ async function openClient(client: Page, tool: Tool, invitation: string) {
   await expectTransportMode(client, 'relay', 'join');
   await expectTransportNearAction(client, 'join', { 'share-text': '#connect', 'share-tab': '#viewer-connect',
     'remote-camera': '#viewer-connect', 'walkie-talkie': '#wt-connect-listener', 'voice-oncall': '#vi-join' }[tool]);
-  await expect(await revealTransportNote(client, 'join')).toContainText('Cloudflare');
+  if (!privateDiscovery) await expect(await revealTransportNote(client, 'join')).toContainText('Cloudflare');
   const state = await pairingSnapshot(client);
   expect(state.peers).toEqual([]);
   expect(state.relayRequests).toBe(0);
