@@ -194,6 +194,11 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     expect(bounds!.y).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+    const accessIcon = rows(page).nth(index).locator('[data-connection-kind="' + (index && tool === 'voice-oncall' ? 'password' : 'open') + '"]');
+    await accessIcon.hover();
+    await expect(icon).toBeFocused();
+    await expect(tip).toBeVisible();
+    await expect(accessIcon.locator('.paired-icon-tip')).toBeHidden();
     await icon.press('Escape');
     await expect(tip).toBeHidden();
   }
@@ -222,22 +227,28 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
   await joinGroup(page, groupA);
   await beginBrowsing(page, tool);
   await expect(rows(page)).toHaveCount(2);
+  let consentPage = page;
   if (tool === 'share-text') {
     const href = await rows(page).last().locator('a').getAttribute('href');
     expect(Boolean(href && !href.includes(groupA) && !href.includes(groupId(groupA)))).toBe(true);
-    await page.goto(href!);
+    // The real link opens a viewer without discarding the host's unsent draft.
+    [consentPage] = await Promise.all([
+      context.waitForEvent('page'),
+      rows(page).last().locator('a').click(),
+    ]);
+    await consentPage.waitForLoadState();
   } else if (tool === 'voice-oncall') await rows(page).last().locator('input').check();
   else await rows(page).last().locator('button').click();
-  await expectTransportMode(page, 'relay');
-  const consent = tool === 'walkie-talkie' ? page.locator('#wt-join')
-    : page.locator({ 'share-text': '#connect', 'share-tab': '#viewer-connect', 'remote-camera': '#viewer-connect', 'voice-oncall': '#vi-join' }[tool]);
+  await expectTransportMode(consentPage, 'relay');
+  const consent = tool === 'walkie-talkie' ? consentPage.locator('#wt-join')
+    : consentPage.locator({ 'share-text': '#connect', 'share-tab': '#viewer-connect', 'remote-camera': '#viewer-connect', 'voice-oncall': '#vi-join' }[tool]);
   await expect(consent).toBeVisible();
   await expect(consent).toBeEnabled();
-  expect(await page.evaluate(() => {
+  expect(await consentPage.evaluate(() => {
     const qa = (window as any).__groupQA;
     return { rooms: qa.rooms, captures: qa.captures, peers: qa.peers };
   })).toEqual({ rooms: 0, captures: 0, peers: 0 });
-  await noStoredGroup(page, groupA);
+  await noStoredGroup(consentPage, groupA);
 });
 
 for (const tool of tools) test(`${tool}: a live private host is isolated from local and wrong groups and Stop withdraws it`, async ({ page, browser, browserName }, info) => {
