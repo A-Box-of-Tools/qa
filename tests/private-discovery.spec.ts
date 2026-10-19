@@ -246,6 +246,8 @@ for (const tool of tools) test(`${tool}: a live private host is isolated from lo
     const invitation = await page.locator(link).inputValue();
     expect(!invitation.includes(groupCode) && !invitation.includes(groupId(groupCode))).toBe(true);
     await expect(page.locator('[data-group-code]')).toHaveJSProperty('readOnly', true);
+    await expect(page.locator('[data-group-copy]')).toBeVisible();
+    await expect(page.locator('[data-group-copy]')).toBeEnabled();
     await expect(page.locator('[data-group-join]')).toBeDisabled();
     await expect(page.locator('[data-group-create]')).toBeDisabled();
     await expect(page.locator('[data-group-leave]')).toBeDisabled();
