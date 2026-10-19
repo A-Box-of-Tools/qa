@@ -65,6 +65,16 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     : ['qa-private-direct', 'qa-private-relay'];
   await context.addInitScript(({ tool, codes, groupA, groupB, idA, idB }) => {
     const state = (window as any).__groupQA = { rooms: 0, captures: 0, peers: 0, sockets: [] as any[], auth: [] as string[] };
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    Object.defineProperty(crypto.subtle, 'digest', { configurable: true, value: (algorithm: AlgorithmIdentifier, data: BufferSource) => {
+      if (state.deferGroupHash && new TextDecoder().decode(data).startsWith('abox.tools/private-discovery/v1\n')) {
+        state.groupHashWaiting = true;
+        return new Promise((resolve, reject) => {
+          state.releaseGroupHash = () => { state.groupHashWaiting = false; digest(algorithm, data).then(resolve, reject); };
+        });
+      }
+      return digest(algorithm, data);
+    } });
     if (tool === 'voice-oncall' || tool === 'walkie-talkie') {
       // Simulate a previous private host whose in-memory group code was lost on reload.
       sessionStorage.setItem(tool + '.host', JSON.stringify({ code: 'c'.repeat(64), key: 'K'.repeat(43),
@@ -129,6 +139,43 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
   expect(/^[0-9A-HJKMNP-TV-Z]{26}$/.test(created.replace(/-/g, ''))).toBe(true);
   await noStoredGroup(page, created);
   await panel.locator('[data-group-leave]').click();
+  if (tool === 'voice-oncall') await page.locator('#vi-tab-host').click();
+  if (tool === 'share-text') { await page.locator('#text').fill('Pending group QA'); await page.locator('#code').fill('qa-pending-group'); }
+  if (tool === 'remote-camera') await page.locator('#camera-name').fill('qa-pending-group');
+  if (tool === 'walkie-talkie') await page.locator('#wt-room-name').fill('QA pending group');
+  if (tool === 'voice-oncall') await page.locator('#vi-room-name').fill('QA pending group');
+  const hostStart = page.locator({ 'share-text': '#publish', 'share-tab': '#host-start', 'remote-camera': '#camera-start',
+    'walkie-talkie': '#wt-start', 'voice-oncall': '#vi-start' }[tool]);
+  await expect(hostStart).toBeEnabled();
+  await hostStart.focus();
+  await expect(hostStart).toBeFocused();
+  await page.evaluate(() => { (window as any).__groupQA.deferGroupHash = true; });
+  await panel.locator('[data-group-code]').fill(groupA);
+  await panel.locator('[data-group-join]').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__groupQA.groupHashWaiting)).toBe(true);
+  await hostStart.scrollIntoViewIfNeeded();
+  const startBounds = await hostStart.boundingBox();
+  expect(startBounds).not.toBeNull();
+  // A real click still targets the button's visible position. It must not
+  // publish on the old scope while the replacement scope is being derived.
+  await page.mouse.click(startBounds!.x + startBounds!.width / 2, startBounds!.y + startBounds!.height / 2);
+  await expect(hostStart).not.toBeFocused();
+  if (tool === 'voice-oncall') {
+    // Enter submits this host form from outside the inert action row.
+    await page.locator('#vi-room-name').press('Enter');
+    await expect(page.locator('#vi-host-form')).toBeVisible();
+  }
+  expect(await page.evaluate(() => {
+    const qa = (window as any).__groupQA;
+    return { rooms: qa.rooms, captures: qa.captures, peers: qa.peers };
+  })).toEqual({ rooms: 0, captures: 0, peers: 0 });
+  await page.evaluate(() => { const qa = (window as any).__groupQA; qa.deferGroupHash = false; qa.releaseGroupHash(); });
+  await expect(panel).toHaveAttribute('data-group-active', 'private');
+  await expect(hostStart).toBeEnabled();
+  await hostStart.focus();
+  await expect(hostStart).toBeFocused();
+  await panel.locator('[data-group-leave]').click();
+  if (tool === 'voice-oncall') await page.locator('#vi-tab-join').click();
   await joinGroup(page, groupA.toLowerCase().match(/.{1,5}/g)!.join('-'), true);
   await beginBrowsing(page, tool);
   await expect(rows(page)).toHaveCount(2);
