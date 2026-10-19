@@ -2,7 +2,8 @@ import { test, expect, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { BASE_URL } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
-import { privateDiscovery, expectTransportMode } from '../lib/pairing-transport';
+import { privateDiscovery, oneStepNearbyJoin, borderlessConnectionIcons, expectTransportMode,
+  expectHostTransportBadge, expectHostTransportRestored } from '../lib/pairing-transport';
 import { voiceHooks, admitsLiveVoice } from '../lib/voice-fixtures';
 import { cameraHooks } from '../lib/camera-fixtures';
 import { tabHooks } from '../lib/share-tab';
@@ -58,7 +59,7 @@ async function noReportedGroup(page: Page, tool: Tool, code: string) {
   }, code)).toBe(true);
 }
 
-for (const tool of tools) test(`${tool}: private discovery lists mixed routes with accessible icons and keeps selection separate from joining`, async ({ page, context }) => {
+for (const tool of tools) test(`${tool}: private discovery lists mixed routes with accessible icons and waits for an explicit connection action`, async ({ page, context }) => {
   await withoutThirdParties(page);
   const codes = tool === 'walkie-talkie' || tool === 'voice-oncall' ? ['a'.repeat(64), 'b'.repeat(64)]
     : tool === 'share-tab' ? ['tab-' + 'a'.repeat(16), 'tab-' + 'b'.repeat(16)]
@@ -197,9 +198,15 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     const icon = rows(page).nth(index).locator('[data-connection-kind="' + route + '"]');
     await expect(icon).toHaveRole('img');
     await expect(icon).toHaveAccessibleName(route === 'relay' ? /Cloud relay/ : /Direct/);
+    if (borderlessConnectionIcons) expect(await icon.evaluate(element => {
+      const style = getComputedStyle(element);
+      return [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth];
+    })).toEqual(['0px', '0px', '0px', '0px']);
+    const tip = icon.locator('.paired-icon-tip');
+    await icon.hover();
+    await expect(tip).toBeVisible();
     await icon.focus();
     await expect(icon).toBeFocused();
-    const tip = icon.locator('.paired-icon-tip');
     await expect(tip).toBeVisible();
     const bounds = await tip.boundingBox();
     const viewport = await page.evaluate(() => ({ width: document.documentElement.clientWidth, height: innerHeight }));
@@ -252,8 +259,27 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     ]);
     await consentPage.waitForLoadState();
   } else if (tool === 'voice-oncall') await rows(page).last().locator('input').check();
-  else await rows(page).last().locator('button').click();
+  else {
+    const action = rows(page).last().locator('button');
+    if (tool === 'walkie-talkie' && oneStepNearbyJoin) {
+      await expect(action).toHaveText('Join');
+      await expect(action).toHaveAccessibleName('Join QA relay via Cloud relay');
+    }
+    await action.click();
+  }
   await expectTransportMode(consentPage, 'relay');
+  if (tool === 'walkie-talkie' && oneStepNearbyJoin) {
+    await expect(consentPage.locator('#wt-join, #wt-selected-channel')).toHaveCount(0);
+    await expect(consentPage.locator('#wt-leave')).toBeVisible();
+    expect(await consentPage.evaluate(() => {
+      const qa = (window as any).__groupQA;
+      return { rooms: qa.rooms, captures: qa.captures, peers: qa.peers };
+    })).toEqual({ rooms: 1, captures: 0, peers: 0 });
+    await noStoredGroup(consentPage, groupA);
+    await consentPage.locator('#wt-leave').click();
+    await expect(consentPage.locator('#wt-nearby')).toBeVisible();
+    return;
+  }
   const consent = tool === 'walkie-talkie' ? consentPage.locator('#wt-join')
     : consentPage.locator({ 'share-text': '#connect', 'share-tab': '#viewer-connect', 'remote-camera': '#viewer-connect', 'voice-oncall': '#vi-join' }[tool]);
   await expect(consent).toBeVisible();
@@ -315,6 +341,7 @@ for (const tool of tools) test(`${tool}: a live private host is isolated from lo
     const link = { 'share-text': '#link', 'share-tab': '#share-link', 'remote-camera': '#camera-link', 'walkie-talkie': '#wt-link', 'voice-oncall': '#vi-link' }[tool];
     await page.locator(start).click();
     await expect.poll(async () => Boolean(await page.locator(link).inputValue()), { timeout: 30_000 }).toBe(true);
+    await expectHostTransportBadge(page, 'direct');
     const invitation = await page.locator(link).inputValue();
     expect(!invitation.includes(groupCode) && !invitation.includes(groupId(groupCode))).toBe(true);
     await expect(page.locator('[data-group-code]')).toHaveJSProperty('readOnly', true);
@@ -343,6 +370,7 @@ for (const tool of tools) test(`${tool}: a live private host is isolated from lo
     await expect(listing.locator('[data-connection-kind="' + (tool === 'voice-oncall' ? 'password' : 'open') + '"]')).toBeVisible();
     const stop = { 'share-text': '#stop', 'share-tab': '#host-stop', 'remote-camera': '#camera-stop', 'walkie-talkie': '#wt-end', 'voice-oncall': '#vi-end' }[tool];
     await page.locator(stop).click();
+    await expectHostTransportRestored(page);
     await expect(listing).toHaveCount(0, { timeout: 25_000 });
     await expect(page.locator('[data-group-code]')).toBeEditable();
     await expect(page.locator('[data-group-leave]')).toBeEnabled();

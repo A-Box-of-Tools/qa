@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
-import { compactTransport, privateDiscovery, expectTransportMode, expectTransportNearAction, type PairingAction } from '../lib/pairing-transport';
+import { compactTransport, privateDiscovery, oneStepNearbyJoin, expectTransportMode, expectTransportNearAction, type PairingAction } from '../lib/pairing-transport';
 
 const tools = ['share-text', 'share-tab', 'walkie-talkie', 'voice-oncall', 'remote-camera'];
 const actions: Record<string, Partial<Record<PairingAction, string>>> = {
@@ -14,7 +14,7 @@ const actions: Record<string, Partial<Record<PairingAction, string>>> = {
   'remote-camera': { host: '#camera-start', join: '#viewer-connect' },
 };
 const initialActions: Record<string, PairingAction[]> = {
-  'share-text': ['host'], 'share-tab': ['host', 'join'], 'walkie-talkie': ['nearby', 'host'],
+  'share-text': ['host'], 'share-tab': ['host', 'join'], 'walkie-talkie': oneStepNearbyJoin ? ['host'] : ['nearby', 'host'],
   'voice-oncall': ['join'], 'remote-camera': ['host', 'join'],
 };
 

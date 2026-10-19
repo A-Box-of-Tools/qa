@@ -4,7 +4,7 @@ import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
-import { privateDiscovery } from '../../lib/pairing-transport';
+import { privateDiscovery, oneStepNearbyJoin, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/walkie-talkie/';
@@ -67,6 +67,29 @@ test.describe('walkie-talkie', () => {
     await expect(page.locator('#wt-join')).toBeDisabled();
   });
 
+  test('browsing available channels stays passive and a withdrawn row cannot be joined', async ({ page }) => {
+    test.skip(!oneStepNearbyJoin, 'One-step nearby joining is awaiting the website release.');
+    const code = 'a'.repeat(64), listenKey = 'b'.repeat(43), name = 'QA available channel';
+    await voiceHooks(page, 'deny', true, [{ code, listenKey, name }]);
+    await page.goto(TOOL);
+    const join = page.locator('#wt-channels').getByRole('button', { name: `Join ${name} via Direct`, exact: true });
+    await expect(join).toBeVisible();
+    await expect(join).toHaveText('Join');
+    await expect(page.locator('#wt-join, #wt-selected-channel')).toHaveCount(0);
+    expect(await page.evaluate(() => {
+      const qa = (window as any).__voiceQA;
+      return { calls: qa.calls.length, peers: qa.peers.length,
+        rooms: qa.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')).length,
+        saved: sessionStorage.getItem('walkie-talkie.listener'), fragment: location.hash };
+    })).toEqual({ calls: 0, peers: 0, rooms: 0, saved: null, fragment: '' });
+    await page.evaluate(() => {
+      const directory = (window as any).__voiceQA.sockets.find((socket: WebSocket) => new URL(socket.url).pathname === '/discover');
+      directory.emit(new MessageEvent('message', { data: JSON.stringify({ type: 'shares', tool: 'walkie-talkie', list: [] }) }));
+    });
+    await expect(join).toHaveCount(0);
+    await expect(page.locator('#wt-channels button')).toHaveCount(0);
+  });
+
   test('an unlisted channel pairs by invitation, delivers native audio receive-only and releases both sides', async ({ page, browser, browserName }) => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
@@ -84,6 +107,7 @@ test.describe('walkie-talkie', () => {
       await page.locator('#wt-discover').uncheck();
       await page.locator('#wt-start').click();
       await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
+      await expectHostTransportBadge(page, 'direct');
       expect(await microphoneEnabled(page)).toBe(false);
       const invitation = await page.locator('#wt-link').inputValue();
       expect(new URLSearchParams(new URL(invitation).hash.slice(1)).get('listen')).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -137,6 +161,7 @@ test.describe('walkie-talkie', () => {
       await listener.goto(invitation);
       await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
       await page.locator('#wt-end').click();
+      await expectHostTransportRestored(page);
       await tracksStopped(page);
       await peersClosed(page);
       await expect(listener.locator('#wt-status-text')).toHaveText('The host ended this broadcast.');
@@ -187,7 +212,16 @@ test.describe('walkie-talkie', () => {
       const channel = listener.locator('#wt-channels > li').filter({ hasText: channelName });
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
       await expect(privateDiscovery ? channel.locator('.paired-connection-info > span').first() : channel.locator('span')).toHaveText(channelName);
-      await channel.getByRole('button', { name: `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true }).click();
+      const joinChannel = channel.getByRole('button', { name: oneStepNearbyJoin
+        ? `Join ${channelName} via Direct` : `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true });
+      if (oneStepNearbyJoin) {
+        await expect(joinChannel).toHaveText('Join');
+        expect(await listener.evaluate(() => ({ calls: (window as any).__voiceQA.calls.length,
+          peers: (window as any).__voiceQA.peers.length,
+          rooms: (window as any).__voiceQA.sockets.filter((socket: WebSocket) => new URL(socket.url).pathname.startsWith('/broadcast/')).length })))
+          .toEqual({ calls: 0, peers: 0, rooms: 0 });
+      }
+      await joinChannel.click();
       if (explicitNearbyJoin) {
         expect(await listener.evaluate(() => ({ calls: (window as any).__voiceQA.calls.length,
           peers: (window as any).__voiceQA.peers.length,
@@ -271,7 +305,8 @@ test.describe('walkie-talkie', () => {
       expect(await listener.locator('#wt-audio').evaluate((audio: HTMLAudioElement) => audio.srcObject)).toBeNull();
       await peersClosed(listener);
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
-      await channel.getByRole('button', { name: `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true }).click();
+      await channel.getByRole('button', { name: oneStepNearbyJoin
+        ? `Join ${channelName} via Direct` : `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true }).click();
       if (explicitNearbyJoin) await listener.locator('#wt-join').click();
       await expect(listener.locator('#wt-status-text')).toHaveText('Connected. Waiting for the host to speak.', { timeout: 20_000 });
       await page.locator('#wt-toggle').click();

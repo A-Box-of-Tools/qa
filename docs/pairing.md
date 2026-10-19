@@ -23,10 +23,19 @@ The existing tool journeys still cover native pairing and its boundaries:
   single-viewer limits, receive-only controls and terminal Stop.
 - Remote Camera: camera/viewer consent, deferred requests, approval and
   acknowledgement before media, native decoded frames and capture cleanup.
-- Local Walkie-Talkie: listed channels, receive-only listeners, initially quiet
-  host capture, explicit talking, native audio, recovery and End.
+- Local Walkie-Talkie: passive channel browsing followed by one-click Join,
+  receive-only listeners, initially quiet host capture, explicit talking,
+  native audio, recovery and End. Older deployed pages retain coverage for
+  their separate Choose and Join controls until that change reaches production.
 - Voice Oncall: host naming, deliberate connection and talking, password
   refusal, moderation, quiet recovery and final disconnect/End.
+
+Private discovery checks hover and keyboard explanations on the connection
+icons, their borderless appearance, and explicit connection consent. Live
+Direct hosts and native Cloud relay journeys verify that a started host shows
+its chosen route as a badge and returns to an editable selector after Stop or
+End. The badge asserts the selected mode; native relay candidate checks remain
+the proof of the route actually used.
 
 `tests/tools/share-tab-network.spec.ts` preserves the connection and capture
 intent checks around browser network hints. An introduction-service failure
