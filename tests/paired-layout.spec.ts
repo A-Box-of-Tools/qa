@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
-import { compactTransport, expectTransportMode, expectTransportNearAction, type PairingAction } from '../lib/pairing-transport';
+import { compactTransport, privateDiscovery, expectTransportMode, expectTransportNearAction, type PairingAction } from '../lib/pairing-transport';
 
 const tools = ['share-text', 'share-tab', 'walkie-talkie', 'voice-oncall', 'remote-camera'];
 const actions: Record<string, Partial<Record<PairingAction, string>>> = {
@@ -69,6 +69,11 @@ for (const tool of tools) test(`${tool}: nearby discovery comes before setup wit
   await expect(help).toContainText(/internet/i);
   if (compactTransport) {
     await expectTransportMode(page, 'direct');
+    if (privateDiscovery) {
+      await expect(nearby.getByRole('heading', { name: 'Available connections', exact: true })).toBeVisible();
+      await expect(page.locator('[data-pairing-transport]')).toHaveCount(1);
+      await expect(nearby.locator('[data-transport-toggle]')).toHaveCount(0);
+    }
     for (const action of initialActions[tool]) await expectTransportNearAction(page, action, actions[tool][action]!);
     if (tool === 'voice-oncall') {
       await page.locator('#vi-tab-host').click();

@@ -4,6 +4,7 @@ import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
+import { privateDiscovery } from '../../lib/pairing-transport';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, outputRms, voiceSnapshot, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/voice-oncall/';
@@ -388,9 +389,11 @@ test.describe('voice-oncall', () => {
       await peersClosed(sender);
       await expect(page.locator('#vi-participants > li')).toHaveCount(0);
       await sender.reload();
-      await expect(sender.locator('#vi-status-text')).toHaveText('Choose a nearby pager or open a link from its host.');
+      await expect(sender.locator('#vi-status-text')).toHaveText(privateDiscovery ? 'Choose an available pager or open a link from its host.' : 'Choose a nearby pager or open a link from its host.');
       await expect(sender.locator('#vi-join-form')).toBeVisible();
-      const pager = sender.getByRole('radio', { name: `${pagerName} Open pager`, exact: true });
+      const pager = privateDiscovery
+        ? sender.locator('#vi-rooms .paired-nearby-row').filter({ hasText: pagerName }).getByRole('radio')
+        : sender.getByRole('radio', { name: `${pagerName} Open pager`, exact: true });
       await expect(pager).toBeVisible({ timeout: DISCOVERY_TIMEOUT });
       await pager.check();
       await sender.locator('#vi-join').click();

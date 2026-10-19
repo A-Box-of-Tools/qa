@@ -4,6 +4,7 @@ import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
+import { privateDiscovery } from '../../lib/pairing-transport';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
 
 const TOOL = '/walkie-talkie/';
@@ -29,6 +30,11 @@ test.describe('walkie-talkie', () => {
     await page.locator('#wt-start').click();
     await expect(page.locator('#wt-error-text')).toContainText('The microphone stopped or could not start.');
     await expect(page.locator('#wt-start')).toBeEnabled();
+    if (privateDiscovery) {
+      await page.locator('[data-discovery-group] summary').click();
+      await expect(page.locator('[data-group-code]')).toBeEditable();
+      await expect(page.locator('[data-group-create]')).toBeEnabled();
+    }
     await expect(page.locator('#wt-transmit')).toBeHidden();
     expect(await page.evaluate(() => {
       const qa = (window as any).__voiceQA;
@@ -83,7 +89,7 @@ test.describe('walkie-talkie', () => {
       expect(new URLSearchParams(new URL(invitation).hash.slice(1)).get('listen')).toMatch(/^[A-Za-z0-9_-]{43}$/);
       await expect(page.locator('#wt-publication')).toBeHidden();
       await listener.goto(TOOL);
-      await expect(listener.locator('#wt-discovery-status')).toHaveText('Nearby channels update automatically.', { timeout: DISCOVERY_TIMEOUT });
+      await expect(listener.locator('#wt-discovery-status')).toHaveText(privateDiscovery ? 'Available connections update automatically.' : 'Nearby channels update automatically.', { timeout: DISCOVERY_TIMEOUT });
       await expect(listener.locator('#wt-channels > li').filter({ hasText: channelName })).toHaveCount(0);
       await listener.goto('about:blank');
       await listener.goto(invitation);
@@ -177,10 +183,10 @@ test.describe('walkie-talkie', () => {
       expect(await microphoneEnabled(page)).toBe(false);
       await expect(page.locator('#wt-hands-free')).toHaveAttribute('data-active', 'false');
       await expect(page.locator('#wt-live-banner')).toBeHidden();
-      await expect(page.locator('#wt-publication')).toHaveText('Your channel is listed nearby.', { timeout: DISCOVERY_TIMEOUT });
+      await expect(page.locator('#wt-publication')).toHaveText(privateDiscovery ? 'Your channel is listed in your selected discovery scope.' : 'Your channel is listed nearby.', { timeout: DISCOVERY_TIMEOUT });
       const channel = listener.locator('#wt-channels > li').filter({ hasText: channelName });
       await expect(channel).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
-      await expect(channel.locator('span')).toHaveText(channelName);
+      await expect(privateDiscovery ? channel.locator('.paired-connection-info > span').first() : channel.locator('span')).toHaveText(channelName);
       await channel.getByRole('button', { name: `${explicitNearbyJoin ? 'Choose' : 'Join'} ${channelName}`, exact: true }).click();
       if (explicitNearbyJoin) {
         expect(await listener.evaluate(() => ({ calls: (window as any).__voiceQA.calls.length,
