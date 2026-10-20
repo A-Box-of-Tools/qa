@@ -3,7 +3,7 @@ import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
 import { voiceApproval, reviewPairingRequestLater } from '../../lib/pairing-approval';
 import { chooseTransport, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
-import { voiceHooks, admitsLiveVoice, receivedAudio, microphoneEnabled } from '../../lib/voice-fixtures';
+import { voiceHooks, admitsLiveVoice, receivedAudio, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
 
 type VoiceTool = 'walkie-talkie' | 'voice-oncall';
 const prefix = (tool: VoiceTool) => tool === 'walkie-talkie' ? 'wt' : 'vi';
@@ -135,6 +135,20 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       const request = host.locator(`#${id}-requests [data-peer]`);
       await expect(request).toHaveCount(1);
       await privateUntilApproved(first.client, first.signals);
+      await installVoiceLifecycle(first.client);
+      await first.client.evaluate(() => {
+        (window as any).__voiceLifecycle.setHidden(true);
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      });
+      await expect(request).toHaveCount(0);
+      await first.client.evaluate(() => {
+        (window as any).__voiceLifecycle.setHidden(false);
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+      });
+      await expect(request).toHaveCount(1, { timeout: 20_000 });
+      await expect(first.client.locator(`#${id}-status-text`)).toContainText('Waiting for the host to approve');
+      await privateUntilApproved(first.client, first.signals);
+      await reviewPairingRequestLater(host);
       const staleApprove = await request.locator('[data-action="approve"]').elementHandle();
       await request.locator('[data-action="approve"]').click();
       await expect(request).toHaveCount(0);
