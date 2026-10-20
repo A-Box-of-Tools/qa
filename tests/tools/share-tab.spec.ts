@@ -209,12 +209,15 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await expectRequestsNearHostControls(page, '#host-stop');
       await noTabMedia(page, first);
       await approve(page, first, 'Approved browser');
+      await first.evaluate(() => { (window as any).__sessionApprovalDocument = true; });
       await first.locator('#viewer-stop').click(); await stoppedTab(first);
       await expect(page.locator('#accepted-panel')).toBeHidden();
       await foreground(first);
       await expect(page.locator('#viewer-requests li')).toHaveCount(0);
-      await requestTab(first, code, 'Same browser after Disconnect');
+      await first.locator('#viewer-name').fill('Same browser after Disconnect');
+      await first.locator('#viewer-connect').click();
       await flowingTab(first);
+      expect(await first.evaluate(() => (window as any).__sessionApprovalDocument)).toBe(true);
       await expect(page.locator('#pairing-request-dialog')).toBeHidden();
       await expect(page.locator('#viewer-requests li')).toHaveCount(0);
       await first.locator('#viewer-stop').click(); await stoppedTab(first);
@@ -228,6 +231,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await flowingTab(newTab);
       await expect(page.locator('#viewer-requests li')).toHaveCount(0);
       await page.locator('[data-action="host.disconnect"]').click(); await stoppedTab(newTab);
+      await newTab.reload();
       await requestTab(newTab, code, 'Removed browser');
       await expect(requestRow(page, 'Removed browser')).toBeVisible({ timeout: 20_000 });
       await noTabMedia(page, newTab);
@@ -247,6 +251,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await other.locator('#viewer-stop').click(); await stoppedTab(other);
       await page.locator('#host-stop').click(); await stoppedTab(page, true);
       const next = await startTabHost(page);
+      await newTab.reload();
       await requestTab(newTab, next.code, 'Same browser, new host');
       await expect(requestRow(page, 'Same browser, new host')).toBeVisible({ timeout: 20_000 });
       await noTabMedia(page, newTab);

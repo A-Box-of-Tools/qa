@@ -646,10 +646,13 @@ test.describe('remote-camera: native WebRTC media', () => {
       await pendingCameraRequest(page, first, 'Approved browser');
       await expectRequestsNearHostControls(page, '#camera-stop');
       await approveCamera(page, first);
+      await first.evaluate(() => { (window as any).__sessionApprovalDocument = true; });
       await first.locator('#viewer-stop').click();
       await expect(page.locator('#camera-viewer-list [data-action=disconnect]')).toHaveCount(0);
-      await requestCamera(first, code, 'Same browser after Disconnect');
+      await first.locator('#viewer-name').fill('Same browser after Disconnect');
+      await first.locator('#viewer-connect').click();
       await flowingCamera(first);
+      expect(await first.evaluate(() => (window as any).__sessionApprovalDocument)).toBe(true);
       await expect(page.locator('#camera-request-dialog')).toBeHidden();
       await expect(page.locator('#camera-requests [data-action=approve]')).toHaveCount(0);
       await first.locator('#viewer-stop').click();
@@ -668,6 +671,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await flowingCamera(returning);
       await page.locator('#camera-viewer-list [data-action=disconnect]').click();
       await expect.poll(() => returning.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
+      await returning.reload();
       await requestCamera(returning, code, 'Removed browser');
       await pendingCameraRequest(page, returning, 'Removed browser');
       await approveCamera(page, returning);
@@ -675,6 +679,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect.poll(() => returning.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await page.locator('#camera-start').click();
       await expect(page.locator('#camera-code')).toHaveText(code);
+      await returning.reload();
       await requestCamera(returning, code, 'Same code, new host session');
       await pendingCameraRequest(page, returning, 'Same code, new host session');
       await approveCamera(page, returning);
