@@ -3,7 +3,7 @@ import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
 import { voiceApproval, reviewPairingRequestLater } from '../../lib/pairing-approval';
 import { chooseTransport, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
-import { voiceHooks, admitsLiveVoice, receivedAudio, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
+import { voiceHooks, admitsLiveVoice, receivedAudio, outputRms, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
 
 type VoiceTool = 'walkie-talkie' | 'voice-oncall';
 const prefix = (tool: VoiceTool) => tool === 'walkie-talkie' ? 'wt' : 'vi';
@@ -189,9 +189,17 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       if (tool === 'walkie-talkie' && await first.client.locator('#wt-playback-note').isVisible()) await first.client.locator('#wt-mute').click();
       const speaker = tool === 'walkie-talkie' ? host : first.client;
       const listener = tool === 'walkie-talkie' ? first.client : host;
+      const beforeAudio = await receivedAudio(listener);
+      const positiveAudio = async () => {
+        // Oncall plays through Web Audio while its native element stays muted;
+        // Chromium's RTP energy alone therefore cannot measure that output.
+        if (tool === 'voice-oncall') await expect.poll(() => outputRms(listener), { timeout: 20_000 }).toBeGreaterThan(0.01);
+        else await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(beforeAudio.energy);
+      };
       await speaker.locator(`#${id}-toggle`).click();
       await expect.poll(() => microphoneEnabled(speaker)).toBe(true);
-      await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(0);
+      await positiveAudio();
+      await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(beforeAudio.packets);
       if (mode === 'relay') for (const side of [host, first.client]) await expect.poll(async () => {
         const connected = (await voiceTransportState(side)).filter(peer => peer.connection === 'connected');
         return connected.length > 0 && connected.every(peer => peer.policy === 'relay' && peer.selected.length > 0
@@ -209,7 +217,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await foreground(second.client);
       await privateUntilApproved(second.client, second.signals);
       await expect(request).toHaveCount(0);
-      await expect.poll(async () => (await receivedAudio(listener)).energy).toBeGreaterThan(0);
+      await positiveAudio();
       const third = await createClient();
       await expect(dialog).toBeVisible();
       await third.client.locator(`#${id}-leave`).click();
