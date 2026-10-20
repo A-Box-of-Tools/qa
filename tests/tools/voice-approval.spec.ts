@@ -195,8 +195,8 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await foreground(host); await foreground(fourth.client);
       await privateUntilApproved(fourth.client, fourth.signals);
       await expectHostTransportRestored(host);
-      expect(await first.client.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
-      expect(await host.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
+      await expect.poll(() => first.client.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
+      await expect.poll(() => host.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
     } finally {
       for (const context of contexts) await context.close();
     }
