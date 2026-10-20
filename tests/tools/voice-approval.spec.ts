@@ -222,6 +222,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
         // Deliberate Join is still required; a remembered approval cannot
         // turn foreground recovery into a new call after Disconnect.
         const callsAfterLeave = await first.client.evaluate(() => (window as any).__voiceQA.calls.length);
+        await first.client.goto('about:blank');
         await first.client.goto('/' + tool + '/');
         const rejoin = first.client.locator(`#${id}-${tool === 'walkie-talkie' ? 'channels' : 'rooms'} .paired-nearby-row`).getByRole('button');
         await expect(rejoin).toHaveText('Join');
@@ -301,6 +302,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
         await expect.poll(async () => Boolean(await host.locator(`#${id}-link`).inputValue()), { timeout: 20_000 }).toBe(true);
         const nextInvitation = await host.locator(`#${id}-link`).inputValue();
         const newSessionSignals = countSignals(first.client);
+        await first.client.goto('about:blank');
         await first.client.goto(nextInvitation);
         if (tool === 'voice-oncall') {
           await first.client.locator('#vi-sender-password').fill(password);

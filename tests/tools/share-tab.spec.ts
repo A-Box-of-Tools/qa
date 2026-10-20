@@ -231,7 +231,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await flowingTab(newTab);
       await expect(page.locator('#viewer-requests li')).toHaveCount(0);
       await page.locator('[data-action="host.disconnect"]').click(); await stoppedTab(newTab);
-      await newTab.reload();
+      await newTab.goto('about:blank');
       await requestTab(newTab, code, 'Removed browser');
       await expect(requestRow(page, 'Removed browser')).toBeVisible({ timeout: 20_000 });
       await noTabMedia(page, newTab);
@@ -251,7 +251,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await other.locator('#viewer-stop').click(); await stoppedTab(other);
       await page.locator('#host-stop').click(); await stoppedTab(page, true);
       const next = await startTabHost(page);
-      await newTab.reload();
+      await newTab.goto('about:blank');
       await requestTab(newTab, next.code, 'Same browser, new host');
       await expect(requestRow(page, 'Same browser, new host')).toBeVisible({ timeout: 20_000 });
       await noTabMedia(page, newTab);

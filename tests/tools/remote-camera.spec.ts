@@ -671,7 +671,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await flowingCamera(returning);
       await page.locator('#camera-viewer-list [data-action=disconnect]').click();
       await expect.poll(() => returning.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
-      await returning.reload();
+      await returning.goto('about:blank');
       await requestCamera(returning, code, 'Removed browser');
       await pendingCameraRequest(page, returning, 'Removed browser');
       await approveCamera(page, returning);
@@ -679,7 +679,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect.poll(() => returning.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await page.locator('#camera-start').click();
       await expect(page.locator('#camera-code')).toHaveText(code);
-      await returning.reload();
+      await returning.goto('about:blank');
       await requestCamera(returning, code, 'Same code, new host session');
       await pendingCameraRequest(page, returning, 'Same code, new host session');
       await approveCamera(page, returning);
