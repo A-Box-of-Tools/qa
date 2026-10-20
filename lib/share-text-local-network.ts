@@ -164,13 +164,14 @@ export async function runLocalShareJourney(
     [reader] = await Promise.all([readerContext.waitForEvent('page'), listedShare.click()]);
     await expect(draftPage.locator('#text')).toHaveValue('QA unshared draft must stay in this tab');
     expect(await peerSummary(draftPage), 'opening a nearby share must not connect or publish the draft tab').toHaveLength(0);
-    await expect(reader.locator('#local-note')).toBeVisible();
     if (unifiedPairingJoin) {
       await expect(sharer.locator('#pairing-request-dialog')).toBeVisible({ timeout: 30_000 });
       await expect(reader.locator('#consent')).toBeHidden();
       await expect(reader.locator('#knockrow')).toBeHidden();
+      expect(new URL(reader.url()).searchParams.getAll('local')).toEqual(['1']);
     } else {
       await expect(reader.locator('#consent')).toBeVisible({ timeout: 20_000 });
+      await expect(reader.locator('#local-note')).toBeVisible();
       expect(await peerSummary(reader), 'discovery must not connect before consent').toHaveLength(0);
       await reader.locator('#connect').click();
       await expect(reader.locator('#knockrow')).toBeVisible({ timeout: 30_000 });

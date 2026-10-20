@@ -395,7 +395,8 @@ test.describe('voice-oncall', () => {
       await peersClosed(sender);
       await expect(page.locator('#vi-participants > li')).toHaveCount(0);
       await sender.reload();
-      await expect(sender.locator('#vi-status-text')).toHaveText(privateDiscovery ? 'Choose an available pager or open a link from its host.' : 'Choose a nearby pager or open a link from its host.');
+      await expect(sender.locator('#vi-status-text')).toHaveText(unifiedPairingJoin ? 'Join an available pager or open a link from its host.'
+        : privateDiscovery ? 'Choose an available pager or open a link from its host.' : 'Choose a nearby pager or open a link from its host.');
       await expect(sender.locator('#vi-join-form')).toBeVisible();
       const pager = unifiedPairingJoin
         ? sender.locator('#vi-rooms .paired-nearby-row').filter({ hasText: pagerName }).getByRole('button')
