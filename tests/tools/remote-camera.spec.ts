@@ -494,6 +494,8 @@ test.describe('remote-camera: camera lifecycle', () => {
       await expect(page.locator(unifiedPairingJoin ? '#viewer-stop' : '#viewer-connect')).toBeFocused();
       if (unifiedPairingJoin) {
         const selected = new URL(before);
+        selected.search = '';
+        selected.searchParams.set('transport', 'direct');
         selected.hash = 'qa-listed-camera';
         expect(page.url()).toBe(selected.href);
         expect(await page.evaluate(() => (window as any).__cameraJoinDocument === true)).toBe(true);
