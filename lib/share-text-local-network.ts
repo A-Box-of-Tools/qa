@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { expect, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { BASE_URL } from './site';
 import { liveRendezvous } from './rendezvous';
+import { unifiedPairingJoin, reviewPairingRequestLater } from './pairing-approval';
 
 const TEXT = 'QA-local-network-text-71e62';
 const FILE_MARKER = 'QA-local-network-file-b8c03';
@@ -158,20 +159,28 @@ export async function runLocalShareJourney(
     await expect(listedShare).toHaveAttribute('href', link);
     const draftPage = reader;
     await draftPage.locator('#text').fill('QA unshared draft must stay in this tab');
+    if (unifiedPairingJoin) await expect(listedShare).toHaveText('Join');
+    readerContext.once('page', page => { readerSignaling = signalingFor(page); });
     [reader] = await Promise.all([readerContext.waitForEvent('page'), listedShare.click()]);
-    readerSignaling = signalingFor(reader);
     await expect(draftPage.locator('#text')).toHaveValue('QA unshared draft must stay in this tab');
     expect(await peerSummary(draftPage), 'opening a nearby share must not connect or publish the draft tab').toHaveLength(0);
-    await expect(reader.locator('#consent')).toBeVisible({ timeout: 20_000 });
     await expect(reader.locator('#local-note')).toBeVisible();
-    expect(await peerSummary(reader), 'discovery must not connect before consent').toHaveLength(0);
-    await reader.locator('#connect').click();
-    await expect(reader.locator('#knockrow')).toBeVisible({ timeout: 30_000 });
-    await reader.locator('#knock').fill('Local network QA');
-    await reader.locator('#send-knock').click();
-    await expect(sharer.locator('#requests')).toContainText('Local network QA', { timeout: 15_000 });
+    if (unifiedPairingJoin) {
+      await expect(sharer.locator('#pairing-request-dialog')).toBeVisible({ timeout: 30_000 });
+      await expect(reader.locator('#consent')).toBeHidden();
+      await expect(reader.locator('#knockrow')).toBeHidden();
+    } else {
+      await expect(reader.locator('#consent')).toBeVisible({ timeout: 20_000 });
+      expect(await peerSummary(reader), 'discovery must not connect before consent').toHaveLength(0);
+      await reader.locator('#connect').click();
+      await expect(reader.locator('#knockrow')).toBeVisible({ timeout: 30_000 });
+      await reader.locator('#knock').fill('Local network QA');
+      await reader.locator('#send-knock').click();
+      await expect(sharer.locator('#requests')).toContainText('Local network QA', { timeout: 15_000 });
+    }
     await expect(reader.locator('#panel')).not.toContainText(TEXT);
     await expect(reader.locator('#filelist button')).toHaveCount(0);
+    await reviewPairingRequestLater(sharer);
     await sharer.locator('#requests button').first().click();
     await expect(reader.locator('#panel')).toContainText(TEXT, { timeout: 15_000 });
     await expect(reader.locator('#filelist .filerow')).toHaveCount(1);
