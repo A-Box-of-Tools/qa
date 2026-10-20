@@ -265,6 +265,23 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expect(request).toHaveCount(0);
       await foreground(third.client);
       await privateUntilApproved(third.client, third.signals);
+      if (sessionApproval && tool === 'voice-oncall') {
+        const caller = await host.locator('#vi-participants .vi-participant-name').innerText();
+        await host.getByRole('button', { name: 'Remove ' + caller, exact: true }).click();
+        await expect(first.client.locator('#vi-status-text')).toContainText('The host removed you');
+        const removed = await first.client.context().newPage();
+        await withoutThirdParties(removed); await voiceHooks(removed, 'allow', true);
+        const removedSignals = countSignals(removed);
+        await removed.goto(invitation.href);
+        await removed.locator('#vi-sender-password').fill(password);
+        await removed.locator('#vi-join').click();
+        await expect(removed.locator('#vi-status-text')).toContainText('The host removed you', { timeout: 20_000 });
+        await privateUntilApproved(removed, removedSignals);
+        await expect(request).toHaveCount(0);
+        await expect(dialog).toBeHidden();
+        await foreground(removed);
+        await privateUntilApproved(removed, removedSignals);
+      }
       const fourth = await createClient();
       await expect(dialog).toBeVisible();
       await reviewPairingRequestLater(host);

@@ -54,8 +54,8 @@ while a separate browser and a new host session still wait. Text and Camera
 reuse the same room code after Stop to prove that an old receipt cannot grant
 access to the next session. Text, Tab and Camera cover opening another tab in
 the approved browser; invitation consent remains explicit. Tab and Camera
-Remove revoke approval, and Oncall's existing removal/recovery journey starts
-with an approved caller and keeps that caller blocked after reload.
+Remove revoke approval, and Oncall removes an approved caller and keeps that
+caller blocked in another tab without capturing its microphone.
 
 Pending-request journeys dismiss the popup and measure the real list beside
 the active host controls or text editor, including the phone viewport. The

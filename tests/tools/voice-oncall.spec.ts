@@ -1,4 +1,4 @@
-import { unifiedPairingJoin, sessionApproval, voiceApproval, setVoiceApproval } from '../../lib/pairing-approval';
+import { unifiedPairingJoin, voiceApproval, setVoiceApproval } from '../../lib/pairing-approval';
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
@@ -352,18 +352,13 @@ test.describe('voice-oncall', () => {
       await installVoiceLifecycle(page);
       await page.locator('#vi-tab-host').click();
       await page.locator('#vi-room-name').fill(pagerName);
-      await setVoiceApproval(page, 'voice-oncall', sessionApproval);
+      await setVoiceApproval(page, 'voice-oncall', false);
       await page.locator('#vi-start').click();
       await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
       await sender.goto(await page.locator('#vi-link').inputValue());
       await installVoiceLifecycle(sender);
       await expect(sender.locator('#vi-sender-name')).toHaveCount(0);
       await sender.locator('#vi-join').click();
-      if (sessionApproval) {
-        await expect(page.locator('#pairing-request-dialog')).toBeVisible({ timeout: 20_000 });
-        expect(await sender.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
-        await page.locator('#pairing-request-dialog [data-approval-approve]').click();
-      }
       await expect(sender.locator('#vi-status-text')).toHaveText('Connected. Hold to talk when you are ready.', { timeout: 20_000 });
       await expect.poll(() => sender.evaluate(() =>
         (window as any).__voiceQA.peers.some((peer: RTCPeerConnection) => peer.connectionState === 'connected')),

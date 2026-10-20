@@ -416,6 +416,7 @@ test.describe('share-text: letting people in', () => {
       await expect(other.locator('#panel')).not.toContainText(SECRET);
       await returning.close(); await other.close();
       await host.locator('#stop').click();
+      await waitForVacantRoom(host, code);
       // Reusing the very same invitation proves the host's lifetime, rather
       // than a different code alone, is the boundary of the remembered grant.
       await host.locator('#publish').click();
