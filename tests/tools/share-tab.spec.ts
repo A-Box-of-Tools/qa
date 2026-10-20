@@ -4,7 +4,7 @@ import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { liveRendezvous } from '../../lib/rendezvous';
 import { compactTransport, expectTransportMode } from '../../lib/pairing-transport';
-import { unifiedPairingJoin, listedConnection, reviewPairingRequestLater } from '../../lib/pairing-approval';
+import { unifiedPairingJoin, sessionApproval, listedConnection, reviewPairingRequestLater, expectRequestsNearHostControls } from '../../lib/pairing-approval';
 import {
   tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
   localTabOnly, noTabSockets,
@@ -192,6 +192,67 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     // An independent fixture probe must fail visibly on the engine this suite
     // promises to exercise; a tool's failure never becomes a capability skip.
     expect(await canFakeCamera(page), 'The independent native canvas fixture must paint before testing Share Tab').toBe(true);
+  });
+
+  test('session approval survives viewer Disconnect and a new tab, while Remove and a new host require approval', async ({ page, context, browser }) => {
+    test.skip(!sessionApproval, 'Session approvals are awaiting release.');
+    test.setTimeout(150_000);
+    const broker = tabBroker(), readerContext = await browser.newContext({ baseURL: BASE_URL }),
+      otherContext = await browser.newContext({ baseURL: BASE_URL });
+    try {
+      for (const side of [context, readerContext, otherContext]) { await tabHooks(side); await broker.install(side); }
+      const { code } = await startTabHost(page);
+      const first = await readerContext.newPage();
+      await requestTab(first, code, 'Approved browser');
+      await expect(requestRow(page, 'Approved browser')).toBeVisible({ timeout: 20_000 });
+      await reviewPairingRequestLater(page);
+      await expectRequestsNearHostControls(page, '#host-stop');
+      await noTabMedia(page, first);
+      await approve(page, first, 'Approved browser');
+      await first.locator('#viewer-stop').click(); await stoppedTab(first);
+      await expect(page.locator('#accepted-panel')).toBeHidden();
+      await foreground(first);
+      await expect(page.locator('#viewer-requests li')).toHaveCount(0);
+      await requestTab(first, code, 'Same browser after Disconnect');
+      await flowingTab(first);
+      await expect(page.locator('#pairing-request-dialog')).toBeHidden();
+      await expect(page.locator('#viewer-requests li')).toHaveCount(0);
+      await first.locator('#viewer-stop').click(); await stoppedTab(first);
+      await expect(page.locator('#accepted-panel')).toBeHidden();
+      const newTab = await readerContext.newPage();
+      await prepareTabPage(newTab, code);
+      await noTabSockets(newTab);
+      await expect(newTab.locator('#viewer-connect')).toBeVisible();
+      await newTab.locator('#viewer-name').fill('Same browser in another tab');
+      await newTab.locator('#viewer-connect').click();
+      await flowingTab(newTab);
+      await expect(page.locator('#viewer-requests li')).toHaveCount(0);
+      await page.locator('[data-action="host.disconnect"]').click(); await stoppedTab(newTab);
+      await requestTab(newTab, code, 'Removed browser');
+      await expect(requestRow(page, 'Removed browser')).toBeVisible({ timeout: 20_000 });
+      await noTabMedia(page, newTab);
+      await reviewPairingRequestLater(page);
+      await requestRow(page, 'Removed browser').locator('[data-action="host.deny"]').click(); await stoppedTab(newTab);
+      await requestTab(newTab, code, 'Denied browser tries again');
+      await expect(requestRow(page, 'Denied browser tries again')).toBeVisible({ timeout: 20_000 });
+      await noTabMedia(page, newTab);
+      await approve(page, newTab, 'Denied browser tries again');
+      await newTab.locator('#viewer-stop').click(); await stoppedTab(newTab);
+      await expect(page.locator('#accepted-panel')).toBeHidden();
+      const other = await otherContext.newPage();
+      await requestTab(other, code, 'Different browser');
+      await expect(requestRow(page, 'Different browser')).toBeVisible({ timeout: 20_000 });
+      await noTabMedia(page, other);
+      await reviewPairingRequestLater(page);
+      await other.locator('#viewer-stop').click(); await stoppedTab(other);
+      await page.locator('#host-stop').click(); await stoppedTab(page, true);
+      const next = await startTabHost(page);
+      await requestTab(newTab, next.code, 'Same browser, new host');
+      await expect(requestRow(page, 'Same browser, new host')).toBeVisible({ timeout: 20_000 });
+      await noTabMedia(page, newTab);
+      await approve(page, newTab, 'Same browser, new host');
+      await page.locator('#host-stop').click(); await stoppedTab(newTab); await stoppedTab(page, true);
+    } finally { await otherContext.close(); await readerContext.close(); }
   });
 
   test('an invitation is idle until Request, and approval plus ACK precede native video', async ({ page, context }) => {

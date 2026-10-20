@@ -48,6 +48,22 @@ Explicit development relay runs also verify the selected native candidate pair
 is relay-to-relay. Existing recovery/moderation cases disable approval so those
 tests continue isolating their original lifecycle contracts.
 
+When the source includes session approvals, all five journeys also verify
+that an approved browser deliberately reconnects without another host request,
+while a separate browser and a new host session still wait. Text and Camera
+reuse the same room code after Stop to prove that an old receipt cannot grant
+access to the next session. Text, Tab and Camera cover opening another tab in
+the approved browser; invitation consent remains explicit. Tab and Camera
+Remove revoke approval, and Oncall's existing removal/recovery journey starts
+with an approved caller and keeps that caller blocked after reload.
+
+Pending-request journeys dismiss the popup and measure the real list beside
+the active host controls or text editor, including the phone viewport. The
+voice reconnect cases retain microphone silence until Talk and verify native
+audio again, in both Direct and explicit development TURN runs. These are
+browser-context identity tests, not hardware device identification; clearing
+browser storage or using another profile represents a new browser.
+
 Private discovery checks hover and keyboard explanations on the connection
 icons, their borderless appearance, and explicit connection consent. Live
 Direct hosts and native Cloud relay journeys verify that a started host shows
