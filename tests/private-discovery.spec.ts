@@ -7,6 +7,7 @@ import { privateDiscovery, oneStepNearbyJoin, borderlessConnectionIcons, expectT
 import { voiceHooks, admitsLiveVoice } from '../lib/voice-fixtures';
 import { cameraHooks } from '../lib/camera-fixtures';
 import { tabHooks } from '../lib/share-tab';
+import { unifiedPairingJoin } from '../lib/pairing-approval';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
 type Tool = typeof tools[number];
@@ -64,8 +65,9 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
   const codes = tool === 'walkie-talkie' || tool === 'voice-oncall' ? ['a'.repeat(64), 'b'.repeat(64)]
     : tool === 'share-tab' ? ['tab-' + 'a'.repeat(16), 'tab-' + 'b'.repeat(16)]
     : ['qa-private-direct', 'qa-private-relay'];
-  await context.addInitScript(({ tool, codes, groupA, groupB, idA, idB }) => {
-    const state = (window as any).__groupQA = { rooms: 0, captures: 0, peers: 0, sockets: [] as any[], auth: [] as string[] };
+  await context.addInitScript(({ tool, codes, groupA, groupB, idA, idB, unifiedPairingJoin }) => {
+    const state = (window as any).__groupQA = { rooms: 0, captures: 0, peers: 0, sockets: [] as any[], auth: [] as string[],
+      deferGroupHash: false, groupHashWaiting: false, releaseGroupHash: () => {} };
     const digest = crypto.subtle.digest.bind(crypto.subtle);
     Object.defineProperty(crypto.subtle, 'digest', { configurable: true, value: (algorithm: AlgorithmIdentifier, data: BufferSource) => {
       if (state.deferGroupHash && new TextDecoder().decode(data).startsWith('abox.tools/private-discovery/v1\n')) {
@@ -94,7 +96,7 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
           state.rooms++;
           // Share Text checks that a host is ready before showing Connect.
           // This introduction creates no peer and cannot deliver content.
-          if (tool === 'share-text' && address.pathname === '/ws/' + codes[1]
+          if (!unifiedPairingJoin && tool === 'share-text' && address.pathname === '/ws/' + codes[1]
               && address.searchParams.get('role') === 'viewer'
               && address.searchParams.get('transport') === 'relay') queueMicrotask(() => {
             if (this.readyState !== 0) return;
@@ -134,7 +136,7 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     const capture = async () => { state.captures++; throw new Error('Discovery requested capture.'); };
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true,
       value: { getUserMedia: capture, getDisplayMedia: capture, enumerateDevices: async () => [] } });
-  }, { tool, codes, groupA, groupB, idA: groupId(groupA), idB: groupId(groupB) });
+  }, { tool, codes, groupA, groupB, idA: groupId(groupA), idB: groupId(groupB), unifiedPairingJoin });
   await page.goto('/' + tool + '/');
   await beginBrowsing(page, tool);
   await expect(page.getByRole('heading', { name: 'Available connections', exact: true })).toBeVisible();
@@ -249,6 +251,38 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
   await beginBrowsing(page, tool);
   await expect(rows(page)).toHaveCount(2);
   let consentPage = page;
+  if (unifiedPairingJoin) {
+    const action = rows(page).last().getByRole(tool === 'share-text' ? 'link' : 'button');
+    await expect(action).toHaveText('Join');
+    await expect(action).toHaveAccessibleName(/Join .* via Cloud relay/);
+    if (tool === 'share-text') {
+      await page.locator('#text').fill('Keep this unsent draft');
+      [consentPage] = await Promise.all([context.waitForEvent('page'), action.click()]);
+      await consentPage.waitForLoadState();
+      await expect(page.locator('#text')).toHaveValue('Keep this unsent draft');
+      expect(consentPage.url()).not.toContain(groupA);
+      expect(consentPage.url()).not.toContain(groupId(groupA));
+    } else {
+      await action.click();
+      if (tool === 'voice-oncall') {
+        const dialog = page.locator('#vi-password-dialog');
+        await expect(dialog).toBeVisible();
+        await expect(page.locator('#vi-join-password')).toBeFocused();
+        expect(await page.evaluate(() => [(window as any).__groupQA.rooms, (window as any).__groupQA.captures])).toEqual([0, 0]);
+        await page.locator('#vi-join-password').fill('QA password');
+        await page.locator('#vi-password-join').click();
+        await expect(dialog).toBeHidden();
+      }
+    }
+    await expectTransportMode(consentPage, 'relay');
+    await expect.poll(() => consentPage.evaluate(() => (window as any).__groupQA.rooms)).toBe(1);
+    expect(await consentPage.evaluate(() => {
+      const qa = (window as any).__groupQA;
+      return { captures: qa.captures, peers: qa.peers };
+    })).toEqual({ captures: 0, peers: 0 });
+    await noStoredGroup(consentPage, groupA);
+    return;
+  }
   if (tool === 'share-text') {
     const href = await rows(page).last().locator('a').getAttribute('href');
     expect(Boolean(href && !href.includes(groupA) && !href.includes(groupId(groupA)))).toBe(true);

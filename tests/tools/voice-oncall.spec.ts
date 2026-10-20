@@ -1,3 +1,4 @@
+import { unifiedPairingJoin, voiceApproval, setVoiceApproval } from '../../lib/pairing-approval';
 import { test, expect, type Page } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
@@ -73,6 +74,7 @@ test.describe('voice-oncall', () => {
   });
 
   test('denied microphone permission offers deliberate recovery without opening a voice socket', async ({ page }) => {
+    test.skip(voiceApproval('voice-oncall'), 'Approval now precedes microphone capture; the approval suite checks denied capture after admission.');
     await voiceHooks(page, 'deny', true);
     await page.goto(`${TOOL}#code=${'a'.repeat(64)}`);
     await expect(page.locator('#vi-sender-name')).toHaveCount(0);
@@ -91,6 +93,7 @@ test.describe('voice-oncall', () => {
 
   test('choosing a nearby pager from Host opens Connect without asking for a microphone', async ({ page }) => {
     test.skip(!topLevelNearby, 'The shared nearby area is awaiting the website release.');
+    test.skip(unifiedPairingJoin, 'One-click rows replace native radio selection; the Join/password test covers this contract.');
     await nativeRadioNavigation(page);
     const code = 'a'.repeat(64), openCode = 'b'.repeat(64);
     await voiceHooks(page, 'deny', true, [{ code, name: 'QA protected pager', locked: true },
@@ -148,6 +151,7 @@ test.describe('voice-oncall', () => {
       await page.locator('#vi-room-name').fill('QA synthetic voice pager');
       await page.locator('#vi-password-required').check();
       await page.locator('#vi-host-password').fill(password);
+      await setVoiceApproval(page, 'voice-oncall', false);
       await page.locator('#vi-start').click();
       await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
       expect(await page.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
@@ -160,7 +164,8 @@ test.describe('voice-oncall', () => {
       await sender.locator('#vi-sender-password').fill('QA-incorrect-password');
       await sender.locator('#vi-join').click();
       await expect(sender.locator('#vi-status-text')).toHaveText('That password did not match. Enter the pager password and try again.', { timeout: 20_000 });
-      await tracksStopped(sender);
+      if (voiceApproval('voice-oncall')) expect(await sender.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
+      else await tracksStopped(sender);
       await expect(page.locator('#vi-participants > li')).toHaveCount(0);
       expect(await sender.evaluate(() => (window as any).__voiceQA.peers.length)).toBe(0);
 
@@ -197,7 +202,7 @@ test.describe('voice-oncall', () => {
       expect(connection.connected).toBe(1);
       expect(connection.open).toBe(1);
       const attempts = () => sender.evaluate(() => (window as any).__voiceLifecycle.attempts);
-      expect(await attempts()).toBe(2); // Refused password, then admitted capture.
+      expect(await attempts()).toBe(voiceApproval('voice-oncall') ? 1 : 2); // New callers capture only after password admission.
       const beforeHidden = await receivedAudio(page);
       for (const participant of [page, sender]) await participant.evaluate(() => {
         (window as any).__voiceLifecycle.setHidden(true);
@@ -223,7 +228,7 @@ test.describe('voice-oncall', () => {
         (window as any).__voiceLifecycle.setHidden(true);
         (window as any).__voiceLifecycle.setHidden(false);
       });
-      expect(await attempts()).toBe(2);
+      expect(await attempts()).toBe(voiceApproval('voice-oncall') ? 1 : 2);
       await sender.evaluate(() => (window as any).__voiceLifecycle.interrupt('unmute'));
       await expect(sender.locator('#vi-resume')).toBeHidden();
       await expect(sender.locator('#vi-hold')).toBeEnabled();
@@ -252,7 +257,7 @@ test.describe('voice-oncall', () => {
       });
       await expect(sender.locator('#vi-resume')).toBeHidden();
       await expect.poll(() => captureAttached(sender)).toBe(true);
-      expect(await attempts()).toBe(3);
+      expect(await attempts()).toBe(voiceApproval('voice-oncall') ? 2 : 3);
       expect(await microphoneEnabled(sender)).toBe(false);
       await expect(sender.locator('#vi-toggle')).toHaveAttribute('aria-pressed', 'false');
       expect(await voiceConnectionState(sender, 'inbox')).toEqual(connection);
@@ -278,7 +283,7 @@ test.describe('voice-oncall', () => {
       await sender.locator('#vi-resume').click();
       await expect(sender.locator('#vi-resume')).toBeHidden();
       await expect.poll(() => captureAttached(sender)).toBe(true);
-      expect(await attempts()).toBe(4);
+      expect(await attempts()).toBe(voiceApproval('voice-oncall') ? 3 : 4);
       expect(await microphoneEnabled(sender)).toBe(false);
       await expect(sender.locator('#vi-hold')).toBeDisabled();
       await expect(sender.locator('#vi-status-text')).toHaveText('The host muted you. Wait for the host to unmute you.');
@@ -297,7 +302,7 @@ test.describe('voice-oncall', () => {
       await expect(sender.locator('#vi-status-text')).toHaveText('The host muted you. Wait for the host to unmute you.', { timeout: 20_000 });
       await expect.poll(() => page.evaluate(() => (window as any).__voiceProtectionQA.sent.some((frame: any) => frame.type === 'moderate' && frame.muted))).toBe(true);
       await expect.poll(() => captureAttached(sender)).toBe(true);
-      await expect(caller).toHaveText(callerName); expect(await attempts()).toBe(5);
+      await expect(caller).toHaveText(callerName); expect(await attempts()).toBe(voiceApproval('voice-oncall') ? 4 : 5);
       expect(await microphoneEnabled(sender)).toBe(false);
       await expect.poll(() => outputRms(page)).toBeLessThan(0.00001);
       await page.getByRole('button', { name: `Unmute ${callerName}`, exact: true }).evaluate((button: HTMLButtonElement) => button.click());
@@ -323,7 +328,7 @@ test.describe('voice-oncall', () => {
         (window as any).__voiceLifecycle.setHidden(false);
         window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
       });
-      expect(await attempts()).toBe(5);
+      expect(await attempts()).toBe(voiceApproval('voice-oncall') ? 4 : 5);
       expect((await voiceConnectionState(sender, 'inbox')).open).toBe(0);
       expect((await voiceConnectionState(page, 'inbox')).open).toBe(0);
       expect(await page.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
@@ -347,6 +352,7 @@ test.describe('voice-oncall', () => {
       await installVoiceLifecycle(page);
       await page.locator('#vi-tab-host').click();
       await page.locator('#vi-room-name').fill(pagerName);
+      await setVoiceApproval(page, 'voice-oncall', false);
       await page.locator('#vi-start').click();
       await expect(page.locator('#vi-status-text')).toHaveText('Your pager is open.', { timeout: 20_000 });
       await sender.goto(await page.locator('#vi-link').inputValue());
@@ -391,12 +397,14 @@ test.describe('voice-oncall', () => {
       await sender.reload();
       await expect(sender.locator('#vi-status-text')).toHaveText(privateDiscovery ? 'Choose an available pager or open a link from its host.' : 'Choose a nearby pager or open a link from its host.');
       await expect(sender.locator('#vi-join-form')).toBeVisible();
-      const pager = privateDiscovery
+      const pager = unifiedPairingJoin
+        ? sender.locator('#vi-rooms .paired-nearby-row').filter({ hasText: pagerName }).getByRole('button')
+        : privateDiscovery
         ? sender.locator('#vi-rooms .paired-nearby-row').filter({ hasText: pagerName }).getByRole('radio')
         : sender.getByRole('radio', { name: `${pagerName} Open pager`, exact: true });
       await expect(pager).toBeVisible({ timeout: DISCOVERY_TIMEOUT });
-      await pager.check();
-      await sender.locator('#vi-join').click();
+      if (unifiedPairingJoin) { await expect(pager).toHaveText('Join'); await pager.click(); }
+      else { await pager.check(); await sender.locator('#vi-join').click(); }
       await expect(sender.locator('#vi-status-text')).toHaveText('The host removed you from this pager.');
       await expect(sender.locator('#vi-sender-name')).toHaveCount(0);
       await expect(sender.locator('#vi-join-form')).toBeHidden();

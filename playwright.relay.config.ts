@@ -7,7 +7,7 @@ import ordinary from './playwright.config';
 // configuration so this explicit run contains only the three relay projects.
 export default defineConfig({
   ...ordinary,
-  testMatch: /(?:cloud-relay|native-video-diagnostic)\.spec\.ts$/,
+  testMatch: /(?:cloud-relay|native-video-diagnostic|voice-approval)\.spec\.ts$/,
   fullyParallel: false,
   workers: 1,
   retries: 0,

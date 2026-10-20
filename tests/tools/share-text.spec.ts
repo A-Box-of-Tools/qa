@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { test, expect, type Browser, type Locator, type Page } from '@playwright/test';
 import { onProductionDomain } from '../../lib/site';
 import { liveRendezvous } from '../../lib/rendezvous';
+import { unifiedPairingJoin, reviewPairingRequestLater } from '../../lib/pairing-approval';
 
 /**
  * Tool-level functional tests for Share Text & Files.
@@ -371,6 +372,52 @@ test.describe('share-text: the promise', () => {
 });
 
 test.describe('share-text: letting people in', () => {
+  test('a discovered Join preserves the draft and requests private access once; an ordinary link still waits', async ({ browser, browserName }) => {
+    test.skip(!unifiedPairingJoin, 'One-click discovery is awaiting release.');
+    test.skip(browserName !== 'chromium', 'The native local data-channel journey runs in Chromium.');
+    test.setTimeout(150_000);
+    const hostContext = await browser.newContext(), browsingContext = await browser.newContext();
+    const host = await hostContext.newPage(), browsing = await browsingContext.newPage();
+    const code = codeWord();
+    try {
+      const link = await publish(host, { text: SECRET, code, priv: true, local: true });
+      await browsing.goto(new URL(URL_PATH, link).href);
+      await browsing.locator('#text').fill('My unsent draft stays here');
+      const row = browsing.locator('#discovery-list .paired-nearby-row').filter({ hasText: code });
+      const join = row.getByRole('link');
+      await expect(join).toBeVisible({ timeout: 75_000 });
+      await expect(join).toHaveText('Join');
+      await expect(join).toHaveAccessibleName(`Join ${code} via Direct`);
+      const [reader] = await Promise.all([browsingContext.waitForEvent('page'), join.click()]);
+      await reader.waitForLoadState();
+      await expect(browsing.locator('#text')).toHaveValue('My unsent draft stays here');
+      await expect(reader.locator('#connect')).toBeHidden();
+      const dialog = host.locator('#pairing-request-dialog');
+      await expect(dialog).toBeVisible({ timeout: 30_000 });
+      await expect(reader.locator('#knockrow')).toBeHidden();
+      await expect(reader.locator('#panel')).not.toContainText(SECRET);
+      expect(await reader.evaluate(() => sessionStorage.getItem('pairing.discovery-join'))).toBeNull();
+      await expect(dialog.locator('[data-approval-later]')).toBeFocused();
+      await dialog.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(host.locator('#requests button')).toHaveCount(2);
+      await expect(reader.locator('#panel')).not.toContainText(SECRET);
+      await host.locator('#requests button').first().click();
+      await expect(reader.locator('#panel')).toContainText(SECRET, { timeout: 30_000 });
+      const ordinary = await readerFor(browser, reader.url(), true);
+      try {
+        await expect(ordinary.page.locator('#connect')).toBeVisible({ timeout: 20_000 });
+        expect(await ordinary.page.evaluate(() => (window as any).shareTextTransports.peers.length)).toBe(0);
+        await expect(ordinary.page.locator('#panel')).not.toContainText(SECRET);
+      } finally { await ordinary.page.context().close(); }
+      await host.locator('#stop').click();
+      await expect(host.locator('#requests button')).toHaveCount(0);
+      await expect(dialog).toBeHidden();
+    } finally {
+      await browsingContext.close(); await hostContext.close();
+    }
+  });
+
   test('a private share waits to be admitted', async ({ browser }) => {
     test.setTimeout(240_000);
     const code = codeWord();
@@ -401,6 +448,7 @@ test.describe('share-text: letting people in', () => {
     // Admit: the first button in the request row, whatever the language
     // calls it - the label comes from a phrase and this suite runs against
     // whichever locale is served.
+    await reviewPairingRequestLater(sharer);
     await sharer.locator('#requests button').first().click();
 
     await expect(reader.locator('#panel')).toContainText(SECRET, { timeout: 60_000 });
@@ -472,6 +520,7 @@ test('share-text: private attachments arrive intact only after admission, includ
     await reader.locator('#knock').fill('File QA');
     await reader.locator('#send-knock').click();
     await expect(sharer.locator('#requests')).toContainText('File QA');
+    await reviewPairingRequestLater(sharer);
     await sharer.locator('#requests button').first().click();
     await expect(reader.locator('#filelist .filerow')).toHaveCount(2, { timeout: 60_000 });
     for (const file of files) {
@@ -602,6 +651,7 @@ test.describe('share-text: foreground continuity', () => {
       await reader.locator('#knock').fill('Same-page continuation');
       await reader.locator('#send-knock').click();
       await expect(sharer.locator('#requests')).toContainText('Same-page continuation');
+      await reviewPairingRequestLater(sharer);
       await sharer.locator('#requests button').first().click();
       await expect(reader.locator('#panel')).toContainText(SECRET, { timeout: 60_000 });
       await reader.locator('#mode-src').click();

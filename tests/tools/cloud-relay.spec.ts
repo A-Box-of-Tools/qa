@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { setVoiceApproval, reviewPairingRequestLater } from '../../lib/pairing-approval';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
@@ -135,12 +136,14 @@ async function startHost(host: Page, tool: Tool, mode: TransportMode = 'relay') 
     input = '#camera-link';
   } else if (tool === 'walkie-talkie') {
     await host.locator('#wt-discover').uncheck();
+    await setVoiceApproval(host, tool, false);
     await host.locator('#wt-start').click();
     input = '#wt-link';
   } else {
     await host.locator('#vi-room-name').fill('QA relay pager');
     await host.locator('#vi-password-required').check();
     await host.locator('#vi-host-password').fill(PASSWORD);
+    await setVoiceApproval(host, 'voice-oncall', false);
     await host.locator('#vi-start').click();
     input = '#vi-link';
   }
@@ -209,6 +212,7 @@ async function approveAndDeliver(host: Page, client: Page, tool: Tool) {
     await client.locator('#knock').fill('QA private relay reader');
     await client.locator('#send-knock').click();
     await expect(host.locator('#requests')).toContainText('QA private relay reader');
+    await reviewPairingRequestLater(host);
     await host.locator('#requests button').first().click();
     await expect(client.locator('#panel')).toContainText(TEXT, { timeout: 20_000 });
     const file = client.locator('#filelist .filerow').filter({ hasText: 'relay.bin' });
@@ -221,6 +225,7 @@ async function approveAndDeliver(host: Page, client: Page, tool: Tool) {
     const request = host.locator('#viewer-requests li').filter({ hasText: 'QA approved viewer' });
     await expect(request).toBeVisible({ timeout: 30_000 });
     await noTabMedia(host, client);
+    await reviewPairingRequestLater(host);
     await request.getByRole('button', { name: /Allow|Approve/ }).click();
     await flowingTab(client, { pixelEvidence: true });
   } else if (tool === 'remote-camera') {

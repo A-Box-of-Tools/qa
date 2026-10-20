@@ -15,7 +15,7 @@ export function liveVoiceEndpoint(): string {
 /** Supply an oscillator instead of asking for a person's microphone. Peers,
  * codecs, received streams and the live signaling service remain native. */
 export async function voiceHooks(page: Page, capture: 'allow' | 'deny', quietDiscovery = false,
-  discoveryList: { code: string; name: string; locked?: boolean; listenKey?: string }[] = []) {
+  discoveryList: { code: string; name: string; locked?: boolean; listenKey?: string; transport?: 'direct' | 'relay'; approval?: boolean }[] = []) {
   await page.addInitScript(({ capture, quietDiscovery, discoveryList }) => {
     const state = (window as any).__voiceQA = {
       calls: [] as MediaStreamConstraints[], tracks: [] as MediaStreamTrack[],
