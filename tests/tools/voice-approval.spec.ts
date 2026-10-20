@@ -1,7 +1,7 @@
 import { test, expect, type Page, type BrowserContext } from '@playwright/test';
 import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
-import { voiceApproval, reviewPairingRequestLater } from '../../lib/pairing-approval';
+import { voiceApproval, sessionApproval, reviewPairingRequestLater, expectRequestsNearHostControls } from '../../lib/pairing-approval';
 import { chooseTransport, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
 import { voiceHooks, admitsLiveVoice, receivedAudio, outputRms, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
 
@@ -163,6 +163,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expect(dialog).toBeHidden();
       const request = host.locator(`#${id}-requests [data-peer]`);
       await expect(request).toHaveCount(1);
+      await expectRequestsNearHostControls(host, tool === 'walkie-talkie' ? '#wt-hold' : '#vi-end');
       await privateUntilApproved(first.client, first.signals);
       await installVoiceLifecycle(first.client);
       await first.client.evaluate(() => {
@@ -200,12 +201,52 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expect.poll(() => microphoneEnabled(speaker)).toBe(true);
       await positiveAudio();
       await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(beforeAudio.packets);
-      if (mode === 'relay') for (const side of [host, first.client]) await expect.poll(async () => {
-        const connected = (await voiceTransportState(side)).filter(peer => peer.connection === 'connected');
-        return connected.length > 0 && connected.every(peer => peer.policy === 'relay' && peer.selected.length > 0
-          && peer.selected.every(pair => pair.local === 'relay' && pair.remote === 'relay'
-            && pair.bytesSent > 0 && pair.bytesReceived > 0));
-      }, { timeout: 20_000 }).toBe(true);
+      const verifyRelay = async () => {
+        if (mode !== 'relay') return;
+        for (const side of [host, first.client]) await expect.poll(async () => {
+          const connected = (await voiceTransportState(side)).filter(peer => peer.connection === 'connected');
+          return connected.length > 0 && connected.every(peer => peer.policy === 'relay' && peer.selected.length > 0
+            && peer.selected.every(pair => pair.local === 'relay' && pair.remote === 'relay'
+              && pair.bytesSent > 0 && pair.bytesReceived > 0));
+        }, { timeout: 20_000 }).toBe(true);
+      };
+      await verifyRelay();
+      if (sessionApproval) {
+        await speaker.locator(`#${id}-toggle`).click();
+        await expect.poll(() => microphoneEnabled(speaker)).toBe(false);
+        await first.client.locator(`#${id}-leave`).click();
+        await expect.poll(() => first.client.evaluate(() => (window as any).__voiceQA.peers
+          .every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
+        await foreground(first.client);
+        await expect(request).toHaveCount(0);
+        // Deliberate Join is still required; a remembered approval cannot
+        // turn foreground recovery into a new call after Disconnect.
+        const callsAfterLeave = await first.client.evaluate(() => (window as any).__voiceQA.calls.length);
+        await first.client.goto('about:blank');
+        await first.client.goto('/' + tool + '/');
+        const rejoin = first.client.locator(`#${id}-${tool === 'walkie-talkie' ? 'channels' : 'rooms'} .paired-nearby-row`).getByRole('button');
+        await expect(rejoin).toHaveText('Join');
+        expect(await first.client.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(0);
+        expect(await first.client.evaluate(() => (window as any).__voiceQA.peers.length)).toBe(0);
+        await rejoin.click();
+        if (tool === 'voice-oncall') {
+          await first.client.locator('#vi-join-password').fill(password);
+          await first.client.locator('#vi-password-join').click();
+        }
+        await expect(first.client.locator(`#${id}-status-text`)).toContainText('Connected.', { timeout: 30_000 });
+        await expect(dialog).toBeHidden();
+        await expect(request).toHaveCount(0);
+        expect(callsAfterLeave).toBe(tool === 'voice-oncall' ? 1 : 0);
+        expect(await first.client.evaluate(() => (window as any).__voiceQA.calls.length)).toBe(tool === 'voice-oncall' ? 1 : 0);
+        await expect.poll(() => microphoneEnabled(speaker)).toBe(false);
+        if (tool === 'walkie-talkie' && await first.client.locator('#wt-playback-note').isVisible()) await first.client.locator('#wt-mute').click();
+        const rejoinedPackets = (await receivedAudio(listener)).packets;
+        await speaker.locator(`#${id}-toggle`).click();
+        await expect.poll(() => microphoneEnabled(speaker)).toBe(true);
+        await positiveAudio();
+        await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(rejoinedPackets);
+        await verifyRelay();
+      }
       const second = await createClient();
       await expect(dialog).toBeVisible();
       await dialog.press('Escape');
@@ -225,6 +266,23 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expect(request).toHaveCount(0);
       await foreground(third.client);
       await privateUntilApproved(third.client, third.signals);
+      if (sessionApproval && tool === 'voice-oncall') {
+        const caller = await host.locator('#vi-participants .vi-participant-name').innerText();
+        await host.getByRole('button', { name: 'Remove ' + caller, exact: true }).click();
+        await expect(first.client.locator('#vi-status-text')).toContainText('The host removed you');
+        const removed = await first.client.context().newPage();
+        await withoutThirdParties(removed); await voiceHooks(removed, 'allow', true);
+        const removedSignals = countSignals(removed);
+        await removed.goto(invitation.href);
+        await removed.locator('#vi-sender-password').fill(password);
+        await removed.locator('#vi-join').click();
+        await expect(removed.locator('#vi-status-text')).toContainText('The host removed you', { timeout: 20_000 });
+        await privateUntilApproved(removed, removedSignals);
+        await expect(request).toHaveCount(0);
+        await expect(dialog).toBeHidden();
+        await foreground(removed);
+        await privateUntilApproved(removed, removedSignals);
+      }
       const fourth = await createClient();
       await expect(dialog).toBeVisible();
       await reviewPairingRequestLater(host);
@@ -238,6 +296,27 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expectHostTransportRestored(host);
       await expect.poll(() => first.client.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
       await expect.poll(() => host.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
+      if (sessionApproval) {
+        if (tool === 'voice-oncall') await host.locator('#vi-host-password').fill(password);
+        await host.locator(`#${id}-start`).click();
+        await expect.poll(async () => Boolean(await host.locator(`#${id}-link`).inputValue()), { timeout: 20_000 }).toBe(true);
+        const nextInvitation = await host.locator(`#${id}-link`).inputValue();
+        const newSessionSignals = countSignals(first.client);
+        await first.client.goto('about:blank');
+        await first.client.goto(nextInvitation);
+        if (tool === 'voice-oncall') {
+          await first.client.locator('#vi-sender-password').fill(password);
+          await first.client.locator('#vi-join').click();
+        } else if (mode === 'relay') await first.client.locator('#wt-connect-listener').click();
+        await expect(first.client.locator(`#${id}-status-text`)).toContainText('Waiting for the host to approve', { timeout: 20_000 });
+        await privateUntilApproved(first.client, newSessionSignals);
+        await expect(dialog).toBeVisible();
+        await expect(request).toHaveCount(1);
+        await reviewPairingRequestLater(host);
+        await host.locator(`#${id}-end`).click();
+        await foreground(first.client);
+        await privateUntilApproved(first.client, newSessionSignals);
+      }
     } catch (error) {
       await test.info().attach('voice-approval-transports', { contentType: 'application/json',
         body: JSON.stringify({ host: await voiceTransportState(host),

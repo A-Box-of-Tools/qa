@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import { test, expect, type Browser, type Locator, type Page } from '@playwright/test';
+import { test, expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { onProductionDomain } from '../../lib/site';
 import { liveRendezvous } from '../../lib/rendezvous';
-import { unifiedPairingJoin, reviewPairingRequestLater } from '../../lib/pairing-approval';
+import { unifiedPairingJoin, sessionApproval, reviewPairingRequestLater, expectRequestsNearHostControls } from '../../lib/pairing-approval';
 
 /**
  * Tool-level functional tests for Share Text & Files.
@@ -372,6 +372,69 @@ test.describe('share-text: the promise', () => {
 });
 
 test.describe('share-text: letting people in', () => {
+  test('an approved browser returns without another request, but another browser and a new host session remain private', async ({ browser, browserName }) => {
+    test.skip(!sessionApproval, 'Session approvals are awaiting release.');
+    test.skip(browserName !== 'chromium', 'The native data-channel journey runs in Chromium.');
+    test.setTimeout(150_000);
+    const hostContext = await browser.newContext(), readerContext = await browser.newContext(), otherContext = await browser.newContext();
+    const host = await hostContext.newPage(), code = codeWord();
+    try {
+      const link = await publish(host, { text: SECRET, code, priv: true, local: true });
+      const connect = async (context: BrowserContext) => {
+        const reader = await context.newPage();
+        await observeConnections(reader);
+        await reader.goto(link);
+        await expect(reader.locator('#connect')).toBeVisible();
+        expect(await reader.evaluate(() => (window as any).shareTextTransports.peers.length)).toBe(0);
+        await expect(reader.locator('#panel')).not.toContainText(SECRET);
+        await reader.locator('#connect').click();
+        return reader;
+      };
+      const ask = async (reader: Page, note: string) => {
+        await expect(reader.locator('#knockrow')).toBeVisible({ timeout: 30_000 });
+        await reader.locator('#knock').fill(note); await reader.locator('#send-knock').click();
+        await expect(host.locator('#requests')).toContainText(note, { timeout: 30_000 });
+        await expect(reader.locator('#panel')).not.toContainText(SECRET);
+        await reviewPairingRequestLater(host);
+      };
+      const first = await connect(readerContext);
+      await ask(first, 'First approved browser');
+      await expectRequestsNearHostControls(host, '#text');
+      await host.locator('#requests button').first().click();
+      await expect(first.locator('#panel')).toContainText(SECRET, { timeout: 30_000 });
+      await first.close();
+      const returning = await connect(readerContext);
+      await expect(returning.locator('#panel')).toContainText(SECRET, { timeout: 30_000 });
+      await expect(returning.locator('#knockrow')).toBeHidden();
+      await expect(host.locator('#requests button')).toHaveCount(0);
+      await expect(host.locator('#pairing-request-dialog')).toBeHidden();
+      await host.locator('#text').fill(`${SECRET}\nAn edit after returning`);
+      await expect(returning.locator('#panel')).toContainText('An edit after returning');
+      const other = await connect(otherContext);
+      await ask(other, 'Another browser');
+      await host.locator('#requests button').last().click();
+      await expect(other.locator('#panel')).not.toContainText(SECRET);
+      await returning.close(); await other.close();
+      await host.locator('#stop').click();
+      await waitForVacantRoom(host, code);
+      // Reusing the very same invitation proves the host's lifetime, rather
+      // than a different code alone, is the boundary of the remembered grant.
+      await host.locator('#publish').click();
+      await expect(host.locator('#link')).toHaveValue(link, { timeout: 30_000 });
+      const nextSession = await connect(readerContext);
+      await expect(host.locator('#pairing-request-dialog')).toBeVisible({ timeout: 30_000 });
+      await expect(nextSession.locator('#panel')).not.toContainText(SECRET);
+      await reviewPairingRequestLater(host);
+      await expect(host.locator('#requests button')).toHaveCount(2);
+      await host.locator('#requests button').first().click();
+      await expect(nextSession.locator('#panel')).toContainText(SECRET, { timeout: 30_000 });
+      await host.locator('#stop').click();
+      await expect(nextSession.locator('#panel')).not.toContainText(SECRET);
+    } finally {
+      await otherContext.close(); await readerContext.close(); await hostContext.close();
+    }
+  });
+
   test('a discovered Join preserves the draft and requests private access once; an ordinary link still waits', async ({ browser, browserName }) => {
     test.skip(!unifiedPairingJoin, 'One-click discovery is awaiting release.');
     test.skip(browserName !== 'chromium', 'The native local data-channel journey runs in Chromium.');
