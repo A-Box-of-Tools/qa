@@ -1,3 +1,4 @@
+import { setVoiceApproval } from '../../lib/pairing-approval';
 import { test, expect } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
@@ -27,6 +28,7 @@ test.describe('walkie-talkie', () => {
   test('denied microphone permission leaves no capture or pairing session', async ({ page }) => {
     await voiceHooks(page, 'deny', true);
     await page.goto(TOOL);
+    await setVoiceApproval(page, 'walkie-talkie', false);
     await page.locator('#wt-start').click();
     await expect(page.locator('#wt-error-text')).toContainText('The microphone stopped or could not start.');
     await expect(page.locator('#wt-start')).toBeEnabled();
@@ -105,6 +107,7 @@ test.describe('walkie-talkie', () => {
       await page.goto(TOOL);
       await page.locator('#wt-room-name').fill(channelName);
       await page.locator('#wt-discover').uncheck();
+      await setVoiceApproval(page, 'walkie-talkie', false);
       await page.locator('#wt-start').click();
       await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
       await expectHostTransportBadge(page, 'direct');
@@ -203,6 +206,7 @@ test.describe('walkie-talkie', () => {
       await page.goto(TOOL);
       await page.locator('#wt-room-name').fill(channelName);
       await expect(page.locator('#wt-discover')).toBeChecked();
+      await setVoiceApproval(page, 'walkie-talkie', false);
       await page.locator('#wt-start').click();
       await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
       expect(await microphoneEnabled(page)).toBe(false);
@@ -353,6 +357,7 @@ test.describe('walkie-talkie', () => {
       };
       await page.locator('#wt-room-name').fill('QA lifecycle ' + test.info().workerIndex + '-' + Date.now());
       await page.locator('#wt-discover').uncheck();
+      await setVoiceApproval(page, 'walkie-talkie', false);
       await page.locator('#wt-start').click();
       await expect(page.locator('#wt-status-text')).toHaveText('Channel open. Hold to talk when you are ready.', { timeout: 20_000 });
       const invitation = await page.locator('#wt-link').inputValue();

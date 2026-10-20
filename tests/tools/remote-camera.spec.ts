@@ -2,6 +2,7 @@ import { test, expect, type Page, type BrowserContext } from '@playwright/test';
 import { discoverTools } from '../../lib/tools';
 import { BASE_URL, ETOOLBOX_DIR } from '../../lib/site';
 import { liveRendezvous } from '../../lib/rendezvous';
+import { unifiedPairingJoin } from '../../lib/pairing-approval';
 import fs from 'node:fs';
 import path from 'node:path';
 import { cameraHooks } from '../../lib/camera-fixtures';
@@ -296,10 +297,13 @@ async function requestListedCamera(viewer: Page, code: string, name: string) {
     discovery.receive({ type: 'shares', tool: 'remote-camera', list: [{ code, local: true }] });
   }, code);
   const camera = viewer.locator(selectNearby ? '#discovery-list button' : '#discovery-list a');
-  await expect(camera).toContainText(code);
+  if (unifiedPairingJoin) {
+    await expect(camera).toHaveText('Join');
+    await expect(camera).toHaveAccessibleName(new RegExp(code));
+  } else await expect(camera).toContainText(code);
   await camera.focus(); await camera.press('Enter');
   await expect(viewer.locator('#viewer-code')).toHaveValue(code);
-  if (selectNearby) {
+  if (selectNearby && !unifiedPairingJoin) {
     await expect(viewer.locator('#viewer-connect')).toBeFocused();
     expect(await viewer.evaluate(() => [...(window as any).__remoteCameraSockets.values()].filter((socket: any) => !socket.discovery).length)).toBe(0);
     expect(await viewer.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
@@ -439,6 +443,18 @@ test.describe('remote-camera: camera lifecycle', () => {
   test('a listed camera follows the shipped viewing request contract without capture', async ({ page }) => {
     await cameraHooks(page, 'deny', 'listed'); await page.goto(TOOL);
     const choice = page.locator(selectNearby ? '#discovery-list button' : '#discovery-list a');
+    if (unifiedPairingJoin) {
+      await expect(choice).toHaveText('Join');
+      expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length,
+        (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+      await choice.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+      await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
+      await expect(page.locator('#viewer-stop')).toBeVisible();
+      await expect(page.locator('#camera-discovery')).toBeHidden();
+      expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length,
+        (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 1]);
+      return;
+    }
     await expect(choice).toContainText('qa-listed-camera');
     if (directDiscovery) await choice.evaluate((link: HTMLElement) => { link.click(); link.click(); (document.querySelector('#viewer-connect') as HTMLButtonElement).click(); });
     else await choice.click();
@@ -470,13 +486,14 @@ test.describe('remote-camera: camera lifecycle', () => {
     if (selectNearby) {
       const choice = page.locator('#discovery-list button');
       const before = page.url();
-      await expect(choice).toContainText('qa-listed-camera');
+      if (unifiedPairingJoin) await expect(choice).toHaveText('Join');
+      else await expect(choice).toContainText('qa-listed-camera');
       await choice.focus(); await choice.press('Enter');
       await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
-      await expect(page.locator('#viewer-connect')).toBeFocused();
+      await expect(page.locator(unifiedPairingJoin ? '#viewer-stop' : '#viewer-connect')).toBeFocused();
       expect(page.url()).toBe(before);
       expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length,
-        (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, 0]);
+        (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, unifiedPairingJoin ? 1 : 0]);
       return;
     }
     const camera = page.locator('#discovery-list a'); await expect(camera).toHaveText('qa-listed-camera');

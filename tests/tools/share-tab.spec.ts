@@ -4,6 +4,7 @@ import { BASE_URL } from '../../lib/site';
 import { canFakeCamera } from '../../lib/engine';
 import { liveRendezvous } from '../../lib/rendezvous';
 import { compactTransport, expectTransportMode } from '../../lib/pairing-transport';
+import { unifiedPairingJoin, listedConnection, reviewPairingRequestLater } from '../../lib/pairing-approval';
 import {
   tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
   localTabOnly, noTabSockets,
@@ -26,6 +27,7 @@ async function foreground(page: Page) {
 async function approve(host: Page, viewer: Page, note: string) {
   const row = requestRow(host, note);
   await expect(row.locator('[data-action="host.approve"]')).toBeVisible({ timeout: 20_000 });
+  await reviewPairingRequestLater(host);
   await row.locator('[data-action="host.approve"]').click();
   await flowingTab(viewer);
 }
@@ -138,7 +140,7 @@ test.describe('share-tab: picker and terminal intent', () => {
     await expect(page.locator('#viewer-connect')).toBeEnabled();
   });
 
-  test('nearby browsing is explicit, selection only fills the code, and closing remains final', async ({ page, context }) => {
+  test('nearby browsing is passive until its Join action, and closing remains final', async ({ page, context }) => {
     const code = 'tab-abcdefghijklmnop';
     const broker = tabBroker({ discoveryList: [{ code, local: true },
       { code: 'camera-other-tool', local: true }, { code: 'tab-ponmlkjihgfedcba', local: false }] });
@@ -146,13 +148,20 @@ test.describe('share-tab: picker and terminal intent', () => {
     await expect(page.locator('#host-discoverable')).not.toBeChecked();
     await noTabSockets(page);
     await page.locator('#discovery-start').click();
-    const choice = page.locator('#discovery-list button').filter({ hasText: code });
+    const choice = listedConnection(page, code);
     await expect(choice).toBeVisible();
     await expect(page.locator('#discovery-list button')).toHaveCount(1);
     expect(broker.observed.urls.map((value) => new URL(value).pathname)).toEqual(['/discover']);
+    if (unifiedPairingJoin) await expect(choice).toHaveText('Join');
     await choice.click();
     await expect(page.locator('#viewer-code')).toHaveValue(code);
-    await expect(page.locator('#viewer-connect')).toBeFocused();
+    if (unifiedPairingJoin) {
+      await expect.poll(() => broker.observed.urls.filter(value => new URL(value).pathname.startsWith('/ws/')).length).toBe(1);
+      await expect(page.locator('#viewer-stop')).toBeVisible();
+      await page.locator('#viewer-stop').click();
+      await page.locator('#discovery-start').click();
+      await expect(choice).toBeVisible();
+    } else await expect(page.locator('#viewer-connect')).toBeFocused();
     expect(await page.evaluate(() => {
       const state = (window as any).__tabQA;
       return [state.peers.length, state.captures.length, state.userMedia];
@@ -203,6 +212,16 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await expect(row).toBeVisible({ timeout: 20_000 });
     await noTabMedia(page, viewer);
     expect(broker.observed.descriptions.filter((item) => item.type === 'offer').map((item) => item.media)).toEqual([['application']]);
+    if (unifiedPairingJoin) {
+      const dialog = page.locator('#pairing-request-dialog');
+      await expect(dialog).toBeVisible();
+      await expect(dialog.locator('[data-approval-name]')).toHaveText('ACK boundary viewer');
+      await expect(dialog.locator('[data-approval-later]')).toBeFocused();
+      await dialog.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(row).toBeVisible();
+      await noTabMedia(page, viewer);
+    }
     await row.locator('[data-action="host.approve"]').click();
     await expect.poll(() => viewer.evaluate(() => (window as any).__tabQA.ackHeld)).toBe(true);
     await expect(page.locator('#accepted-viewers')).toContainText('Waiting for video');
@@ -251,7 +270,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const room = broker.observed.urls.map((value) => new URL(value)).find((url) => url.searchParams.get('role') === 'host')!;
     expect({ local: room.searchParams.get('local'), discover: room.searchParams.get('discover') }).toEqual({ local: '1', discover: '1' });
     await broker.releaseHostReady();
-    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible();
+    await expect(listedConnection(observer, code)).toBeVisible();
     const publication = broker.observed.discoveryMessages.find((frame) => frame.publish)?.publish;
     expect(publication).toEqual({ code, lease: expect.any(String) });
     expect(Object.keys(publication).sort()).toEqual(['code', 'lease']);
@@ -284,7 +303,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const broker = tabBroker(); await tabHooks(context); await broker.install(context);
     const { code } = await startTabHost(page, true), observer = await context.newPage();
     await prepareTabPage(observer); await observer.locator('#discovery-start').click();
-    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible();
+    await expect(listedConnection(observer, code)).toBeVisible();
     if (ending === 'room failed') await broker.failHost(page);
     else await page.evaluate(() => {
       const track = (window as any).__tabQA.tracks[0] as MediaStreamTrack;
@@ -309,6 +328,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await requestTab(denied, code, 'Turned away viewer');
     await expect(page.locator('#viewer-requests li')).toHaveCount(3, { timeout: 20_000 });
     await noTabMedia(page, first); await noTabMedia(page, second); await noTabMedia(page, denied);
+    await reviewPairingRequestLater(page);
     await requestRow(page, 'Turned away viewer').locator('[data-action="host.deny"]').click();
     await expect(denied.locator('#viewer-status')).toContainText('turned away'); await stoppedTab(denied);
     await foreground(denied);
@@ -338,6 +358,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await expect(page.locator('#viewer-requests li')).toHaveCount(4);
     await expect(viewers[4].locator('#viewer-status')).toContainText('too many requests');
     for (const viewer of viewers) await noTabMedia(page, viewer);
+    await reviewPairingRequestLater(page);
     await page.locator('#host-stop').click(); await stoppedTab(page, true);
     for (const viewer of viewers) await stoppedTab(viewer);
   });
@@ -413,7 +434,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await page.locator('#host-stop').click(); await stoppedTab(viewer); await stoppedTab(page, true);
   });
 
-  test('live nearby discovery selects a code but Request, approval and ACK still precede native video', async ({ page, context }) => {
+  test('live nearby Join requests access in one step, while approval and ACK precede native video', async ({ page, context }) => {
     const endpoint = liveRendezvous('tools/share-tab/src/session.js');
     const host = new URL(BASE_URL).hostname;
     expect(host === 'localhost' || host === '127.0.0.1' || host === 'abox.tools' || host.endsWith('.abox-preview.pages.dev'),
@@ -423,12 +444,9 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await page.evaluate(() => { (window as any).__tabQA.note = 'Live namespace private note'; });
     await prepareTabPage(viewer); await noTabSockets(viewer);
     await viewer.locator('#discovery-start').click();
-    const choice = viewer.locator('#discovery-list button').filter({ hasText: code });
+    const choice = listedConnection(viewer, code);
     await expect(choice).toBeVisible({ timeout: 20_000 });
     expect(await page.evaluate(() => (window as any).__tabQA.peers.length)).toBe(0);
-    await choice.click();
-    await expect(viewer.locator('#viewer-code')).toHaveValue(code);
-    await expect(viewer.locator('#viewer-connect')).toBeFocused();
     expect(await viewer.evaluate(() => {
       const state = (window as any).__tabQA;
       return { peers: state.peers.length, captures: state.captures.length,
@@ -436,9 +454,13 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     })).toEqual({ peers: 0, captures: 0, paths: ['/discover'] });
     await viewer.evaluate(() => { (window as any).__tabQA.note = 'Live namespace private note'; });
     await viewer.locator('#viewer-name').fill('Live namespace private note');
-    await viewer.locator('#viewer-connect').click();
+    if (unifiedPairingJoin) await expect(choice).toHaveText('Join');
+    await choice.click();
+    await expect(viewer.locator('#viewer-code')).toHaveValue(code);
+    if (!unifiedPairingJoin) await viewer.locator('#viewer-connect').click();
     await expect(requestRow(page, 'Live namespace private note')).toBeVisible({ timeout: 20_000 });
     await noTabMedia(page, viewer);
+    await reviewPairingRequestLater(page);
     await requestRow(page, 'Live namespace private note').locator('[data-action="host.approve"]').click();
     await expect.poll(() => viewer.evaluate(() => (window as any).__tabQA.ackHeld)).toBe(true);
     await noTabMedia(page, viewer);
@@ -462,9 +484,9 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     await localTabOnly(page, viewer);
     await retiringLiveSockets(viewer, '/discover');
     const observer = await context.newPage(); await prepareTabPage(observer); await observer.locator('#discovery-start').click();
-    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toBeVisible({ timeout: 20_000 });
+    await expect(listedConnection(observer, code)).toBeVisible({ timeout: 20_000 });
     await page.locator('#host-stop').click(); await stoppedTab(page, true); await stoppedTab(viewer);
-    await expect(observer.locator('#discovery-list button').filter({ hasText: code })).toHaveCount(0, { timeout: 20_000 });
+    await expect(listedConnection(observer, code)).toHaveCount(0, { timeout: 20_000 });
     await retiringLiveSockets(page);
     await foreground(page);
     expect(await page.evaluate(() => (window as any).__tabQA.sockets.length)).toBe(2);

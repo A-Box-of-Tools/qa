@@ -30,6 +30,24 @@ The existing tool journeys still cover native pairing and its boundaries:
 - Voice Oncall: host naming, deliberate connection and talking, password
   refusal, moderation, quiet recovery and final disconnect/End.
 
+The current source makes every discovered connection a single Join action.
+Share Text opens a new reader tab, preserves the unsent draft, consumes a
+one-use consent handoff and sends a blank private request. Ordinary invitation
+links retain their confirmation. Tab and Camera Join immediately request access;
+Oncall asks for a password only when the listing requires one and never asks
+for a caller name. Source detection preserves the older production contracts.
+
+`tests/tools/voice-approval.spec.ts` verifies approval is on for new hosts,
+pending callers have no microphone, peer or forwarded SDP/ICE, and listeners
+receive no audio before approval. Review later and Escape keep requests in the
+list. Approved native audio, a pending sibling, denial, requester departure,
+late approval after End and repeated approval without recapture are exercised
+against the real introduction service. The discovery fixture supplies a row
+for the host's real invitation; it does not replace the worker or native media.
+Explicit development relay runs also verify the selected native candidate pair
+is relay-to-relay. Existing recovery/moderation cases disable approval so those
+tests continue isolating their original lifecycle contracts.
+
 Private discovery checks hover and keyboard explanations on the connection
 icons, their borderless appearance, and explicit connection consent. Live
 Direct hosts and native Cloud relay journeys verify that a started host shows
