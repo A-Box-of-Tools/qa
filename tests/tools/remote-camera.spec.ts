@@ -486,12 +486,20 @@ test.describe('remote-camera: camera lifecycle', () => {
     if (selectNearby) {
       const choice = page.locator('#discovery-list button');
       const before = page.url();
+      await page.evaluate(() => { (window as any).__cameraJoinDocument = true; });
       if (unifiedPairingJoin) await expect(choice).toHaveText('Join');
       else await expect(choice).toContainText('qa-listed-camera');
       await choice.focus(); await choice.press('Enter');
       await expect(page.locator('#viewer-code')).toHaveValue('qa-listed-camera');
       await expect(page.locator(unifiedPairingJoin ? '#viewer-stop' : '#viewer-connect')).toBeFocused();
-      expect(page.url()).toBe(before);
+      if (unifiedPairingJoin) {
+        const selected = new URL(before);
+        selected.search = '';
+        selected.searchParams.set('transport', 'direct');
+        selected.hash = 'qa-listed-camera';
+        expect(page.url()).toBe(selected.href);
+        expect(await page.evaluate(() => (window as any).__cameraJoinDocument === true)).toBe(true);
+      } else expect(page.url()).toBe(before);
       expect(await page.evaluate(() => [(window as any).__cameraQA.calls.length,
         (window as any).__cameraQA.sockets.filter((socket: any) => !socket.discovery).length])).toEqual([0, unifiedPairingJoin ? 1 : 0]);
       return;

@@ -3,7 +3,7 @@ import { BASE_URL } from '../../lib/site';
 import { withoutThirdParties } from '../../lib/engine';
 import { voiceApproval, reviewPairingRequestLater } from '../../lib/pairing-approval';
 import { chooseTransport, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
-import { voiceHooks, admitsLiveVoice, receivedAudio, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
+import { voiceHooks, admitsLiveVoice, receivedAudio, outputRms, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
 
 type VoiceTool = 'walkie-talkie' | 'voice-oncall';
 const prefix = (tool: VoiceTool) => tool === 'walkie-talkie' ? 'wt' : 'vi';
@@ -41,6 +41,29 @@ async function foreground(page: Page) {
   });
 }
 
+async function voiceTransportState(page: Page) {
+  return page.evaluate(async () => {
+    const peers: RTCPeerConnection[] = (window as any).__voiceQA?.peers ?? [];
+    const result = [];
+    for (const peer of peers) {
+      const entry = { connection: peer.connectionState, policy: peer.getConfiguration().iceTransportPolicy,
+        selected: [] as { local: string; remote: string; bytesSent: number; bytesReceived: number }[] };
+      const records: any[] = [];
+      try { (await peer.getStats()).forEach(row => records.push(row)); } catch {}
+      const byId = new Map(records.map(row => [row.id, row]));
+      const selectedIds = new Set(records.filter(row => row.type === 'transport').map(row => row.selectedCandidatePairId));
+      for (const pair of records.filter(row => row.type === 'candidate-pair'
+          && (selectedIds.has(row.id) || (row.nominated && row.state === 'succeeded')))) {
+        entry.selected.push({ local: byId.get(pair.localCandidateId)?.candidateType ?? 'unknown',
+          remote: byId.get(pair.remoteCandidateId)?.candidateType ?? 'unknown',
+          bytesSent: pair.bytesSent ?? 0, bytesReceived: pair.bytesReceived ?? 0 });
+      }
+      result.push(entry);
+    }
+    return result;
+  });
+}
+
 test('voice-oncall: a locked row asks only for its password, and dismissing it starts nothing', async ({ page }) => {
   test.skip(!voiceApproval('voice-oncall'), 'One-click voice approval is awaiting release.');
   await withoutThirdParties(page);
@@ -54,6 +77,12 @@ test('voice-oncall: a locked row asks only for its password, and dismissing it s
   for (const dismiss of ['cancel', 'escape']) {
     await join.click();
     await expect(page.locator('#vi-password-dialog')).toBeVisible();
+    expect(await page.locator('#vi-password-dialog').evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.left >= -1 && bounds.top >= -1
+        && bounds.right <= document.documentElement.clientWidth + 1
+        && bounds.bottom <= innerHeight + 1;
+    }), 'The password prompt fits the active desktop or phone viewport.').toBe(true);
     await expect(page.locator('#vi-join-password')).toBeFocused();
     await expect(page.locator('#vi-sender-name')).toHaveCount(0);
     if (dismiss === 'cancel') await page.locator('#vi-password-cancel').click();
@@ -153,22 +182,6 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await request.locator('[data-action="approve"]').click();
       await expect(request).toHaveCount(0);
       await expect(first.client.locator(`#${id}-status-text`)).toContainText('Connected.', { timeout: 30_000 });
-      if (mode === 'relay') for (const side of [host, first.client]) await expect.poll(() => side.evaluate(async () => {
-        const peers: RTCPeerConnection[] = (window as any).__voiceQA.peers;
-        if (!peers.length) return false;
-        for (const peer of peers) {
-          if (peer.getConfiguration().iceTransportPolicy !== 'relay') return false;
-          const stats = await peer.getStats();
-          const records: any[] = [];
-          stats.forEach(row => records.push(row));
-          const byId = new Map(records.map(row => [row.id, row]));
-          const selected = records.filter(row => row.type === 'transport' && row.selectedCandidatePairId)
-            .map(row => byId.get(row.selectedCandidatePairId));
-          if (!selected.length || !selected.every(pair => byId.get(pair.localCandidateId)?.candidateType === 'relay'
-              && byId.get(pair.remoteCandidateId)?.candidateType === 'relay')) return false;
-        }
-        return true;
-      }), { timeout: 20_000 }).toBe(true);
       const captures = await first.client.evaluate(() => (window as any).__voiceQA.calls.length);
       expect(captures).toBe(tool === 'voice-oncall' ? 1 : 0);
       await staleApprove!.evaluate((button: HTMLButtonElement) => button.click());
@@ -176,9 +189,23 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       if (tool === 'walkie-talkie' && await first.client.locator('#wt-playback-note').isVisible()) await first.client.locator('#wt-mute').click();
       const speaker = tool === 'walkie-talkie' ? host : first.client;
       const listener = tool === 'walkie-talkie' ? first.client : host;
+      const beforeAudio = await receivedAudio(listener);
+      const positiveAudio = async () => {
+        // Oncall plays through Web Audio while its native element stays muted;
+        // Chromium's RTP energy alone therefore cannot measure that output.
+        if (tool === 'voice-oncall') await expect.poll(() => outputRms(listener), { timeout: 20_000 }).toBeGreaterThan(0.01);
+        else await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(beforeAudio.energy);
+      };
       await speaker.locator(`#${id}-toggle`).click();
       await expect.poll(() => microphoneEnabled(speaker)).toBe(true);
-      await expect.poll(async () => (await receivedAudio(listener)).energy, { timeout: 20_000 }).toBeGreaterThan(0);
+      await positiveAudio();
+      await expect.poll(async () => (await receivedAudio(listener)).packets).toBeGreaterThan(beforeAudio.packets);
+      if (mode === 'relay') for (const side of [host, first.client]) await expect.poll(async () => {
+        const connected = (await voiceTransportState(side)).filter(peer => peer.connection === 'connected');
+        return connected.length > 0 && connected.every(peer => peer.policy === 'relay' && peer.selected.length > 0
+          && peer.selected.every(pair => pair.local === 'relay' && pair.remote === 'relay'
+            && pair.bytesSent > 0 && pair.bytesReceived > 0));
+      }, { timeout: 20_000 }).toBe(true);
       const second = await createClient();
       await expect(dialog).toBeVisible();
       await dialog.press('Escape');
@@ -190,7 +217,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await foreground(second.client);
       await privateUntilApproved(second.client, second.signals);
       await expect(request).toHaveCount(0);
-      await expect.poll(async () => (await receivedAudio(listener)).energy).toBeGreaterThan(0);
+      await positiveAudio();
       const third = await createClient();
       await expect(dialog).toBeVisible();
       await third.client.locator(`#${id}-leave`).click();
@@ -211,6 +238,11 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expectHostTransportRestored(host);
       await expect.poll(() => first.client.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
       await expect.poll(() => host.evaluate(() => (window as any).__voiceQA.tracks.every((track: MediaStreamTrack) => track.readyState === 'ended'))).toBe(true);
+    } catch (error) {
+      await test.info().attach('voice-approval-transports', { contentType: 'application/json',
+        body: JSON.stringify({ host: await voiceTransportState(host),
+          clients: await Promise.all(contexts.flatMap(context => context.pages()).map(client => voiceTransportState(client))) }) });
+      throw error;
     } finally {
       for (const context of contexts) await context.close();
     }

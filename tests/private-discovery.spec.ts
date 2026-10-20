@@ -257,7 +257,11 @@ for (const tool of tools) test(`${tool}: private discovery lists mixed routes wi
     await expect(action).toHaveAccessibleName(/Join .* via Cloud relay/);
     if (tool === 'share-text') {
       await page.locator('#text').fill('Keep this unsent draft');
+      const invitation = await action.getAttribute('href');
       [consentPage] = await Promise.all([context.waitForEvent('page'), action.click()]);
+      // The consent handoff opens an empty tab before navigating it. Waiting
+      // for that empty document's load event does not wait for the reader.
+      await expect.poll(() => consentPage.url() === invitation).toBe(true);
       await consentPage.waitForLoadState();
       await expect(page.locator('#text')).toHaveValue('Keep this unsent draft');
       expect(consentPage.url()).not.toContain(groupA);

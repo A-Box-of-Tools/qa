@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR, onProductionDomain } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
+import { unifiedPairingJoin } from '../lib/pairing-approval';
 import { compactTransport, privateDiscovery, chooseTransport, expectTransportMode, transportControl, revealTransportNote,
   type PairingAction } from '../lib/pairing-transport';
 
@@ -61,9 +62,16 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
       return typeof value === 'function' ? value.bind(target) : value;
     } }) : { getUserMedia: capture, getDisplayMedia: capture } });
   });
+  const expectIdleAction = async () => {
+    if (unifiedPairingJoin && tool.slug === 'voice-oncall') {
+      await expect(page.locator('#vi-join-form')).toBeHidden();
+      await expect(page.locator('#vi-join')).toBeHidden();
+      await expect(page.locator('#vi-tab-host')).toBeVisible();
+    } else await expect(page.locator(tool.action)).toBeVisible();
+  };
   await page.goto(`/${tool.slug}/${query}`);
   await expect(page.locator('[data-pairing-nearby]')).toBeVisible();
-  await expect(page.locator(tool.action)).toBeVisible();
+  await expectIdleAction();
   await expect(page.locator(removed)).toHaveCount(0);
   const toolConfig = path.join(ETOOLBOX_DIR, 'tools', tool.slug, 'tool.toml');
   const relayAvailable = fs.existsSync(toolConfig)
@@ -100,7 +108,7 @@ for (const tool of tools) for (const query of ['', '?pairing=offline']) test(`${
     }, online);
     await expect(page.locator(removed)).toHaveCount(0);
     await expect(page.locator('[data-pairing-nearby]')).toBeVisible();
-    await expect(page.locator(tool.action)).toBeVisible();
+    await expectIdleAction();
     if (relayAvailable) await expectTransportMode(page, 'direct', privateDiscovery ? undefined : tool.modeAction as PairingAction);
     expect(await page.evaluate(() => {
       const { rooms, captures, peers } = (window as any).__onlinePairing;

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ETOOLBOX_DIR } from '../lib/site';
 import { withoutThirdParties } from '../lib/engine';
 import { compactTransport, privateDiscovery, oneStepNearbyJoin, expectTransportMode, expectTransportNearAction, type PairingAction } from '../lib/pairing-transport';
+import { unifiedPairingJoin } from '../lib/pairing-approval';
 
 const tools = ['share-text', 'share-tab', 'walkie-talkie', 'voice-oncall', 'remote-camera'];
 const actions: Record<string, Partial<Record<PairingAction, string>>> = {
@@ -15,7 +16,7 @@ const actions: Record<string, Partial<Record<PairingAction, string>>> = {
 };
 const initialActions: Record<string, PairingAction[]> = {
   'share-text': ['host'], 'share-tab': ['host', 'join'], 'walkie-talkie': oneStepNearbyJoin ? ['host'] : ['nearby', 'host'],
-  'voice-oncall': ['join'], 'remote-camera': ['host', 'join'],
+  'voice-oncall': unifiedPairingJoin ? [] : ['join'], 'remote-camera': ['host', 'join'],
 };
 
 for (const tool of tools) test(`${tool}: nearby discovery comes before setup with readable Wi-Fi and hotspot guidance`, async ({ page }) => {
@@ -76,6 +77,13 @@ for (const tool of tools) test(`${tool}: nearby discovery comes before setup wit
     }
     for (const action of initialActions[tool]) await expectTransportNearAction(page, action, actions[tool][action]!);
     if (tool === 'voice-oncall') {
+      if (unifiedPairingJoin) {
+        await expect(page.locator('#vi-rooms .paired-nearby-row')).toHaveCount(0);
+        await expect(page.locator('#vi-empty')).toBeVisible();
+        await expect(page.locator('#vi-join-form')).toBeHidden();
+        await expect(page.locator('#vi-join')).toBeHidden();
+        await expect(page.locator('#vi-password-dialog')).toBeHidden();
+      }
       await page.locator('#vi-tab-host').click();
       await expectTransportNearAction(page, 'host', '#vi-start');
     }
