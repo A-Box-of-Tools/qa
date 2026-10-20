@@ -39,12 +39,16 @@ export async function expectRequestsNearHostControls(host: Page, control: string
   const requests = host.locator('[data-pairing-requests]');
   await expect(requests).toBeVisible();
   await host.locator(control).scrollIntoViewIfNeeded();
-  expect(await requests.evaluate((element, selector) => {
+  const bounds = await requests.evaluate((element, selector) => {
     const control = document.querySelector(selector)!.getBoundingClientRect();
     const request = element.getBoundingClientRect();
     const gap = Math.max(request.top - control.bottom, control.top - request.bottom, 0);
-    return request.width > 0 && request.left >= -1
-      && request.right <= document.documentElement.clientWidth + 1
-      && gap < innerHeight / 2;
-  }, control), 'Pending requests stay beside the main host action without horizontal overflow.').toBe(true);
+    return {
+      left: request.left, right: request.right, width: request.width,
+      gap, viewportWidth: document.documentElement.clientWidth, viewportHeight: innerHeight,
+    };
+  }, control);
+  expect(bounds.width > 0 && bounds.left >= -1 && bounds.right <= bounds.viewportWidth + 1
+    && bounds.gap < bounds.viewportHeight / 2,
+  `Pending requests stay beside ${control} without horizontal overflow: ${JSON.stringify(bounds)}`).toBe(true);
 }

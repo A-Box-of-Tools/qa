@@ -163,7 +163,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
       await expect(dialog).toBeHidden();
       const request = host.locator(`#${id}-requests [data-peer]`);
       await expect(request).toHaveCount(1);
-      await expectRequestsNearHostControls(host, `#${id}-end`);
+      await expectRequestsNearHostControls(host, tool === 'walkie-talkie' ? '#wt-hold' : '#vi-end');
       await privateUntilApproved(first.client, first.signals);
       await installVoiceLifecycle(first.client);
       await first.client.evaluate(() => {

@@ -234,19 +234,19 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await newTab.goto('about:blank');
       await requestTab(newTab, code, 'Removed browser');
       await expect(requestRow(page, 'Removed browser')).toBeVisible({ timeout: 20_000 });
-      await noTabMedia(page, newTab);
+      await noTabMedia(page, newTab, { afterReconnect: true });
       await reviewPairingRequestLater(page);
       await requestRow(page, 'Removed browser').locator('[data-action="host.deny"]').click(); await stoppedTab(newTab);
       await requestTab(newTab, code, 'Denied browser tries again');
       await expect(requestRow(page, 'Denied browser tries again')).toBeVisible({ timeout: 20_000 });
-      await noTabMedia(page, newTab);
+      await noTabMedia(page, newTab, { afterReconnect: true });
       await approve(page, newTab, 'Denied browser tries again');
       await newTab.locator('#viewer-stop').click(); await stoppedTab(newTab);
       await expect(page.locator('#accepted-panel')).toBeHidden();
       const other = await otherContext.newPage();
       await requestTab(other, code, 'Different browser');
       await expect(requestRow(page, 'Different browser')).toBeVisible({ timeout: 20_000 });
-      await noTabMedia(page, other);
+      await noTabMedia(page, other, { afterReconnect: true });
       await reviewPairingRequestLater(page);
       await other.locator('#viewer-stop').click(); await stoppedTab(other);
       await page.locator('#host-stop').click(); await stoppedTab(page, true);
@@ -254,7 +254,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
       await newTab.goto('about:blank');
       await requestTab(newTab, next.code, 'Same browser, new host');
       await expect(requestRow(page, 'Same browser, new host')).toBeVisible({ timeout: 20_000 });
-      await noTabMedia(page, newTab);
+      await noTabMedia(page, newTab, { afterReconnect: true });
       await approve(page, newTab, 'Same browser, new host');
       await page.locator('#host-stop').click(); await stoppedTab(newTab); await stoppedTab(page, true);
     } finally { await otherContext.close(); await readerContext.close(); }

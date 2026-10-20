@@ -316,11 +316,15 @@ async function requestListedCamera(viewer: Page, code: string, name: string) {
       const url = new URL(socket.url); return { tool: url.searchParams.get('tool'), role: url.searchParams.get('role'), code: url.pathname.split('/').pop() };
     }))).toEqual([{ tool: 'remote-camera', role: 'viewer', code }]);
 }
-async function approveCamera(source: Page, viewer: Page) {
+async function approveCamera(source: Page, viewer: Page, { afterReconnect = false } = {}) {
   await expect(source.locator('[data-action=approve]')).toBeVisible({ timeout: 20_000 });
   await reviewCameraRequestLater(source);
   expect(await viewer.evaluate(() => (window as any).__remoteCameraRTC.tracks.length)).toBe(0);
-  expect(await source.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.getSenders().every((sender) => !sender.track)))).toBe(true);
+  // Closed peers can retain their former sender tracks after a viewer leaves.
+  // Only reconnect journeys have that history; first admission stays stricter.
+  expect(await source.evaluate((afterReconnect) => (window as any).__remoteCameraRTC.peers
+    .every((peer: RTCPeerConnection) => (afterReconnect && peer.connectionState === 'closed')
+      || peer.getSenders().every((sender) => !sender.track)), afterReconnect)).toBe(true);
   expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject)).toBeNull();
   await source.locator('[data-action=approve]').click();
   await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.videoWidth), { timeout: 20_000 }).toBe(640);
@@ -674,7 +678,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await returning.goto('about:blank');
       await requestCamera(returning, code, 'Removed browser');
       await pendingCameraRequest(page, returning, 'Removed browser');
-      await approveCamera(page, returning);
+      await approveCamera(page, returning, { afterReconnect: true });
       await stopSharedCamera(page); await tracksStopped(page);
       await expect.poll(() => returning.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
       await page.locator('#camera-start').click();
@@ -682,7 +686,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await returning.goto('about:blank');
       await requestCamera(returning, code, 'Same code, new host session');
       await pendingCameraRequest(page, returning, 'Same code, new host session');
-      await approveCamera(page, returning);
+      await approveCamera(page, returning, { afterReconnect: true });
       expect(await returning.evaluate(() => (window as any).__cameraQA.calls.length)).toBe(0);
       await stopSharedCamera(page); await tracksStopped(page);
     } finally { await otherContext.close(); await readerContext.close(); }

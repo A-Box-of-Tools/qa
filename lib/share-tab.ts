@@ -363,8 +363,12 @@ export async function requestTab(page: Page, code: string, note: string) {
 
 export function requestRow(host: Page, note: string) { return host.locator('#viewer-requests li').filter({ hasText: note }); }
 
-export async function noTabMedia(host: Page, viewer: Page) {
-  expect(await host.evaluate(() => (window as any).__tabQA.peers.every((peer: RTCPeerConnection) => peer.getSenders().every((sender) => !sender.track)))).toBe(true);
+export async function noTabMedia(host: Page, viewer: Page, { afterReconnect = false } = {}) {
+  // Reconnect journeys retain historical closed peers in the instrumentation.
+  // An active peer must still have no media senders before approval.
+  expect(await host.evaluate((afterReconnect) => (window as any).__tabQA.peers
+    .every((peer: RTCPeerConnection) => (afterReconnect && peer.connectionState === 'closed')
+      || peer.getSenders().every((sender) => !sender.track)), afterReconnect)).toBe(true);
   expect(await viewer.evaluate(() => ({ tracks: (window as any).__tabQA.received.length,
     capture: (window as any).__tabQA.captures.length, userMedia: (window as any).__tabQA.userMedia }))).toEqual({ tracks: 0, capture: 0, userMedia: 0 });
   expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
