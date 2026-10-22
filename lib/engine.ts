@@ -245,7 +245,8 @@ export async function onAPageOfItsOwn<T>(page: Page, work: (scratch: Page) => Pr
     await scratch.goto('/');
     return await work(scratch);
   } finally {
-    void scratch.close().catch(() => {});
+    // Context-wide setup also visits this page; it must not race its teardown.
+    await scratch.close().catch(() => {});
   }
 }
 
