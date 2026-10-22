@@ -1,9 +1,17 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { ETOOLBOX_DIR } from './site';
 import { withoutThirdParties } from './engine';
 import { liveRendezvous } from './rendezvous';
 import { movingVideo } from './camera-fixtures';
 
 export const SHARE_TAB = '/share-tab/';
+const tabSession = path.join(ETOOLBOX_DIR, 'tools', 'share-tab', 'src', 'session.js');
+// Pin the expected handshake to the checked-out source, not whichever frames
+// happened to arrive. Older production pages still send one opening hello.
+export const tabGreetingEcho = fs.existsSync(tabSession)
+  && fs.readFileSync(tabSession, 'utf8').includes("from './shared/peer-greeting.js'");
 export type CaptureMode = 'allow' | 'denied' | 'cancelled' | 'pending' | 'window' | 'monitor' | 'unknown';
 
 /** Only the picker result is supplied. Tracks, codecs, RTP, SCTP and peers stay native. */
