@@ -6,7 +6,7 @@ import { liveRendezvous } from '../../lib/rendezvous';
 import { compactTransport, expectTransportMode } from '../../lib/pairing-transport';
 import { unifiedPairingJoin, sessionApproval, listedConnection, reviewPairingRequestLater, expectRequestsNearHostControls } from '../../lib/pairing-approval';
 import {
-  tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow,
+  tabHooks, tabBroker, prepareTabPage, startTabHost, requestTab, requestRow, tabGreetingEcho,
   localTabOnly, noTabSockets,
   noTabMedia, flowingTab, stoppedTab, type CaptureMode,
 } from '../../lib/share-tab';
@@ -319,10 +319,13 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const { code } = await startTabHost(page), viewer = await context.newPage();
     await requestTab(viewer, code, 'Open callback ordering');
     await expect(requestRow(page, 'Open callback ordering')).toBeVisible({ timeout: 20_000 });
-    expect(await viewer.evaluate(() => (window as any).__tabQA.controls.slice(0, 2).map((item: any) => item.type))).toEqual(['hello', 'request']);
+    const expectedControls = tabGreetingEcho ? ['hello', 'hello', 'request'] : ['hello', 'request'];
+    expect(await viewer.evaluate(() => (window as any).__tabQA.controls.map((item: any) => item.type))).toEqual(expectedControls);
     expect(await viewer.evaluate(() => (window as any).__tabQA.delayedOpenReplayed)).toBe(1);
-    expect(await viewer.evaluate(() => (window as any).__tabQA.controls.filter((item: any) => item.type === 'hello').length)).toBe(1);
+    await noTabMedia(page, viewer);
     await approve(page, viewer, 'Open callback ordering');
+    expect(await viewer.evaluate(() => (window as any).__tabQA.controls.filter((item: any) => item.type === 'hello').length)).toBe(tabGreetingEcho ? 2 : 1);
+    expect(await viewer.evaluate(() => (window as any).__tabQA.controls.filter((item: any) => item.type === 'request').length)).toBe(1);
     await page.locator('#host-stop').click(); await stoppedTab(viewer); await stoppedTab(page, true);
   });
 
