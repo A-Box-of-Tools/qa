@@ -464,13 +464,33 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ contains(matrix.project, 'Safari') && 'chromium-webkit' || 'chromium' }}
 
+      # The Azure mirror can keep making progress too slowly for APT's idle
+      # timeout to help. Prefer Ubuntu's HTTPS archive while retaining the
+      # image's official fallbacks and its existing signed source definitions.
+      - name: Prefer Ubuntu's primary package archive
+        if: runner.os == 'Linux' && steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
+        run: |
+          set -euo pipefail
+          if ! grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources; then
+            echo '::error::The runner no longer uses the expected Ubuntu mirror list.'
+            exit 1
+          fi
+          printf '%s\tpriority:%s\n' \
+            'https://archive.ubuntu.com/ubuntu/' 1 \
+            'https://security.ubuntu.com/ubuntu/' 2 \
+            'http://azure.archive.ubuntu.com/ubuntu/' 3 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+          apt-config shell QA_APT_RETRIES Acquire::Retries QA_APT_HTTP_TIMEOUT Acquire::http::Timeout QA_APT_HTTPS_TIMEOUT Acquire::https::Timeout
+
       # The engine this slice runs, and Chromium either way: a WebKit slice
       # still needs it, because lib/browser-video.ts borrows Chromium to
       # record the video fixtures WebKit cannot. On iOS every browser is
       # WebKit, Chrome included, so the WebKit slices are not a luxury - they
       # are what an iPhone visitor actually gets - but a Chrome slice has no
       # use for a WebKit download, and each engine is a minute of setup.
-      - if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
+      - name: Install Playwright browsers and system dependencies
+        if: steps.slice.outputs.wanted == 'yes' && !matrix.compatibility
+        timeout-minutes: 15
         run: npx playwright install --with-deps ${{ contains(matrix.project, 'Safari') && 'chromium webkit' || 'chromium' }}
 
       # A failure-only rerun must use the original full versions, even if
