@@ -915,6 +915,7 @@ test.describe('remote-camera: native WebRTC media', () => {
   test('blocked automatic audio falls back to flowing muted video and a viewer can unmute', async ({ page, context, browser }) => {
     test.setTimeout(60_000); const broker = localRendezvous(), viewerContext = await browser.newContext({ baseURL: BASE_URL });
     try {
+      await cameraClipboard(context); await cameraClipboard(viewerContext);
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext);
       const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page);
       test.skip(await page.locator('#viewer-video-frame').count() === 0, 'Automatic audio is awaiting the website release.');
@@ -944,6 +945,9 @@ test.describe('remote-camera: native WebRTC media', () => {
       expect(await viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.muted)).toBe(false);
       await stopSharedCamera(page); await tracksStopped(page);
       await expect.poll(() => viewer.locator('#remote-video').evaluate((video: HTMLVideoElement) => video.srcObject === null)).toBe(true);
+    } catch (error) {
+      if (test.info().expectedStatus !== 'skipped') await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+      throw error;
     } finally { await viewerContext.close(); }
   });
   test('three viewers have independent consent, video budgets, microphone playback and host disconnect controls', async ({ page, context, browser }) => {
@@ -1184,6 +1188,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       test.setTimeout(60_000); const broker = localRendezvous();
       const viewerContext = await browser.newContext({ baseURL: BASE_URL });
       try {
+        if (permission === 'denied') { await cameraClipboard(context); await cameraClipboard(viewerContext); }
         await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext);
         const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await notificationHooks(viewer, permission === 'unsupported' ? 'denied' : permission); await sourcePage(page);
         if (permission === 'unsupported') await viewer.addInitScript(() => {
@@ -1229,6 +1234,9 @@ test.describe('remote-camera: native WebRTC media', () => {
         expect(await viewer.evaluate(() => [(window as any).__cameraNotifications.requests, (window as any).__cameraNotifications.shown.length])).toEqual([permission === 'unsupported' ? 0 : 1, 0]);
         await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
         await page.locator('#camera-stop').click(); await tracksStopped(page);
+      } catch (error) {
+        if (permission === 'denied' && test.info().expectedStatus !== 'skipped') await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+        throw error;
       } finally { await viewerContext.close(); }
     });
   }
@@ -1411,7 +1419,7 @@ test.describe('remote-camera: native WebRTC media', () => {
     const viewerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     const otherContext = await browser.newContext({ baseURL: BASE_URL });
     try {
-      await cameraClipboard(context); await cameraClipboard(viewerContext);
+      await cameraClipboard(context); await cameraClipboard(viewerContext); await cameraClipboard(otherContext);
       await cameraHooks(page, 'allow', 'broker'); await broker.install(context); await broker.install(viewerContext); await broker.install(otherContext);
       const viewer = await viewerContext.newPage(); await withoutThirdParties(viewer); await sourcePage(page);
       await page.locator('#camera-name').fill('QA Camera Room'); await page.locator('#camera-start').click();
@@ -1436,7 +1444,7 @@ test.describe('remote-camera: native WebRTC media', () => {
       await expect.poll(() => viewer.evaluate(() => (window as any).__remoteCameraRTC.peers.every((peer: RTCPeerConnection) => peer.connectionState === 'closed'))).toBe(true);
       await page.locator('#camera-stop').click(); await tracksStopped(page);
     } catch (error) {
-      await attachCameraFailureReports(page, [viewerContext]).catch(() => {});
+      if (test.info().expectedStatus !== 'skipped') await attachCameraFailureReports(page, [viewerContext, otherContext]).catch(() => {});
       throw error;
     } finally { await otherContext.close(); await viewerContext.close(); }
   });
