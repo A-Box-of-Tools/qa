@@ -106,31 +106,41 @@ async function attachCameraFailureReports(camera: Page, contexts: BrowserContext
     .slice(0, 16).map((page, index) => [`viewer${index + 1}`, page])) };
   const collect = async () => {
     const reports: Record<string, unknown> = {};
+    const nativeChannels: Record<string, unknown> = {};
     for (const [role, page] of Object.entries(pages)) {
       try {
         if (page.isClosed()) { reports[role] = { closed: true }; continue; }
-        const text = await page.evaluate(() => {
+        const captured = await page.evaluate(() => {
           const clipboard = (window as any).__cameraClipboard;
           const button = document.querySelector<HTMLButtonElement>('#connection-copy');
-          if (!clipboard || !button) return null;
-          const before = clipboard.writes.length;
-          button.click();
-          return clipboard.writes.length > before ? clipboard.writes.at(-1) as string : null;
+          let text: string | null = null;
+          if (clipboard && button) {
+            const before = clipboard.writes.length;
+            button.click();
+            text = clipboard.writes.length > before ? clipboard.writes.at(-1) as string : null;
+          }
+          return { text, native: (window as any).__cameraNativeChannels ?? null };
         });
+        if (captured.native?.schema === 1 && Array.isArray(captured.native.events) && captured.native.events.length <= 128) nativeChannels[role] = captured.native;
+        const text = captured.text;
         if (!text || text.length > 512_000) { reports[role] = { unavailable: true }; continue; }
         const report = JSON.parse(text);
         reports[role] = report.schema === 1 && report.tool === 'remote-camera'
           && Array.isArray(report.attempts) && report.attempts.length <= 12 ? report : { unavailable: true };
       } catch { reports[role] = { unavailable: true }; }
     }
-    return reports;
+    return { reports, nativeChannels };
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const reports = await Promise.race([collect(), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 2_000); })]);
   clearTimeout(timer);
   if (!reports) return;
   await test.info().attach('camera-product-connection-reports', {
-    body: JSON.stringify({ schema: 1, browserProject: test.info().project.name, reports }, null, 2),
+    body: JSON.stringify({ schema: 1, browserProject: test.info().project.name, reports: reports.reports }, null, 2),
+    contentType: 'application/json',
+  });
+  if (Object.keys(reports.nativeChannels).length) await test.info().attach('camera-native-channel-order', {
+    body: JSON.stringify({ schema: 1, browserProject: test.info().project.name, pages: reports.nativeChannels }, null, 2),
     contentType: 'application/json',
   });
 }
@@ -242,10 +252,75 @@ function localRendezvous() {
     await context.addInitScript(() => {
       const socketMap = (window as any).__remoteCameraSockets = new Map();
       const rtc = (window as any).__remoteCameraRTC = { peers: [] as RTCPeerConnection[], tracks: [] as MediaStreamTrack[] };
+      // Record only native channel ordering and allowlisted metadata. No frame,
+      // viewer note, admission token, SDP or address enters this failure record.
+      const native = (window as any).__cameraNativeChannels = { schema: 1, incoming: 0, created: 0, dropped: 0, events: [] as Record<string, unknown>[] };
+      const channels = new WeakMap<RTCDataChannel, number>();
+      const started = performance.now();
+      let channelSerial = 0, eventSerial = 0;
+      const record = (peer: number, channel: RTCDataChannel | null, event: string, metadata: Record<string, unknown> = {}) => {
+        const sequence = ++eventSerial;
+        if (native.events.length >= 128) { native.dropped++; return; }
+        native.events.push({ sequence, elapsedMs: Math.round(performance.now() - started), peer, event,
+          ...(channel ? { channel: channels.get(channel), label: channel.label === 'camera-control' ? 'camera-control' : 'other',
+            ordered: channel.ordered, negotiated: channel.negotiated, id: channel.id, readyState: channel.readyState } : {}), ...metadata });
+      };
+      const frame = (data: unknown) => {
+        let type = 'other', protocolValid = false, jsonValid = false, noteString = false, noteWithinLimit = false, tokenPresent = false, tokenValid = false;
+        if (typeof data === 'string' && data.length <= 1024) {
+          try {
+            const parsed = JSON.parse(data);
+            jsonValid = true;
+            protocolValid = parsed?.protocol === 'remote-camera-v1';
+            if (['hello', 'request', 'approved', 'approval-ack', 'denied', 'busy', 'ended'].includes(parsed?.type)) type = parsed.type;
+            noteString = typeof parsed?.note === 'string';
+            noteWithinLimit = noteString && parsed.note.length <= 80;
+            tokenPresent = parsed?.token !== undefined;
+            tokenValid = typeof parsed?.token === 'string' && (/^[a-f0-9]{64}$/.test(parsed.token)
+              || /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(parsed.token));
+          } catch { /* Invalid frames are identified without retaining their contents. */ }
+        }
+        return { type, protocolValid, jsonValid, noteString, noteWithinLimit, tokenPresent, tokenValid,
+          stringLength: typeof data === 'string' ? data.length : null,
+          dataKind: typeof data === 'string' ? 'string' : data instanceof Blob || data instanceof ArrayBuffer || ArrayBuffer.isView(data) ? 'binary' : 'other' };
+      };
+      const watch = (peer: number, channel: RTCDataChannel, event: 'created' | 'incoming') => {
+        native[event]++;
+        if (channels.has(channel)) { record(peer, channel, `${event}-again`); return; }
+        channels.set(channel, ++channelSerial);
+        record(peer, channel, event);
+        channel.addEventListener('message', event => record(peer, channel, 'message', frame(event.data)));
+        for (const event of ['open', 'closing', 'close']) channel.addEventListener(event, () => record(peer, channel, event));
+        channel.addEventListener('error', () => record(peer, channel, 'error'));
+        const send = channel.send;
+        Object.defineProperty(channel, 'send', { configurable: true, writable: true, value: function (this: RTCDataChannel, data: unknown) {
+          record(peer, channel, 'send-attempt', frame(data));
+          try {
+            const result = Reflect.apply(send, this, [data]);
+            record(peer, channel, 'send-return');
+            return result;
+          } catch (error) {
+            const name = error instanceof Error && ['OperationError', 'InvalidStateError', 'TypeError'].includes(error.name) ? error.name : 'other';
+            record(peer, channel, 'send-error', { error: name });
+            throw error;
+          }
+        } });
+      };
       const NativePeer = window.RTCPeerConnection;
       if (NativePeer) window.RTCPeerConnection = new Proxy(NativePeer, { construct(target, args) {
         const peer = Reflect.construct(target, args) as RTCPeerConnection; rtc.peers.push(peer);
-        peer.addEventListener('track', (event) => rtc.tracks.push(event.track)); return peer;
+        const ordinal = rtc.peers.length;
+        peer.addEventListener('datachannel', event => watch(ordinal, event.channel, 'incoming'));
+        const create = peer.createDataChannel;
+        Object.defineProperty(peer, 'createDataChannel', { configurable: true, writable: true, value: function (this: RTCPeerConnection, ...args: Parameters<RTCPeerConnection['createDataChannel']>) {
+          const channel = Reflect.apply(create, this, args) as RTCDataChannel;
+          watch(ordinal, channel, 'created');
+          return channel;
+        } });
+        peer.addEventListener('track', (event) => {
+          rtc.tracks.push(event.track);
+          record(ordinal, null, 'track', { kind: ['audio', 'video'].includes(event.track.kind) ? event.track.kind : 'other' });
+        }); return peer;
       } });
       let serial = 0;
       class BrokerSocket extends EventTarget {
