@@ -55,6 +55,13 @@ npm install
 npx playwright install chromium webkit
 ```
 
+Linux browser jobs use `ubuntu-24.04`, including the development relay
+workflow. The locked WebKit build needs that distribution's ICU 74 and
+libxml2 ABI; an automatic move to Ubuntu 26.04 prevents the browser from
+starting before any tool can be tested. Browser caches include the runner
+image and architecture. Update the image deliberately with the browser
+dependencies and verify both WebKit projects before changing this pin.
+
 ## Running
 
 By default this builds and serves the sibling `../etoolbox` checkout itself

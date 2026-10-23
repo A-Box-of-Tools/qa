@@ -324,7 +324,9 @@ jobs:
 
   test:
     needs: announce
-    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    # The locked WebKit build needs Ubuntu 24.04's ICU 74 and libxml2 ABI.
+    # A moving runner label can remove those libraries without a code change.
+    runs-on: ${{ matrix.runner || 'ubuntu-24.04' }}
     name: test (${{ matrix.slice }})
     defaults:
       run:
@@ -462,7 +464,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ contains(matrix.project, 'Safari') && 'chromium-webkit' || 'chromium' }}
+          key: playwright-${{ matrix.runner || 'ubuntu-24.04' }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ contains(matrix.project, 'Safari') && 'chromium-webkit' || 'chromium' }}
 
       # The Azure mirror can keep making progress too slowly for APT's idle
       # timeout to help. Prefer Ubuntu's HTTPS archive while retaining the
