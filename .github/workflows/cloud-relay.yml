@@ -20,9 +20,9 @@ on:
       host_os:
         description: Standard runner; macOS can distinguish Apple playback from Linux WebKit media limitations
         required: false
-        default: ubuntu-latest
+        default: ubuntu-24.04
         type: choice
-        options: [ubuntu-latest, macos-15]
+        options: [ubuntu-24.04, macos-15]
       case_filter:
         description: Optional Playwright title filter for investigating a failed case
         required: false
@@ -38,7 +38,8 @@ concurrency:
 
 jobs:
   relay:
-    runs-on: ${{ inputs.host_os == 'macos-15' && 'macos-15' || 'ubuntu-latest' }}
+    # Keep the Linux image compatible with the locked native browser builds.
+    runs-on: ${{ inputs.host_os == 'macos-15' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 35
     env:
       BASE_URL: ${{ inputs.base_url }}
