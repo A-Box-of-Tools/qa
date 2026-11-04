@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { test, expect, type Page } from '@playwright/test';
-import { quiet } from '../../lib/engine';
+import { keepsFilesInStorage, quiet } from '../../lib/engine';
+import { ETOOLBOX_DIR } from '../../lib/site';
+import { discoverTools } from '../../lib/tools';
 
 /**
  * Tool-level functional tests for the comparer.
@@ -308,3 +310,96 @@ for (const edit of ['untouched CRLF', 'edited text', 'swapped sides'] as const) 
     }
   });
 }
+
+// Both of these landed on the website before they reached production. They ask
+// the checkout rather than a date, so the cases below start running by themselves
+// on whichever deployment first carries the behaviour.
+const REFUSES_BAD_TEXT = fs.readFileSync(path.join(ETOOLBOX_DIR, 'shared', 'js', 'text-import.js'), 'utf8')
+  .includes('fatal: true');
+const CARRIES_TABLES = discoverTools().includes('stitch-tables');
+
+test.describe('text-diff: files it cannot read', () => {
+  test.skip(!REFUSES_BAD_TEXT, 'this site does not refuse undecodable text yet');
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto(URL_PATH);
+  });
+
+  const pick = (page: Page, left: Buffer, right: Buffer) => page.locator('#file-input').setInputFiles([
+    { name: 'original.txt', mimeType: 'text/plain', buffer: left },
+    { name: 'changed.txt', mimeType: 'text/plain', buffer: right },
+  ]);
+
+  // The silent failure this file exists for. Decoded with replacement characters,
+  // each of these pairs is one string, and the page called them identical.
+  for (const [encoding, left, right] of [
+    ['Windows-1252', Buffer.from('Müller\n', 'latin1'), Buffer.from('Möller\n', 'latin1')],
+    ['GBK', Buffer.from([0xd5, 0xc5, 0xc8, 0xfd, 0x0a]), Buffer.from([0xc0, 0xee, 0xcb, 0xc4, 0x0a])],
+  ] as const) {
+    test(`two different ${encoding} files are refused, never called identical`, async ({ page }) => {
+      await pick(page, left, right);
+      await expect(page.locator('#error')).toBeVisible();
+      await expect(page.locator('#result-note')).not.toHaveText(SAYS_SAME);
+      await expect(page.locator('#input'), 'a damaged text reached the box').toHaveValue('');
+      await expect(page.locator('#input-b'), 'a damaged text reached the box').toHaveValue('');
+    });
+  }
+
+  test('the same two names in UTF-8 are compared, so the refusal is about the encoding', async ({ page }) => {
+    await pick(page, Buffer.from('Müller\n', 'utf8'), Buffer.from('Möller\n', 'utf8'));
+    await expect(page.locator('#diff-view .diff-table')).toBeVisible();
+    await expect(page.locator('#error')).toBeHidden();
+    await expect(page.locator('#result-note')).not.toHaveText(SAYS_SAME);
+  });
+
+  test('files marked as UTF-16 are read as what they say they are', async ({ page }) => {
+    const utf16 = (text: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    await pick(page, utf16('Müller\n'), utf16('Möller\n'));
+    await expect(page.locator('#input')).toHaveValue('Müller\n');
+    await expect(page.locator('#input-b')).toHaveValue('Möller\n');
+    await expect(page.locator('#result-note')).not.toHaveText(SAYS_SAME);
+  });
+});
+
+test.describe('text-diff: carrying two tables on to Stitch Tables', () => {
+  test.skip(!CARRIES_TABLES, 'this site does not ship stitch-tables yet');
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto(URL_PATH);
+  });
+
+  test('text that merely contains commas is not offered the hand-off', async ({ page }) => {
+    const offer = page.locator('#csv-pipeline');
+    for (const [left, right] of [
+      ['Dear team, thanks for the update.\nThe meeting moved to Friday, at noon.\n',
+        'Dear team, thanks for the quick update.\nThe meeting moved to Thursday, at noon.\n'],
+      ['function add(a, b) {\n  return a + b;\n}\n', 'function add(a, b) {\n  return a - b;\n}\n'],
+      ['apples, pears\nmilk, eggs\n', 'apples, plums\nmilk, eggs\n'],
+    ]) {
+      await compare(page, left, right);
+      await expect(offer, `offered to stitch: ${left}`).toBeHidden();
+    }
+
+    // Control: the offer does exist, and still appears for what it is meant for.
+    await compare(page, 'id,name\n1,Ada\n', 'id,name\n1,Adele\n');
+    await expect(offer).toBeVisible();
+  });
+
+  test('two CSV sources arrive in order, already read, and only once', async ({ page }) => {
+    test.skip(!await keepsFilesInStorage(page), 'this engine cannot preserve a File in storage');
+
+    const original = 'id,name\n1,Ada\n2,Bo\n';
+    const changed = 'id,team\n1,Blue\n3,Gold\n';
+    await compare(page, original, changed);
+    await page.locator('#stitch-tables').click();
+    await page.waitForURL('**/stitch-tables/');
+
+    await expect(page.locator('#input-a'), 'the original did not become table A').toHaveValue(original);
+    await expect(page.locator('#input-b'), 'the changed text did not become table B').toHaveValue(changed);
+    await expect(page.locator('#stitch'), 'the pair arrived but was not read').toBeEnabled();
+    await expect(page.locator('#status-a')).toContainText('Rows: 2');
+
+    await page.goto('/stitch-tables/');
+    await expect(page.locator('#input-a'), 'the transfer was delivered a second time').toHaveValue('');
+  });
+});
