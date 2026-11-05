@@ -8,6 +8,7 @@ import path from 'node:path';
 import { cameraHooks } from '../../lib/camera-fixtures';
 import { observePairing, attachPairingDiagnostics } from '../../lib/pairing-diagnostics';
 import { canFakeCamera, hasCameraInterface, withoutThirdParties } from '../../lib/engine';
+import { reserveRendezvous } from '../../lib/rendezvous-pacing';
 
 const TOOL = '/remote-camera/';
 const exists = discoverTools().includes('remote-camera');
@@ -1539,6 +1540,7 @@ test.describe('remote-camera: native WebRTC media', () => {
     test.setTimeout(60_000);
     const host = new URL(BASE_URL).hostname;
     test.skip(!['localhost', '127.0.0.1', 'abox.tools'].includes(host) && !host.endsWith('.abox-preview.pages.dev'), 'The public rendezvous does not admit this test origin.');
+    await reserveRendezvous(4);
     const endpoint = new URL(liveRendezvous('tools/remote-camera/src/session.js')).origin;
     const frames: string[] = [];
     const watch = (page: Page) => page.on('websocket', (socket) => {

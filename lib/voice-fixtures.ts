@@ -1,11 +1,8 @@
 import { expect, type Page } from '@playwright/test';
-import { BASE_URL } from './site';
-import { liveRendezvous } from './rendezvous';
+import { liveRendezvous, rendezvousAdmitsThisOrigin } from './rendezvous';
 
 export function admitsLiveVoice(): boolean {
-  const url = new URL(BASE_URL);
-  return url.origin === 'https://abox.tools' || ['localhost', '127.0.0.1'].includes(url.hostname)
-    || (url.protocol === 'https:' && url.hostname.endsWith('.abox-preview.pages.dev'));
+  return rendezvousAdmitsThisOrigin();
 }
 
 export function liveVoiceEndpoint(): string {

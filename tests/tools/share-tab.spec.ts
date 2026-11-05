@@ -10,6 +10,7 @@ import {
   localTabOnly, noTabSockets,
   noTabMedia, flowingTab, stoppedTab, type CaptureMode,
 } from '../../lib/share-tab';
+import { reserveRendezvous } from '../../lib/rendezvous-pacing';
 
 const TOOL = '/share-tab/';
 const exists = discoverTools().includes(TOOL.slice(1, -1));
@@ -508,6 +509,7 @@ test.describe('share-tab: native pairing, approval and live video', () => {
     const host = new URL(BASE_URL).hostname;
     expect(host === 'localhost' || host === '127.0.0.1' || host === 'abox.tools' || host.endsWith('.abox-preview.pages.dev'),
       'The live worker smoke requires an admitted HTTPS preview or loopback origin').toBe(true);
+    await reserveRendezvous(5);
     await tabHooks(context, { live: true, holdAck: true });
     const { code } = await startTabHost(page, true), viewer = await context.newPage();
     await page.evaluate(() => { (window as any).__tabQA.note = 'Live namespace private note'; });

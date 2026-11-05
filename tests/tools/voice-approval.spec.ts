@@ -4,6 +4,7 @@ import { withoutThirdParties } from '../../lib/engine';
 import { voiceApproval, sessionApproval, reviewPairingRequestLater, expectRequestsNearHostControls } from '../../lib/pairing-approval';
 import { chooseTransport, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
 import { voiceHooks, admitsLiveVoice, receivedAudio, outputRms, microphoneEnabled, installVoiceLifecycle } from '../../lib/voice-fixtures';
+import { reserveRendezvous } from '../../lib/rendezvous-pacing';
 
 type VoiceTool = 'walkie-talkie' | 'voice-oncall';
 const prefix = (tool: VoiceTool) => tool === 'walkie-talkie' ? 'wt' : 'vi';
@@ -105,6 +106,7 @@ for (const tool of ['walkie-talkie', 'voice-oncall'] as const) {
     test.skip(mode === 'direct' && process.env.RUN_CLOUD_RELAY === '1', 'The ordinary preview run covers Direct.');
     if (mode === 'relay') expect(new URL(BASE_URL).hostname.endsWith('.abox-preview.pages.dev')).toBe(true);
     test.setTimeout(150_000);
+    await reserveRendezvous(10);
     const id = prefix(tool), name = `QA approval ${test.info().workerIndex}-${Date.now()}`;
     const contexts: BrowserContext[] = [];
     await withoutThirdParties(host);
@@ -333,6 +335,7 @@ test('voice-oncall: denied microphone permission is requested only after approva
   test.skip(browserName !== 'chromium' || !admitsLiveVoice(), 'The live approval handshake runs in Chromium on admitted origins.');
   test.skip(process.env.RUN_CLOUD_RELAY === '1', 'The ordinary preview run covers capture refusal.');
   test.setTimeout(60_000);
+  await reserveRendezvous(2);
   const context = await browser.newContext({ baseURL: BASE_URL });
   try {
     const sender = await context.newPage();
