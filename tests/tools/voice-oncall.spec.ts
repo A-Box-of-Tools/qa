@@ -7,6 +7,7 @@ import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
 import { privateDiscovery } from '../../lib/pairing-transport';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, outputRms, voiceSnapshot, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
+import { reserveRendezvous } from '../../lib/rendezvous-pacing';
 
 const TOOL = '/voice-oncall/';
 const exists = discoverTools().includes('voice-oncall');
@@ -137,6 +138,7 @@ test.describe('voice-oncall', () => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(150_000);
+    await reserveRendezvous(11);
     const endpoint = liveVoiceEndpoint();
     const password = 'QA-only-voice-pager-4c8a';
     const senderContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
@@ -341,6 +343,7 @@ test.describe('voice-oncall', () => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(150_000);
+    await reserveRendezvous(10);
     const pagerName = `QA removal ${test.info().workerIndex}-${Date.now()}`;
     const senderContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {

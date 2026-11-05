@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { test, expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
-import { onProductionDomain } from '../../lib/site';
-import { liveRendezvous } from '../../lib/rendezvous';
+import { liveRendezvous, rendezvousAdmitsThisOrigin } from '../../lib/rendezvous';
+import { reserveRendezvous } from '../../lib/rendezvous-pacing';
+import { NO_ROUTE_TO_ITSELF, runnerReachesItself } from '../../lib/runner-network';
 import { unifiedPairingJoin, sessionApproval, reviewPairingRequestLater, expectRequestsNearHostControls } from '../../lib/pairing-approval';
 
 /**
@@ -77,43 +78,6 @@ function captureRendezvous(page: Page): string[] {
   return frames;
 }
 
-/**
- * Does the rendezvous admit the origin this page is served from?
- *
- * The worker takes a socket only from the site's own origin, localhost, and
- * the pull-request previews it has been told about (workers/rendezvous/
- * worker.js, `fromOurPage`); anything else is refused before the upgrade,
- * and a page served from such an origin can publish nothing. On production
- * that would be a failure of the worker and is reported as one. Off the
- * production domain it is the environment's shape, not the tool's fault -
- * a preview whose origin the deployed worker does not know yet - and the
- * tests that need a share say so and stand down, rather than fail six times
- * over on every engine for a socket that was never going to open.
- *
- * Asked by trying: one socket as a viewer of a room nobody hosts, which the
- * worker opens and the room then closes. Bounded, because an origin the
- * worker refuses gets an error at once and one it admits answers in well
- * under a second.
- */
-async function rendezvousAdmits(page: Page): Promise<boolean> {
-  return page.evaluate((url) => new Promise<boolean>((resolve) => {
-    // A socket the page's Content-Security-Policy refuses is an error event
-    // in Chromium and a SecurityError thrown from the constructor in WebKit;
-    // either way the page cannot reach the rendezvous from here.
-    let probe: WebSocket;
-    try {
-      probe = new WebSocket(url);
-    } catch {
-      resolve(false);
-      return;
-    }
-    const done = (answer: boolean) => { resolve(answer); try { probe.close(); } catch { /* already closed */ } };
-    probe.onopen = () => done(true);
-    probe.onerror = () => done(false);
-    setTimeout(() => done(false), 5_000);
-  }), `${RENDEZVOUS_URL}/ws/qa-probe-${Date.now().toString(36)}?role=viewer`);
-}
-
 /** Observe real transports so simulated page lifecycle events cannot hide a redial. */
 async function observeConnections(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -164,7 +128,10 @@ async function waitForVacantRoom(page: Page, code: string): Promise<void> {
     probe.onclose = (event) => done(event.code === 4404);
     probe.onmessage = () => done(false);
     probe.onerror = () => done(false);
-    timer = window.setTimeout(() => done(false), 2000);
+    // Long enough to hear a refusal, so that "not told yet" is not read as "occupied".
+    // Against the dev rendezvous Chromium reports one a little over two seconds after
+    // the socket opens. This waits for a room to empty; it does not time the refusal.
+    timer = window.setTimeout(() => done(false), 6000);
   }), `${RENDEZVOUS_URL}/ws/${code}?role=viewer`),
   { timeout: 15_000, intervals: [250, 500, 1000] }).toBe(true);
 }
@@ -172,14 +139,14 @@ async function waitForVacantRoom(page: Page, code: string): Promise<void> {
 /** Open a sharer, write the text, and publish it. Returns the share link. */
 async function publish(
   page: Page,
-  { text, code, priv, local = false }: { text: string; code: string; priv: boolean; local?: boolean },
+  { text, code, priv, local = false, sockets = 3 }: { text: string; code: string; priv: boolean; local?: boolean; sockets?: number },
 ): Promise<string> {
+  test.skip(!rendezvousAdmitsThisOrigin(), 'the rendezvous does not admit this origin, so nothing can be shared from here');
+  // Every case publishes first, so this is the start of the case. Three is the
+  // start page's discovery socket, the room and one reader; a case that opens
+  // more says so.
+  await reserveRendezvous(sockets);
   await page.goto(URL_PATH);
-  if (!onProductionDomain()) {
-    test.skip(!(await rendezvousAdmits(page)),
-      'the rendezvous does not admit this origin, so nothing can be shared from here; '
-      + 'on a preview that means the deployed worker predates workers/rendezvous admitting previews');
-  }
   await page.locator('#text').fill(text);
   await page.locator('#code').fill(code);
 
@@ -196,6 +163,7 @@ async function publish(
 
 /** Open a reader on a share link and get past the consent gate. */
 async function readerFor(browser: Browser, link: string, observe = false): Promise<{ page: Page; frames: string[] }> {
+  test.skip(browser.browserType().name() === 'webkit' && await runnerReachesItself() === false, NO_ROUTE_TO_ITSELF);
   const context = await browser.newContext();
   const page = await context.newPage();
   if (observe) await observeConnections(page);
@@ -379,7 +347,7 @@ test.describe('share-text: letting people in', () => {
     const hostContext = await browser.newContext(), readerContext = await browser.newContext(), otherContext = await browser.newContext();
     const host = await hostContext.newPage(), code = codeWord();
     try {
-      const link = await publish(host, { text: SECRET, code, priv: true, local: true });
+      const link = await publish(host, { text: SECRET, code, priv: true, local: true, sockets: 9 });
       const connect = async (context: BrowserContext) => {
         const reader = await context.newPage();
         await observeConnections(reader);
@@ -443,7 +411,7 @@ test.describe('share-text: letting people in', () => {
     const host = await hostContext.newPage(), browsing = await browsingContext.newPage();
     const code = codeWord();
     try {
-      const link = await publish(host, { text: SECRET, code, priv: true, local: true });
+      const link = await publish(host, { text: SECRET, code, priv: true, local: true, sockets: 5 });
       await browsing.goto(new URL(URL_PATH, link).href);
       await browsing.locator('#text').fill('My unsent draft stays here');
       const row = browsing.locator('#discovery-list .paired-nearby-row').filter({ hasText: code });
@@ -529,7 +497,7 @@ test.describe('share-text: letting people in', () => {
 
     const sharerContext = await browser.newContext();
     const sharer = await sharerContext.newPage();
-    const link = await publish(sharer, { text: SECRET, code, priv: false });
+    const link = await publish(sharer, { text: SECRET, code, priv: false, sockets: 4 });
 
     // Control first: while the tab is open, the share is reachable. Without
     // this, a link that never worked would pass the real assertion.
@@ -651,7 +619,7 @@ test.describe('share-text: foreground continuity', () => {
       const sharer = await context.newPage();
       await observeConnections(sharer);
       const code = codeWord();
-      const link = await publish(sharer, { text: SECRET, code, priv: false });
+      const link = await publish(sharer, { text: SECRET, code, priv: false, sockets: 5 });
       await continuityAvailable(sharer);
       const opened = await readerFor(browser, link, true);
       reader = opened.page;
@@ -693,7 +661,7 @@ test.describe('share-text: foreground continuity', () => {
       const sharer = await context.newPage();
       await observeConnections(sharer);
       const code = codeWord();
-      const link = await publish(sharer, { text: SECRET, code, priv: true, local: true });
+      const link = await publish(sharer, { text: SECRET, code, priv: true, local: true, sockets: 8 });
       await continuityAvailable(sharer);
       await sharer.locator('#markdown').check();
       const file = Buffer.alloc(200_000, 73);

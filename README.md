@@ -126,6 +126,16 @@ skip. The latter uses a cache-only worker unrelated to the website; a tool's
 own failure never skips its test. Counts of passed, flaky and
 skipped cases are reported separately on the website commit.
 
+Two things about the machine are handled here rather than reported as the
+site's failures. Cases that open real rendezvous sockets pace themselves under
+the worker's limit of thirty a minute from one address, which a slice's four
+workers would otherwise outrun ([`lib/rendezvous-pacing.ts`](lib/rendezvous-pacing.ts)).
+A refused socket looks to the page like any other failure, so this used to
+appear as a control that never showed. And a WebKit case that needs a direct
+connection stands down, with a skip that says why, on the occasional runner that
+cannot reach its own public address, where two WebKit contexts have no route to
+each other ([`lib/runner-network.ts`](lib/runner-network.ts)).
+
 WebKit's codec and storage capabilities differ from native Safari's. Firefox
 and physical devices are not projects in this suite. Native Safari/device
 checks remain useful for those boundaries; emulated phone viewports do not

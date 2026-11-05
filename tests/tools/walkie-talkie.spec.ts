@@ -7,6 +7,7 @@ import path from 'node:path';
 import { withoutThirdParties } from '../../lib/engine';
 import { privateDiscovery, oneStepNearbyJoin, expectHostTransportBadge, expectHostTransportRestored } from '../../lib/pairing-transport';
 import { admitsLiveVoice, liveVoiceEndpoint, voiceHooks, receivedAudio, tracksStopped, peersClosed, microphoneEnabled, installVoiceLifecycle, voiceConnectionState, captureAttached } from '../../lib/voice-fixtures';
+import { reserveRendezvous } from '../../lib/rendezvous-pacing';
 
 const TOOL = '/walkie-talkie/';
 const exists = discoverTools().includes('walkie-talkie');
@@ -96,6 +97,7 @@ test.describe('walkie-talkie', () => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(180_000);
+    await reserveRendezvous(9);
     const endpoint = liveVoiceEndpoint();
     const channelName = `QA invite only ${test.info().workerIndex}-${Date.now()}`;
     const listenerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
@@ -180,6 +182,7 @@ test.describe('walkie-talkie', () => {
     test.skip(browserName !== 'chromium', 'Native audio transport runs in Chromium; refusal and frame checks also run in WebKit.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(180_000);
+    await reserveRendezvous(8);
     const channelName = `QA nearby ${test.info().workerIndex}-${Date.now()}`;
     const listenerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
@@ -340,6 +343,7 @@ test.describe('walkie-talkie', () => {
     test.skip(browserName !== 'chromium', 'This lifecycle simulation uses native Chromium media; it is not a physical screen-lock test.');
     test.skip(!admitsLiveVoice(), 'The public rendezvous does not admit this test origin.');
     test.setTimeout(180_000);
+    await reserveRendezvous(3);
     const listenerContext = await browser.newContext({ baseURL: BASE_URL, viewport: page.viewportSize() ?? undefined });
     try {
       const listener = await listenerContext.newPage();

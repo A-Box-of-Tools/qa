@@ -8,6 +8,7 @@ import { voiceHooks, admitsLiveVoice } from '../lib/voice-fixtures';
 import { cameraHooks } from '../lib/camera-fixtures';
 import { tabHooks } from '../lib/share-tab';
 import { unifiedPairingJoin } from '../lib/pairing-approval';
+import { reserveRendezvous } from '../lib/rendezvous-pacing';
 
 const tools = ['share-text', 'share-tab', 'remote-camera', 'walkie-talkie', 'voice-oncall'] as const;
 type Tool = typeof tools[number];
@@ -333,6 +334,7 @@ for (const tool of tools) test(`${tool}: a live private host is isolated from lo
   test.skip(browserName !== 'chromium' || info.project.name !== 'Desktop Chrome', 'Live directory lifecycle runs once on desktop Chromium.');
   test.skip(!admitsLiveVoice(), 'The live rendezvous does not admit this test origin.');
   test.setTimeout(180_000);
+  await reserveRendezvous(7);
   await withoutThirdParties(page);
   if (tool === 'share-tab') await tabHooks(page.context(), { live: true });
   if (tool === 'remote-camera') await cameraHooks(page, 'allow', 'live');
