@@ -128,7 +128,10 @@ async function waitForVacantRoom(page: Page, code: string): Promise<void> {
     probe.onclose = (event) => done(event.code === 4404);
     probe.onmessage = () => done(false);
     probe.onerror = () => done(false);
-    timer = window.setTimeout(() => done(false), 2000);
+    // Long enough to hear a refusal, so that "not told yet" is not read as "occupied".
+    // Against the dev rendezvous Chromium reports one a little over two seconds after
+    // the socket opens. This waits for a room to empty; it does not time the refusal.
+    timer = window.setTimeout(() => done(false), 6000);
   }), `${RENDEZVOUS_URL}/ws/${code}?role=viewer`),
   { timeout: 15_000, intervals: [250, 500, 1000] }).toBe(true);
 }
@@ -344,7 +347,7 @@ test.describe('share-text: letting people in', () => {
     const hostContext = await browser.newContext(), readerContext = await browser.newContext(), otherContext = await browser.newContext();
     const host = await hostContext.newPage(), code = codeWord();
     try {
-      const link = await publish(host, { text: SECRET, code, priv: true, local: true, sockets: 11 });
+      const link = await publish(host, { text: SECRET, code, priv: true, local: true, sockets: 9 });
       const connect = async (context: BrowserContext) => {
         const reader = await context.newPage();
         await observeConnections(reader);
@@ -658,7 +661,7 @@ test.describe('share-text: foreground continuity', () => {
       const sharer = await context.newPage();
       await observeConnections(sharer);
       const code = codeWord();
-      const link = await publish(sharer, { text: SECRET, code, priv: true, local: true, sockets: 10 });
+      const link = await publish(sharer, { text: SECRET, code, priv: true, local: true, sockets: 8 });
       await continuityAvailable(sharer);
       await sharer.locator('#markdown').check();
       const file = Buffer.alloc(200_000, 73);
