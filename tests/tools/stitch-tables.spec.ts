@@ -430,7 +430,7 @@ test.describe('stitch-tables: what leaves the page', () => {
     // seconds to paste the 1.9 million character cell, each time, and one to
     // three for every click made while that cell is in a box, since a click
     // waits for drawn frames and it draws this page slowly. That comes to 16
-    // seconds alone and to as much as 47 beside three busy workers, where
+    // seconds alone and to between 23 and 54 beside three busy workers, where
     // this case kept timing out with every assertion it had reached passing.
     // In those traces the refusal took the page 16 to 125 milliseconds. Each
     // assertion below keeps its own five seconds.
