@@ -425,6 +425,17 @@ test.describe('stitch-tables: what leaves the page', () => {
   });
 
   test('a result too large to hold is refused rather than half built', async ({ page }) => {
+    // The default thirty seconds is too little for WebKit here, and the time
+    // is the engine's own, not the page's. Alone on a CI runner it takes two
+    // seconds to paste the 1.9 million character cell, each time, and one to
+    // three for every click made while that cell is in a box, since a click
+    // waits for drawn frames and it draws this page slowly. That comes to 16
+    // seconds alone and to between 23 and 54 beside three busy workers, where
+    // this case kept timing out with every assertion it had reached passing.
+    // In those traces the refusal took the page 16 to 125 milliseconds. Each
+    // assertion below keeps its own five seconds.
+    test.setTimeout(120_000);
+
     // Two hundred rows on each side sharing one key is forty thousand pairs.
     const many = (column: string) => `key,${column}\n${Array(200).fill('x,1').join('\n')}\n`;
     await read(page, many('a'), many('b'));
