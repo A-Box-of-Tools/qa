@@ -206,8 +206,15 @@ for (const locale of ['es', 'pt']) {
       await page.locator('#url-panel summary').click();
       await page.locator('#url-input').fill('not a url');
       await page.locator('#fetch-urls').click();
-      await expect(page.locator('#error')).toBeVisible();
-      await expect(page.locator('#error')).toContainText((await phraseText(page, 'url.invalid')).replace('{address}', 'not a url'));
+      // Where the refusal is written is not this case's business, and it moved.
+      // It used to go into #error in the last step, which is dimmed until
+      // images arrive; website #660 gave the first step a line of its own,
+      // #load-error, under the panel the address was typed into. Both are
+      // taken, because this suite also runs against production, which keeps the
+      // old page until that change is released.
+      const refusal = page.locator('#load-error:visible, #error:visible').first();
+      await expect(refusal).toBeVisible();
+      await expect(refusal).toContainText((await phraseText(page, 'url.invalid')).replace('{address}', 'not a url'));
       await expect(page.locator('#fetch-urls')).toBeEnabled();
       await checkCopy(page, 'images-to-video', locale);
     });
