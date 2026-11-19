@@ -1,6 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
+import path from 'node:path';
 import { quiet } from '../../lib/engine';
+import { ETOOLBOX_DIR } from '../../lib/site';
 import { discoverTools } from '../../lib/tools';
 
 /**
@@ -52,6 +54,14 @@ const URL_PATH = '/number-explorer/';
 
 const SHIPPED = discoverTools().includes('number-explorer');
 const NOT_YET = 'this site does not ship number-explorer yet';
+
+// The stage telling whoever started a journey that it is over landed on the website
+// (#667) before it reached production. This asks the checkout rather than a date, so
+// the cases that need it start running by themselves on whichever deployment first
+// has it. Until then the page can leave its Grow button reading Stop.
+const TELLS_WHEN_A_JOURNEY_ENDS = SHIPPED && fs.readFileSync(
+  path.join(ETOOLBOX_DIR, 'tools', 'number-explorer', 'src', 'stage.js'), 'utf8',
+).includes('function abandon()');
 
 // Nothing here is slow. The allowance is for WebKit on a runner with three
 // other workers on it, where a case that takes three seconds at a desk has
@@ -819,6 +829,97 @@ test.describe('number-explorer: the picture', () => {
     await expect(still).toHaveAttribute('aria-pressed', 'false');
     await expect.poll(() => moving(page), { message: 'the picture stayed still after motion was resumed' })
       .toBe(true);
+  });
+
+  // The button's own cases sit in this group for its tall window: with the stage
+  // off screen the page holds its opening journey until somebody can see it, and
+  // the button is a Stop for as long as that takes.
+  test.describe('the button that grows it', () => {
+    test.skip(!TELLS_WHEN_A_JOURNEY_ENDS, 'this site can still leave its Grow button reading Stop');
+
+    /**
+     * Open the page and let its opening journey finish. The button is a Stop for
+     * as long as that takes, and at rest afterwards, which is what every case
+     * here starts from.
+     */
+    async function rested(page: Page): Promise<string> {
+      await open(page);
+      await expect(page.locator('#play'), 'the opening journey never finished')
+        .toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
+      return (await page.locator('#play-label').textContent()) ?? '';
+    }
+
+    // After a change of world the picture zooms into the number for about a
+    // second. That is a journey as far as the stage knows, and one the button
+    // does not offer to stop. The page used to set the button from whether any
+    // journey was running, so anything that worked the answer out again during
+    // the zoom turned it to Stop, and nothing turned it back: it stayed pressed,
+    // with nothing playing, until a different number was typed.
+    //
+    // Each of these is done in the same breath as the change of world, from
+    // inside the page, because the fault only exists for that one second and a
+    // test that arrived late would pass without having asked anything.
+    const DURING_THE_ZOOM: Array<[string, string]> = [
+      ['a unit chip', `document.querySelector('[data-unit="word"]').click()`],
+      ['"Show every landmark"', `document.getElementById('ladder-all').click()`],
+      ['an assumption', `(() => {
+        const menu = document.getElementById('book-thickness');
+        menu.value = '0.05';
+        menu.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`],
+      ['the same number typed again', `(() => {
+        const box = document.getElementById('amount');
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`],
+    ];
+
+    for (const [what, act] of DURING_THE_ZOOM) {
+      test(`is not left on Stop by ${what} during the zoom after a change of world`, async ({ page }) => {
+        const resting = await rested(page);
+        const play = page.locator('#play');
+
+        await page.evaluate(`document.querySelector('[data-world="water"]').click();
+          document.querySelector('[data-world="books"]').click();
+          ${act};`);
+        await expect(page.locator('#main')).toHaveAttribute('data-scene', 'books');
+
+        // Not during the zoom, and not after it. The second look is the one that
+        // used to fail for good.
+        await expect(play, 'the button offered to stop the zoom').toHaveAttribute('aria-pressed', 'false');
+        await page.waitForTimeout(1_500);
+        await expect(play, 'the button was left on Stop with nothing playing')
+          .toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('#play-label')).toHaveText(resting);
+      });
+    }
+
+    test('pressed during that zoom, it does what it says and grows from one', async ({ page }) => {
+      const resting = await rested(page);
+      const play = page.locator('#play');
+
+      // It says Grow from 1 all through the zoom. Pressed then, it used to take
+      // the zoom for something to stop, cut it short and do nothing else.
+      await page.evaluate(`document.querySelector('[data-world="water"]').click();
+        document.getElementById('play').click();`);
+      await expect(play, 'pressing Grow from 1 during the zoom did not start it growing')
+        .toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('#play-label')).not.toHaveText(resting);
+      await expect(play, 'the journey never ended').toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
+    });
+
+    test('pausing motion while it grows puts it back at rest', async ({ page }) => {
+      const resting = await rested(page);
+      const play = page.locator('#play');
+
+      await play.click();
+      await expect(play).toHaveAttribute('aria-pressed', 'true');
+      // Paused, the picture goes straight to the number, so there is no longer
+      // a journey to stop. The stage used to drop it without telling the button.
+      await page.locator('#still').click();
+      await expect(play, 'motion was paused and the button still offers to stop a journey')
+        .toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('#play-label')).toHaveText(resting);
+    });
   });
 });
 
