@@ -57,13 +57,22 @@ const MOON_DEGREES = ((2 * 1737.4) / 384_400) * (180 / Math.PI);
 
 type Instrument = 'telescope' | 'binoculars' | 'microscope' | 'magnifier';
 
+/**
+ * Wait for the page to have started. The markup arrives before the modules
+ * have run, and the tool takes this warning away only once its listeners are
+ * attached, which is also when it writes its first answer. It is ten modules,
+ * and from a real site on a busy machine a page of that size has taken longer
+ * to arrive than an assertion waits for by default.
+ */
+async function started(page: Page): Promise<void> {
+  await expect(page.locator('#boot-warning'), 'the page never finished starting')
+    .toHaveCount(0, { timeout: 45_000 });
+}
+
 /** Open the page and wait for it to have worked something out. */
 async function open(page: Page): Promise<void> {
   await page.goto(URL_PATH);
-  // The markup arrives before the modules have run. The tool takes this
-  // warning away only once its listeners are attached, which is also when it
-  // writes its first answer.
-  await expect(page.locator('#boot-warning')).toHaveCount(0);
+  await started(page);
   await expect(page.locator('#power'), 'the page opened without an answer').not.toBeEmpty();
 }
 
@@ -742,7 +751,7 @@ test.describe('magnification-calculator: a change of language', () => {
       page.waitForURL((url) => url.pathname !== from, { timeout: 30_000 }),
       page.locator('.lang-pick-menu a').first().click(),
     ]);
-    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    await started(page);
     await expect(page.locator('html'), 'the switch landed on the same language')
       .not.toHaveAttribute('lang', 'en');
   }
@@ -868,7 +877,7 @@ test.describe('magnification-calculator: the promise', () => {
     // The page says a reload resets it, which is the same promise from the
     // other side: there is nowhere for the numbers to have been kept.
     await page.reload();
-    await expect(page.locator('#boot-warning')).toHaveCount(0);
+    await started(page);
     await expect(page.locator('#main')).toHaveAttribute('data-world', 'telescope');
     await expect(page.locator('#tel-focal')).not.toHaveValue(typed[0]);
     await expect(page.locator('#tel-aperture')).not.toHaveValue(typed[1]);
