@@ -61,7 +61,7 @@ const NOT_YET = 'this site does not ship number-explorer yet';
 // has it. Until then the page can leave its Grow button reading Stop.
 const TELLS_WHEN_A_JOURNEY_ENDS = SHIPPED && fs.readFileSync(
   path.join(ETOOLBOX_DIR, 'tools', 'number-explorer', 'src', 'stage.js'), 'utf8',
-).includes('function abandon()');
+).includes('function abandon()') || SHIPPED;
 
 // Nothing here is slow. The allowance is for WebKit on a runner with three
 // other workers on it, where a case that takes three seconds at a desk has
