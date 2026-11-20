@@ -647,6 +647,49 @@ test.describe('number-explorer: the picture', () => {
   }
 
   /**
+   * Let the stage's clock run for some seconds, and say whether the Grow button
+   * is at rest when they are up. With `untilRest` it stops as soon as it is.
+   *
+   * A journey is not a length of time. The stage moves one on by the time since
+   * its last frame and never by more than a twentieth of a second, so where
+   * frames come slower than twenty a second a journey lasts a number of frames:
+   * ninety or more for the four and a half seconds the page opens with. A
+   * Safari runner with three other workers beside it painted this tall window
+   * 76 times in thirty seconds, and two cases that gave a journey thirty
+   * seconds failed there with its ending still on the way. Four recorded
+   * Safari pages sharing one core do the same at a desk: 93 frames, and 45 to
+   * 49 seconds.
+   *
+   * So no case waits a length of time for a journey. This counts as the stage
+   * counts, inside the page, and its seconds are the stage's on any machine.
+   */
+  async function stageClock(page: Page, seconds: number, { untilRest = false } = {}): Promise<boolean> {
+    return page.evaluate(({ limit, early }) => new Promise<boolean>((resolve) => {
+      const atRest = () => document.getElementById('play')?.getAttribute('aria-pressed') === 'false';
+      let counted = 0;
+      let last = 0;
+      const frame = (now: number) => {
+        if (last) counted += Math.min(0.05, (now - last) / 1000);
+        last = now;
+        if ((early && atRest()) || counted >= limit) resolve(atRest());
+        else requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    }), { limit: seconds, early: untilRest });
+  }
+
+  // How long a journey is given to end by itself: three times the longest one
+  // any case here waits out, by the stage's clock.
+  const A_JOURNEY = 15;
+
+  // What the slow cases here are allowed in all: the ones that wait a journey
+  // out, and the one that looks at the picture five times. A page that never
+  // ends its journey is not called stuck until the stage has had those fifteen
+  // seconds, which at the two or three frames a second above is three hundred
+  // frames and over two minutes.
+  const UNHURRIED = 300_000;
+
+  /**
    * Type a count and wait for the picture to be a different one. The box
    * answers at once and the stage a frame later, so a measurement taken in
    * between would be of the number before.
@@ -762,92 +805,134 @@ test.describe('number-explorer: the picture', () => {
     expect(seen.size, 'two worlds or two numbers were drawn as the same picture').toBe(10);
   });
 
-  /** Whether the picture changes over a third of a second. */
+  /**
+   * Whether the picture changes over a third of a second, and over a frame or
+   * two as well: where frames come slowly a third of a second may hold none.
+   */
   async function moving(page: Page): Promise<boolean> {
     const first = await sum(page);
     await page.waitForTimeout(350);
+    await painted(page);
     return (await sum(page)) !== first;
   }
 
-  test('growing from one can be stopped, and stops by itself at the number', async ({ page }) => {
+  // How long a look at the picture is given. It reads every pixel of it, and
+  // with four Safari workers held to one core a single look did not finish in
+  // the five seconds an assertion waits by default.
+  const A_LOOK = { timeout: 30_000 };
+
+  /**
+   * Open the page and bring it to rest, and say what the button reads there.
+   * The page opens by growing the picture from one, and the button is a Stop
+   * for as long as that takes. Pressing it is the way to rest that needs no
+   * frames. It is asked, pressed and read again in one breath, inside the
+   * page. A look from out here followed by a click could fall either side of
+   * the journey's own ending, and a click after it would start the growing
+   * again; and an answer waited for could be the journey ending by itself,
+   * behind a Stop that had done nothing.
+   */
+  async function rested(page: Page): Promise<string> {
     await open(page);
-    const play = page.locator('#play');
     await expect(page.locator('#stage-controls')).toBeVisible();
-    // The page opens by doing exactly this, unasked: the picture grows from
-    // one to the number, and the button is a Stop for as long as it takes.
-    await expect(play).toHaveAttribute('aria-pressed', 'true');
-    await expect(play, 'the opening journey never finished')
-      .toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
-    const resting = (await page.locator('#play-label').textContent()) ?? '';
+    const pressed = await page.evaluate(() => {
+      const play = document.getElementById('play');
+      if (play?.getAttribute('aria-pressed') === 'true') play.click();
+      return play?.getAttribute('aria-pressed');
+    });
+    expect(pressed, 'the Stop the page opens with did not stop it').toBe('false');
+    return (await page.locator('#play-label').textContent()) ?? '';
+  }
+
+  test('it opens by growing from one, unasked, and comes to rest at the number by itself', async ({ page }) => {
+    test.setTimeout(UNHURRIED);
+    // What the button says at the moment the page has finished starting, taken
+    // inside the page as its boot warning goes. A first look from out here
+    // comes some time after that, and nothing says the journey is still on.
+    await page.addInitScript(() => {
+      let warned = false;
+      new MutationObserver((_records, observer) => {
+        if (document.getElementById('boot-warning')) {
+          warned = true;
+        } else if (warned) {
+          observer.disconnect();
+          (window as unknown as { playAtBoot?: string | null }).playAtBoot =
+            document.getElementById('play')?.getAttribute('aria-pressed');
+        }
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await open(page);
+    await expect(page.locator('#stage-controls')).toBeVisible();
+    const atBoot = await page.evaluate(() => (window as unknown as { playAtBoot?: string | null }).playAtBoot);
+    expect(atBoot, 'the page did not open with its button offering to stop the growing').toBe('true');
+
+    // Nobody presses anything. It arrives, and the button offers to grow again.
+    expect(await stageClock(page, A_JOURNEY, { untilRest: true }), 'the opening journey never finished')
+      .toBe(true);
+    expect(await countRead(page)).toBe('1000000000');
+  });
+
+  test('growing from one can be stopped, and stops by itself at the number', async ({ page }) => {
+    test.setTimeout(UNHURRIED);
+    // The first Stop is pressed on the way in: the page opens growing.
+    const resting = await rested(page);
+    const play = page.locator('#play');
 
     // Asked for, it is the same journey, and it says something else while it runs.
     await play.click();
     await expect(play).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#play-label')).not.toHaveText(resting);
-    await expect.poll(() => moving(page), { message: 'the picture is not growing' }).toBe(true);
+    await expect.poll(() => moving(page), { message: 'the picture is not growing', ...A_LOOK }).toBe(true);
 
     // Pressed again it stops where the number is, and the number has not moved.
+    // Read at once and not waited for: this journey is under five seconds at a
+    // desk, and would have ended by itself inside an assertion's patience.
     await play.click();
-    await expect(play).toHaveAttribute('aria-pressed', 'false');
+    expect(await play.getAttribute('aria-pressed'), 'pressing Stop did not stop the growing').toBe('false');
     await expect(page.locator('#play-label')).toHaveText(resting);
     expect(await countRead(page)).toBe('1000000000');
 
-    // Left alone it ends by itself. A thousand is a short way to grow.
+    // Left alone it ends by itself. A thousand is the shortest way there is to
+    // grow, which is the least of a slow machine's frames this can ask for.
     await type(page, '1 thousand');
     await play.click();
     await expect(play).toHaveAttribute('aria-pressed', 'true');
-    await expect(play, 'the journey to a thousand never ended')
-      .toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
+    expect(await stageClock(page, A_JOURNEY, { untilRest: true }), 'the journey to a thousand never ended')
+      .toBe(true);
+    await expect(page.locator('#play-label')).toHaveText(resting);
     expect(await countRead(page)).toBe('1000');
   });
 
   test('pausing motion stops the picture, and resuming starts it again', async ({ page }) => {
-    await open(page);
-    const play = page.locator('#play');
+    test.setTimeout(UNHURRIED);
+    await rested(page);
     const still = page.locator('#still');
-    await expect(page.locator('#stage-controls')).toBeVisible();
-    // The page opens by growing the picture from one, which is over when the
-    // button can be pressed again.
-    await expect(play).toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
     await choose(page, 'water');
     // Water does not sit still: the surface swells and there is a drip.
-    await expect.poll(() => moving(page), { message: 'the water picture is not moving to begin with' })
+    await expect.poll(() => moving(page), { message: 'the water picture is not moving to begin with', ...A_LOOK })
       .toBe(true);
 
     await still.click();
     await expect(still).toHaveAttribute('aria-pressed', 'true');
-    await expect.poll(() => moving(page), { message: 'the picture went on moving after motion was paused' })
+    await expect.poll(() => moving(page), { message: 'the picture went on moving after motion was paused', ...A_LOOK })
       .toBe(false);
     // Paused is not frozen: a new number is still drawn, at once.
     const paused = await sum(page);
     await type(page, '2 billion');
-    await expect.poll(() => sum(page), { message: 'a paused picture ignored a new number' })
+    await expect.poll(() => sum(page), { message: 'a paused picture ignored a new number', ...A_LOOK })
       .not.toBe(paused);
-    await expect.poll(() => moving(page)).toBe(false);
+    await expect.poll(() => moving(page), A_LOOK).toBe(false);
 
     await still.click();
     await expect(still).toHaveAttribute('aria-pressed', 'false');
-    await expect.poll(() => moving(page), { message: 'the picture stayed still after motion was resumed' })
+    await expect.poll(() => moving(page), { message: 'the picture stayed still after motion was resumed', ...A_LOOK })
       .toBe(true);
   });
 
   // The button's own cases sit in this group for its tall window: with the stage
-  // off screen the page holds its opening journey until somebody can see it, and
-  // the button is a Stop for as long as that takes.
+  // off screen the page holds a journey where it is until somebody can see it,
+  // and the zoom these cases are about would never come to its end.
   test.describe('the button that grows it', () => {
     test.skip(!TELLS_WHEN_A_JOURNEY_ENDS, 'this site can still leave its Grow button reading Stop');
-
-    /**
-     * Open the page and let its opening journey finish. The button is a Stop for
-     * as long as that takes, and at rest afterwards, which is what every case
-     * here starts from.
-     */
-    async function rested(page: Page): Promise<string> {
-      await open(page);
-      await expect(page.locator('#play'), 'the opening journey never finished')
-        .toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
-      return (await page.locator('#play-label').textContent()) ?? '';
-    }
 
     // After a change of world the picture zooms into the number for about a
     // second. That is a journey as far as the stage knows, and one the button
@@ -884,27 +969,34 @@ test.describe('number-explorer: the picture', () => {
         await expect(page.locator('#main')).toHaveAttribute('data-scene', 'books');
 
         // Not during the zoom, and not after it. The second look is the one that
-        // used to fail for good.
+        // used to fail for good, and it has to come after: two seconds by the
+        // stage's clock is past the end of a zoom that lasts 0.9 of them,
+        // however slowly the frames come.
         await expect(play, 'the button offered to stop the zoom').toHaveAttribute('aria-pressed', 'false');
-        await page.waitForTimeout(1_500);
-        await expect(play, 'the button was left on Stop with nothing playing')
-          .toHaveAttribute('aria-pressed', 'false');
+        expect(await stageClock(page, 2), 'the button was left on Stop with nothing playing').toBe(true);
         await expect(page.locator('#play-label')).toHaveText(resting);
       });
     }
 
     test('pressed during that zoom, it does what it says and grows from one', async ({ page }) => {
+      test.setTimeout(UNHURRIED);
       const resting = await rested(page);
-      const play = page.locator('#play');
+      // A thousand is the shortest way there is to grow, and this waits it out.
+      await type(page, '1 thousand');
 
       // It says Grow from 1 all through the zoom. Pressed then, it used to take
-      // the zoom for something to stop, cut it short and do nothing else.
-      await page.evaluate(`document.querySelector('[data-world="water"]').click();
-        document.getElementById('play').click();`);
-      await expect(play, 'pressing Grow from 1 during the zoom did not start it growing')
-        .toHaveAttribute('aria-pressed', 'true');
-      await expect(page.locator('#play-label')).not.toHaveText(resting);
-      await expect(play, 'the journey never ended').toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
+      // the zoom for something to stop, cut it short and do nothing else. What
+      // it says next is read in the same breath, while the growing has to be on.
+      const [pressed, label] = await page.evaluate<[string | null, string | null]>(`(() => {
+        document.querySelector('[data-world="water"]').click();
+        const play = document.getElementById('play');
+        play.click();
+        return [play.getAttribute('aria-pressed'), document.getElementById('play-label').textContent];
+      })()`);
+      expect(pressed, 'pressing Grow from 1 during the zoom did not start it growing').toBe('true');
+      expect(label).not.toBe(resting);
+      expect(await stageClock(page, A_JOURNEY, { untilRest: true }), 'the journey never ended').toBe(true);
+      await expect(page.locator('#play-label')).toHaveText(resting);
     });
 
     test('pausing motion while it grows puts it back at rest', async ({ page }) => {
@@ -915,9 +1007,12 @@ test.describe('number-explorer: the picture', () => {
       await expect(play).toHaveAttribute('aria-pressed', 'true');
       // Paused, the picture goes straight to the number, so there is no longer
       // a journey to stop. The stage used to drop it without telling the button.
+      // It is the stage's next frame that ends it, so this is given half a
+      // second of the stage's clock and no more: left to itself the journey
+      // would take ten times that, and then look as if the pause had ended it.
       await page.locator('#still').click();
-      await expect(play, 'motion was paused and the button still offers to stop a journey')
-        .toHaveAttribute('aria-pressed', 'false');
+      expect(await stageClock(page, 0.5, { untilRest: true }),
+        'motion was paused and the button still offers to stop a journey').toBe(true);
       await expect(page.locator('#play-label')).toHaveText(resting);
     });
   });
