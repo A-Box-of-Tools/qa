@@ -388,7 +388,14 @@ test.describe('share-text: letting people in', () => {
       // Reusing the very same invitation proves the host's lifetime, rather
       // than a different code alone, is the boundary of the remembered grant.
       await host.locator('#publish').click();
-      await expect(host.locator('#link')).toHaveValue(link, { timeout: 30_000 });
+      // Stop hides the link but leaves it in its box, so the box holds this
+      // value again before the new host socket even exists, and a reader sent
+      // in then is told that nobody is sharing (4404). The page shows the link
+      // once that socket opens, which is what a sharer waits for before passing
+      // it on; the room seats the returning host one proof round trip later,
+      // far sooner than a reader's page can load and open a socket of its own.
+      await expect(host.locator('#link')).toBeVisible({ timeout: 30_000 });
+      await expect(host.locator('#link')).toHaveValue(link);
       const nextSession = await connect(readerContext);
       await expect(host.locator('#pairing-request-dialog')).toBeVisible({ timeout: 30_000 });
       await expect(nextSession.locator('#panel')).not.toContainText(SECRET);
