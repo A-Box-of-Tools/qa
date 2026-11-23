@@ -152,6 +152,12 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
     } finally {
       clearTimeout(deadline);
       await server.kill();
+      // And this side's end of it, which a killed server leaves to notice in
+      // its own time. Playwright Test stops the trace of every context still
+      // on its list once the case is over, and one whose browser has just
+      // gone throws there: a second error on a case that had ended as
+      // written, in four Safari tries of fourteen on the runners.
+      await own.close();
       evidence.result = result ?? { outcome: 'setup-error' };
       await testInfo.attach('independent-native-codec-worker', {
         body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json',
