@@ -1,5 +1,6 @@
 import { chromium, type Page } from '@playwright/test';
 import { ask, onAPageOfItsOwn } from './engine';
+import { isMp4, readMp4, videoTrack } from './mp4';
 
 export interface VideoFixtureOptions {
   width?: number;
@@ -48,6 +49,18 @@ export interface VideoFixtureOptions {
  * better, not worse, since the source is bit-for-bit the same both times.
  */
 const recordings = new Map<string, { bytes: Buffer; mimeType: string }>();
+
+/**
+ * The clips an engine under test recorded for itself, and which engine it was.
+ *
+ * canDecodeVideo() reads this; the last part of its note says what an
+ * engine's no to its own recording is taken to mean.
+ */
+const recordedHere = new WeakMap<Buffer, string>();
+
+function engineOf(page: Page): string {
+  return page.context().browser()?.browserType().name() ?? 'unknown';
+}
 
 /**
  * A real video, recorded by the browser under test from a canvas animation.
@@ -107,6 +120,7 @@ export async function recordVideo(
   }
 
   const made = await record(page, settings);
+  recordedHere.set(made.bytes, engineOf(page));
   recordings.set(key, made);
   return made;
 }
@@ -250,6 +264,12 @@ export async function skipWithoutWebCodecs(page: Page): Promise<boolean> {
 }
 
 /**
+ * How long canDecodeVideo() watches a canvas for a picture a seek has
+ * promised, in milliseconds. See its note for what was measured.
+ */
+const PATIENCE = 3_000;
+
+/**
  * Can this engine get pictures out of the fixture at all?
  *
  * A better question than `typeof VideoDecoder`, because the two come apart.
@@ -270,6 +290,50 @@ export async function skipWithoutWebCodecs(page: Page): Promise<boolean> {
  * produces the first frame and then stops - or a <video> that reports a size
  * it never paints - would pass "is this black", and a tool asked to reverse
  * such a clip has nothing to work with.
+ *
+ * AND THE PICTURE THAT IS NOT ON THE CANVAS YET
+ *
+ * `seeked` says the player has the frame, not that a canvas can have it yet.
+ * On the Chromium the runners use it comes 3 ms after the seek is asked for
+ * at the median, and a drawImage in that same turn can still paint the
+ * picture from before the seek. The first version of this read each picture
+ * the moment its seek ended. Asked 222 times in two runs about clips that
+ * were whole, it read the earlier picture for the later one 4 times, found
+ * one picture twice, and answered that a Chromium which had just recorded
+ * the clip could not decode it. In the one of the four that was watched
+ * every 10 ms, the right picture was there at the next look
+ * (A-Box-of-Tools/qa runs 45233553209 and 45235087909).
+ *
+ * The cost of that answer is not one case. It is remembered for the worker's
+ * life and so is the clip, so every later case in that worker that reads a
+ * frame skipped as well, with a reason naming a missing codec. One run of the
+ * whole suite skipped eleven cases in the two Chrome projects with that
+ * reason and stayed green (run 45221450728); the run twelve minutes before it
+ * skipped none.
+ *
+ * So each picture is waited for: the first until the canvas shows anything,
+ * the second until it shows something else, PATIENCE at most for each. That
+ * is far longer than was measured, because how slow a runner is varies by
+ * more than that, and the whole of it is only ever paid by a player that
+ * never paints. There is one. WebKit on the runners reports the clip's size
+ * and length, fires `seeked`, and paints nothing: 209 answers out of 209 were
+ * no, and the 104 read with their alpha were transparent. It fires
+ * requestVideoFrameCallback for those seeks all the same, which is why the
+ * canvas is asked and not the callback.
+ *
+ * AND A NO FROM THE ENGINE THAT MADE THE CLIP
+ *
+ * An engine that recorded the clip has the codec. If it then shows no two
+ * pictures out of it, a skip would say "this engine cannot decode" about an
+ * engine that can, and nobody reads a skip. So that no is thrown: the case
+ * fails, with what the clip holds in the message. WebKit borrows its clips
+ * from Chromium (see recordVideo above), so its no stays the skip it was.
+ *
+ * What the clip holds is in the message because there is a second way to
+ * that error, found at a desk and not on a runner. A recording made while the
+ * machine is starved lasts as long by the clock and can hold a single frame,
+ * which is one picture twice whoever reads it. On the runners the thinnest
+ * of 489 takes held 57 of the 60 frames asked for.
  */
 export async function canDecodeVideo(
   page: Page,
@@ -280,8 +344,8 @@ export async function canDecodeVideo(
   // in lib/engine.ts for why a deadline inside the page is not enough. The
   // fixture's length is in the key because this one is a question about
   // particular bytes, and a different clip is a different question.
-  return ask(page, `decode-video:${mimeType}:${bytes.length}`, () =>
-    page.evaluate(async ({ data, mimeType }) => {
+  const can = await ask(page, `decode-video:${mimeType}:${bytes.length}`, () =>
+    page.evaluate(async ({ data, mimeType, patience }) => {
     const url = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: mimeType }));
     const video = document.createElement('video');
     video.muted = true;
@@ -303,29 +367,65 @@ export async function canDecodeVideo(
       const context = canvas.getContext('2d', { willReadFrequently: true });
       if (!context) return false;
 
-      const at = async (time: number) => {
-        await new Promise<void>((resolve) => {
-          video.onseeked = () => resolve();
-          setTimeout(resolve, 10_000);
-          video.currentTime = time;
-        });
+      const seek = (time: number) => new Promise<void>((resolve) => {
+        video.onseeked = () => resolve();
+        setTimeout(resolve, 10_000);
+        video.currentTime = time;
+      });
+      // The middle of what the player has to show, alpha included: a canvas
+      // nothing was painted on reads as transparent, which is how a player
+      // with no picture is told from one showing black.
+      const look = () => {
+        context.clearRect(0, 0, canvas.width, canvas.height);
         context.drawImage(video, 0, 0);
-        const middle = context.getImageData(
+        return context.getImageData(
           Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1,
         ).data;
-        return [middle[0], middle[1], middle[2]];
+      };
+      // Look until the canvas shows what is wanted or patience runs out, and
+      // hand back what it showed last.
+      const until = async (wanted: (seen: Uint8ClampedArray) => boolean) => {
+        const deadline = performance.now() + patience;
+        for (;;) {
+          const seen = look();
+          if (wanted(seen) || performance.now() >= deadline) return seen;
+          await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+        }
       };
 
-      const first = await at(0.1);
-      const later = await at(Math.max(0.2, video.duration - 0.2));
-      return Math.abs(first[0] - later[0])
-        + Math.abs(first[1] - later[1])
-        + Math.abs(first[2] - later[2]) > 12;
+      await seek(0.1);
+      const first = await until((seen) => seen[3] > 0);
+      if (first[3] === 0) return false;
+
+      await seek(Math.max(0.2, video.duration - 0.2));
+      const another = (seen: Uint8ClampedArray) => seen[3] > 0
+        && Math.abs(first[0] - seen[0])
+          + Math.abs(first[1] - seen[1])
+          + Math.abs(first[2] - seen[2]) > 12;
+      return another(await until(another));
     } finally {
       video.src = '';
       URL.revokeObjectURL(url);
     }
-  }, { data: Array.from(bytes), mimeType }), false, 45_000);
+  }, { data: Array.from(bytes), mimeType, patience: PATIENCE }), false, 45_000);
+
+  if (can || recordedHere.get(bytes) !== engineOf(page)) return can;
+  throw new Error(
+    `this browser recorded the clip itself (${held(bytes)}) and then showed no two different `
+    + 'pictures out of it. That is not a missing codec, which is what a skip here would say: it '
+    + 'is a fault in the browser, the machine or this probe, so the case fails where it will be read');
+}
+
+/** What a clip holds by its own tables, for an error that has to say. */
+function held(bytes: Buffer): string {
+  if (!isMp4(bytes)) return `${bytes.length} bytes that are not an MP4`;
+  try {
+    const file = readMp4(bytes);
+    const frames = videoTrack(file)?.samples ?? 0;
+    return `${frames} ${frames === 1 ? 'frame' : 'frames'} in ${file.seconds.toFixed(1)} s`;
+  } catch {
+    return `${bytes.length} bytes of an MP4 that cannot be read`;
+  }
 }
 
 /**

@@ -123,8 +123,12 @@ cannot perform them. Corresponding refusals have separate scenarios where the
 engine can remain alive long enough to show one. A missing service-worker API
 or failed independent offline-emulation probe produces an explicit offline
 skip. The latter uses a cache-only worker unrelated to the website; a tool's
-own failure never skips its test. Counts of passed, flaky and
-skipped cases are reported separately on the website commit.
+own failure never skips its test. Neither does the video probe's: a browser
+that recorded the fixture clip itself and then shows no two pictures out of
+it fails the case, because a skip would report a codec missing from the
+browser that had just used it ([`lib/browser-video.ts`](lib/browser-video.ts)).
+Counts of passed, flaky and skipped cases are reported separately on the
+website commit.
 
 Two things about the machine are handled here rather than reported as the
 site's failures. Cases that open real rendezvous sockets pace themselves under
