@@ -12,7 +12,22 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
   test('records whether the native encoder answers, stalls in its worker, or crashes its process', async ({ browser, baseURL }, testInfo) => {
     test.skip(!available, 'Worker-isolated H.264 capability checks are awaiting the website release.');
     test.setTimeout(45_000);
-    const own = await browser.browserType().launch();
+    // A server, and not launch(), because a server is the one browser
+    // Playwright will kill when asked, and this one cannot be closed in time.
+    // On Linux WebKit the query below aborts the page's process: GStreamer was
+    // never started in it, and says `gst_register_core_elements: code should
+    // not be reached`. The runner then collects the dead process's core, which
+    // took 16 s on a quiet runner and over 90 on a busy one, and for that long
+    // the process is neither answering nor gone and still holds the browser's
+    // output open. That is the silence the ten seconds below end in, and it is
+    // what close() then waited on until Playwright's own thirty seconds ran
+    // out: 6.4 to 30 s in eight tries on the runners, against 22 to 94 ms for
+    // kill(). Nothing is read from the browser after the answer.
+    const server = await browser.browserType().launchServer();
+    const own = await browser.browserType().connect(server.wsEndpoint()).catch(async (error) => {
+      await server.kill();
+      throw error;
+    });
     const evidence: any = {
       engine: own.browserType().name(), version: own.version(), project: testInfo.project.name,
       native: true, pageCode: 'independent blank page', workerCode: 'independent native query',
@@ -136,6 +151,12 @@ test.describe('images-to-video: independent native worker diagnostic', () => {
       ]);
     } finally {
       clearTimeout(deadline);
+      await server.kill();
+      // And this side's end of it, which a killed server leaves to notice in
+      // its own time. Playwright Test stops the trace of every context still
+      // on its list once the case is over, and one whose browser has just
+      // gone throws there: a second error on a case that had ended as
+      // written, in four Safari tries of fourteen on the runners.
       await own.close();
       evidence.result = result ?? { outcome: 'setup-error' };
       await testInfo.attach('independent-native-codec-worker', {
