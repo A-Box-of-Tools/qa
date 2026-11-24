@@ -270,21 +270,20 @@ export async function skipWithoutWebCodecs(page: Page): Promise<boolean> {
 const PATIENCE = 3_000;
 
 /**
- * Can this engine get pictures out of the fixture at all?
+ * Can a page on this engine get pictures out of the fixture?
  *
- * A better question than `typeof VideoDecoder`, because the two come apart.
- * Playwright's WebKit answers differently on different platforms - the
- * Windows build has no VideoDecoder, VideoEncoder, MediaRecorder or
- * OffscreenCanvas, while the Linux build the CI runners use has WebCodecs and
- * still cannot decode H.264, which is what a browser MediaRecorder writes and
- * what every fixture in this suite therefore is. A name check passes there
- * and every test behind it then fails on a black frame, which is a hundred
- * minutes of CI saying "this engine has no codec" in the most expensive way
- * available.
+ * A better question than `typeof VideoDecoder`, because the two come apart,
+ * and the one the cases behind it need answered: their readers put a clip in
+ * a <video>, draw it on a canvas and compare colours. Playwright's WebKit on
+ * Windows can do neither half. It has no VideoDecoder, VideoEncoder,
+ * MediaRecorder or OffscreenCanvas, and its <video> refuses the fixture,
+ * which is the H.264 a browser MediaRecorder writes, as every fixture in this
+ * suite is.
  *
- * Asked with a bare <video> and a canvas, so the answer is the engine's and
- * not a tool's: if this returns false, nothing on the site could have got a
- * picture out of that file either.
+ * Asked with a <video> and a canvas of its own, so the answer is the engine's
+ * and not a tool's, and with that <video> in the document, which is where
+ * the readers put theirs. AND A PLAYER THAT WAS NOT IN THE DOCUMENT, below,
+ * says what leaving it out cost.
  *
  * Two different frames rather than one non-black frame. A decoder that
  * produces the first frame and then stops - or a <video> that reports a size
@@ -315,11 +314,43 @@ const PATIENCE = 3_000;
  * the second until it shows something else, PATIENCE at most for each. That
  * is far longer than was measured, because how slow a runner is varies by
  * more than that, and the whole of it is only ever paid by a player that
- * never paints. There is one. WebKit on the runners reports the clip's size
- * and length, fires `seeked`, and paints nothing: 209 answers out of 209 were
- * no, and the 104 read with their alpha were transparent. It fires
- * requestVideoFrameCallback for those seeks all the same, which is why the
- * canvas is asked and not the callback.
+ * never paints. There was one when this was written. WebKit on the runners
+ * reported the clip's size and length, fired `seeked`, and painted nothing:
+ * 209 answers out of 209 were no, and the 104 read with their alpha were
+ * transparent. It fired requestVideoFrameCallback for those seeks all the
+ * same, which is why the canvas is asked and not the callback.
+ *
+ * AND A PLAYER THAT WAS NOT IN THE DOCUMENT
+ *
+ * Those 209 were not a missing codec, though this note said so from August to
+ * November 2026: that the WebKit build the runners use "has WebCodecs and
+ * still cannot decode H.264". Every case that reads a frame skipped on it in
+ * both Safari projects. The player this probe made was never put in the
+ * document, and on that build a player outside the document gives a canvas
+ * nothing.
+ *
+ * Measured on the runners in both Safari projects, with the player in the
+ * document and out of it, read five ways at five moments each time
+ * (A-Box-of-Tools/qa run 45499748042):
+ *
+ *   out of the document   a 2D canvas of either kind, an ImageBitmap and a
+ *                         WebGL texture were empty in 60 reads of 60, and
+ *                         play() left the clock where it was 12 times of 12
+ *   in the document       each held the whole picture in 50 reads of 50,
+ *                         1 to 8 ms after `seeked`, and the clock ran
+ *
+ * It made no difference whether the page was blank, a tool's, or in a browser
+ * started for the question; whether the clip was the fixture or one the site
+ * had written; or whether canPlayType was called first, which is what the
+ * encoder needed (see askThePage below). The clip was being decoded all
+ * along: a VideoFrame made from the player outside the document, and drawn,
+ * was the right picture in 60 reads of 60.
+ *
+ * The readers behind those cases have put their players in the document
+ * since the turn of October 2026, because a frame callback needs a player
+ * that is painted. So for seven weeks they could read on that build what
+ * this said nobody could. Now the probe's player goes where theirs do, and
+ * comes out again when it has answered.
  *
  * AND A NO FROM THE ENGINE THAT MADE THE CLIP
  *
@@ -351,7 +382,11 @@ export async function canDecodeVideo(
     video.muted = true;
     video.playsInline = true;
     video.preload = 'auto';
+    // In the document, like the players of the readers this answers for: see
+    // AND A PLAYER THAT WAS NOT IN THE DOCUMENT in the note above.
+    video.style.cssText = 'position:fixed;top:0;left:0;width:320px;height:240px;z-index:2147483647;pointer-events:none';
     try {
+      document.body.append(video);
       const ready = new Promise<boolean>((resolve) => {
         video.onloadeddata = () => resolve(true);
         video.onerror = () => resolve(false);
@@ -405,6 +440,7 @@ export async function canDecodeVideo(
       return another(await until(another));
     } finally {
       video.src = '';
+      video.remove();
       URL.revokeObjectURL(url);
     }
   }, { data: Array.from(bytes), mimeType, patience: PATIENCE }), false, 45_000);
