@@ -4,7 +4,9 @@ import { ask, onAPageOfItsOwn } from './engine';
 /**
  * These converters need the H.264 WebCodecs path, not merely MediaRecorder.
  * Ask independently on a disposable page because some WebKit builds expose
- * VideoEncoder but crash when its codec support is queried.
+ * VideoEncoder but crash when its codec support is queried cold. Media is
+ * started first, as the site starts it, and those builds then answer: the
+ * measurements are on askThePage in lib/browser-video.ts.
  */
 export async function canEncodeH264(page: Page): Promise<boolean> {
   return ask(page, 'encode-h264-webcodecs', () => onAPageOfItsOwn(page, (own) => own.evaluate(async () => {
@@ -14,6 +16,8 @@ export async function canEncodeH264(page: Page): Promise<boolean> {
     };
     const encoder = platform.VideoEncoder;
     if (!encoder?.isConfigSupported || typeof platform.VideoFrame !== 'function') return false;
+    // Starts the media backend; what it answers is not read.
+    document.createElement('video').canPlayType('video/mp4; codecs="avc1.640034"');
     // The same profiles and complete configuration that the converter may use,
     // without consulting the tool's own result or importing its implementation.
     const profiles = [

@@ -342,6 +342,11 @@ export async function canDecodeVideo(
  *
  * AND THE ANSWER THAT NEVER COMES
  *
+ * From here down to the function is how one build's silence was read until
+ * November 2026. It is kept because each reading was acted on, and the skips
+ * it led to are in this repository's history. What the silence was, and what
+ * the probe does about it now, is on askThePage below.
+ *
  * `VideoEncoder.isConfigSupported` does not always settle. On the WebKit build
  * CI runs it returns a promise that is still pending two minutes later - the
  * same build whose `VideoDecoder.isConfigSupported` answers immediately, which
@@ -370,9 +375,10 @@ export async function canDecodeVideo(
  *
  * A dedicated worker is no escape - in WebKit it shares that process, and a
  * worker given this question dies and takes the page with it, which was
- * checked before concluding it. There is therefore no arrangement of site
- * code that both uses WebCodecs and survives here, which is why the tools are
- * not asked to; see the skip in tests/tools/video-refusal.spec.ts.
+ * checked before concluding it. The conclusion was wrong all the same. It
+ * said that no arrangement of site code both uses WebCodecs and survives
+ * here, which is why the tools were not asked to, and the site found one in
+ * October 2026; see the skip in tests/tools/video-refusal.spec.ts.
  *
  * What follows for this probe is only that it must not ask on a page anybody
  * needs afterwards. It asks on a page of its own, so the caller's survives
@@ -388,7 +394,47 @@ export async function canEncodeVideo(page: Page): Promise<boolean> {
   return ask(page, 'encode-video', () => onAPageOfItsOwn(page, askThePage), false);
 }
 
-/** The question itself, wherever it is being put. */
+/**
+ * The question itself, wherever it is being put.
+ *
+ * AND WHAT THE SITE DOES BEFORE IT ASKS, WHICH THIS NOW DOES TOO
+ *
+ * The build that never answered was being asked cold. Its page's process had
+ * not started its media backend, and a VideoEncoder touched in that state
+ * aborts the process: `gst_register_core_elements: code should not be
+ * reached` is the last thing it prints. One `canPlayType` on a video element
+ * starts the backend, and the same question is then answered like any other.
+ *
+ * The site found that in October 2026 and has asked that way since, in
+ * `initializeMedia` in its shared/js/codec-support.js; the README here links
+ * the runs. This probe went on asking cold for five weeks more. It took the
+ * silence for an engine that can write no video, and 33 cases in each Safari
+ * project were skipped on a build whose tools were exporting MP4 files, in
+ * the same runs, in codec-native-initialization.spec.ts.
+ *
+ * Measured on the runners in November 2026, in both Safari projects, with a
+ * browser of its own for each question:
+ *
+ *   asked cold             no answer in eight seconds
+ *   canPlayType first      14 to 75 ms for that, then yes 27 to 61 ms later
+ *   the nine profiles      yes to each, and to 1920 by 1080
+ *   sixty frames encoded   sixty chunks, three of them keys, in 88 and 114 ms
+ *
+ * So the first line below is the question as a page of this site puts it.
+ * The note under it says a probe must not ask an easier question than the
+ * code it stands in for; asking a harder one was the same mistake, made the
+ * other way round.
+ *
+ * It is done on every engine, where the site does it only on the build that
+ * needs it. In Chromium it takes two milliseconds at most. And an engine
+ * that needed it where the site did not provide it would then run the tools'
+ * cases and fail them, which reports the defect where a skip would hide it.
+ *
+ * The cold question keeps a case of its own, tests/tools/codec-native.spec.ts,
+ * which expects the failure. AudioEncoder needs none of this: the same build
+ * answers it cold in 22 ms, and the site asks it cold, so canEncodeAac below
+ * is as it was.
+ */
 function askThePage(page: Page): Promise<boolean> {
   return page.evaluate(async () => {
     const global = globalThis as {
@@ -398,6 +444,9 @@ function askThePage(page: Page): Promise<boolean> {
       MediaRecorder?: { isTypeSupported?: (type: string) => boolean };
     };
     try {
+      // Starts the media backend, as the site's initializeMedia does. What it
+      // answers is about playback and is not read.
+      document.createElement('video').canPlayType('video/mp4; codecs="avc1.640034"');
       // The tool's own question, field for field: images-to-video's
       // pickH264Codec asks with a frame rate, a bitrate and `avc.format`, and
       // the first draft here asked with three fields and got a prompt "no"

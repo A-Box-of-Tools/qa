@@ -59,8 +59,9 @@ test.describe('a browser that cannot decode video', () => {
  * hide the difference between a tool that says so and a tool that sits there.
  *
  * This is the sentence that must be there instead, on every engine that is
- * still able to produce one. The engine CI runs is not, and says so through
- * the probe rather than through this test; see the skip below.
+ * still able to produce one. Every engine CI runs can encode, now that the
+ * probe asks as the site does, so this is a case for a desk: Playwright's
+ * WebKit on Windows has no VideoEncoder at all, and runs it.
  */
 test.describe('a browser that cannot write video', () => {
   test('images-to-video says so instead of trying', async ({ page }) => {
@@ -80,12 +81,12 @@ test.describe('a browser that cannot write video', () => {
      * what this test exists for.
      *
      * Where VideoEncoder is present and unusable there is no sentence to be
-     * had. On the WebKit build CI runs, touching it by any route - asking
-     * isConfigSupported, calling configure, from the page or from a worker -
-     * ends the WebContent process, and a page that no longer exists cannot
-     * say anything about anything. The measurements are in the canEncodeVideo
-     * note in lib/browser-video.ts; both Chromium projects do all three in
-     * milliseconds, so it is the engine and not the site.
+     * had. On the WebKit build CI runs, touching it cold by any route -
+     * asking isConfigSupported, calling configure, from the page or from a
+     * worker - ends the WebContent process, and a page that no longer exists
+     * cannot say anything about anything. The measurements are in the
+     * canEncodeVideo note in lib/browser-video.ts; both Chromium projects do
+     * all three in milliseconds, so it is the engine and not the site.
      *
      * This was previously wrapped in `test.fail()`, which cannot express even
      * that much: `test.fail()` expects a status of `failed`, and a page that
@@ -98,6 +99,12 @@ test.describe('a browser that cannot write video', () => {
      * A skip is the honest answer. There is nothing here to hold the site to,
      * and the day that build can keep a page alive this runs again with no
      * edit - which is what the probe answering rather than dying would mean.
+     *
+     * That day came from the other side. The site starts that build's media
+     * backend before it asks, the probe has done the same since November
+     * 2026, and the build answers yes. So on CI this test now ends at the
+     * skip above, as it does on every other engine there, and the skip below
+     * is for a build that dies under the question however it is put.
      */
     test.skip(wasSilent(page, 'encode-video'),
       'this engine has VideoEncoder and cannot use it: touching it at all ends '
