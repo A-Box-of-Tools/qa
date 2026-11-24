@@ -30,7 +30,7 @@ remaining capability and scenario boundaries.
 | [`tests/accessibility.spec.ts`](tests/accessibility.spec.ts) | `axe-core` serious/critical checks on every English tool, the English/Chinese hubs, a guide and the page types; representative loaded/error/dark states and Tab-reachability of every file picker |
 | [`tests/loaded-accessibility.spec.ts`](tests/loaded-accessibility.spec.ts) | Additional loaded/result and error states across text, checksum, PDF, GIF, data-URI and audio interfaces |
 | [`tests/tools/codec-worker.spec.ts`](tests/tools/codec-worker.spec.ts) | A synchronous controlled codec query blocks a real same-origin worker while the parent page remains responsive, terminates it and refuses or retries; ordered answers and missing-worker refusal run under each tool's CSP. The safe fake codec uses an explicit MacIntel platform identity to exercise the normal worker path; this does not claim native Apple Safari coverage. |
-| [`tests/tools/codec-native-initialization.spec.ts`](tests/tools/codec-native-initialization.spec.ts) | All twelve H.264 consumers and the Convert to MP4 VP8 example preserve native support and responsive retries. Linux WebKit's ordinary media initialization must precede its worker. Images to Video exports the real example twice, plays each result and downloads MP4 bytes checked by an independent box reader. The encoder, platform and native media answers are unmodified; these cases do not borrow the fixture's initialization. |
+| [`tests/tools/codec-native-initialization.spec.ts`](tests/tools/codec-native-initialization.spec.ts) | All twelve H.264 consumers and the Convert to MP4 VP8 example preserve native support and responsive retries. Linux WebKit's ordinary media initialization must precede its worker. Images to Video exports the real example twice, plays each result and downloads MP4 bytes checked by an independent box reader. The encoder, platform and native media answers are unmodified; these cases do not borrow the fixture's initialization. The suite's own encoder probes, which gate the other video cases, must say yes wherever the product picks an H.264 codec. |
 | [`tests/tools/codec-native.spec.ts`](tests/tools/codec-native.spec.ts) | An isolated browser process independently queries the cold native encoder without product media initialization. A handshake records that the worker reached its validated invocation block, then records the parent acknowledgment and authorization to resume before the native call. The observed Linux WebKit failure remains an expected failure with JSON evidence; native recovery becomes an unexpected pass requiring review of the workaround. Unknown setup failures still fail. Missing APIs and observed crashes on other identities remain annotated diagnostic gaps. |
 | [`tests/offline.spec.ts`](tests/offline.spec.ts) | On engines passing an independent offline-emulation probe, every installed tool reloads its shell and module graph offline; Base64 also performs an offline operation. Actual generated workers on a controlled loopback origin verify fresh online HTML, independent nested caches and fallback after that origin is stopped. |
 | [`tests/handoff.spec.ts`](tests/handoff.spec.ts) | A generated PDF reaches the next tool byte-for-byte, is consumed once, and storage refusal opens the destination without partial input |
@@ -161,6 +161,19 @@ working Linux encoders. Native regression cases must preserve that output,
 while the independent cold query stays visible as an expected failure.
 Neither result proves native Safari encoding or promises that workers can
 contain every browser-process failure.
+
+The suite's own capability probes went on asking the cold question for five
+weeks after that. `canEncodeVideo` and `canEncodeH264` gate the cases that
+need a video written, they read the silence as an engine that could write
+none, and 33 cases in each Safari project were skipped. They now start media
+before they ask, as the product does. In the
+[measuring run](https://github.com/A-Box-of-Tools/qa/actions/runs/45460615140)
+Linux WebKit then answered yes for all nine H.264 profiles the tools try and
+encoded sixty frames, and 27 of the 33 cases ran and passed. Five still skip
+because a plain `<video>` paints no picture there for the suite to read, and
+the last is the case for a browser that can write no video, which none in CI
+is. A case in `codec-native-initialization.spec.ts` fails if the probes say
+no where the product picks a codec, because a wrong skip is otherwise green.
 
 During website PR #594 review, the user confirmed that Try an example followed
 by Create produced an MP4 on a real iPhone in Safari. The exact preview revision

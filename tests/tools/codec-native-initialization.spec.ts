@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR } from '../../lib/site';
 import { isMp4, readMp4, videoTrack } from '../../lib/mp4';
+import { canEncodeVideo } from '../../lib/browser-video';
+import { canEncodeH264 } from '../../lib/held-video-flush';
 
 const available = fs.existsSync(path.join(ETOOLBOX_DIR, 'shared', 'js', 'codec-support-worker.js'));
 const tools = [
@@ -200,4 +202,25 @@ test('convert-to-mp4: native initialization preserves the VP8 example and a fres
     expect(output.size).toBeGreaterThan(100);
     await responsiveAfterWorker(page, attempt, identity);
   }
+});
+
+test('images-to-video: the probes that gate the other video cases agree with the product', async ({ page }) => {
+  // canEncodeVideo and canEncodeH264 decide whether dozens of cases run at
+  // all, and a wrong "no" from either cannot be seen: a skip is green. For
+  // five weeks in 2026 both said no on Linux WebKit while the cases above
+  // passed on it, because they asked the encoder cold and the product does
+  // not. Wherever the product picks an H.264 codec, both must say yes.
+  //
+  // Room for two probes that each open a page of their own.
+  test.setTimeout(60_000);
+  await page.goto('/images-to-video/');
+  const codec = await bounded(page.evaluate(async ({ slug, modulePath }) => {
+    const { pickH264Codec } = await import(`/${slug}/src/${modulePath}`);
+    return pickH264Codec({ width: 320, height: 240, framerate: 30, bitrate: 1_200_000 });
+  }, { slug: 'images-to-video', modulePath: 'support.js' }), 5_000);
+  test.skip(!codec, 'the product picks no H.264 codec on this engine, so there is nothing for the probes to agree with');
+  expect(await canEncodeVideo(page),
+    `canEncodeVideo says this engine can write no video, and the product has just picked ${codec} on it`).toBe(true);
+  expect(await canEncodeH264(page),
+    `canEncodeH264 says this engine cannot encode H.264, and the product has just picked ${codec} on it`).toBe(true);
 });
