@@ -383,6 +383,17 @@ export async function canDecodeVideo(
  * caller can ask before it has navigated anywhere, and closed where it can
  * be - where the process dies the evaluate is abandoned mid-flight, so the
  * close never runs and the page goes when its context does.
+ *
+ * WHAT "NO ANSWER, THEN THE PAGE IS GONE" WAS
+ *
+ * An abort, and then the wait for it to be cleared away. Measured again in
+ * November 2026, with the browser's own output to read: the process stops at
+ * `gst_register_core_elements: code should not be reached`, GStreamer never
+ * having been started in it, and the runner then collected its core for 16
+ * to 101 s before anything was told of a crash. The runners no longer collect
+ * cores, and the page is gone 60 to 460 ms after the question. ask() takes a
+ * page that dies under its question for silence, so the answer here is what
+ * it was either way: no, and silent.
  */
 export async function canEncodeVideo(page: Page): Promise<boolean> {
   return ask(page, 'encode-video', () => onAPageOfItsOwn(page, askThePage), false);

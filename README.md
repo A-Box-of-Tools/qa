@@ -62,6 +62,15 @@ starting before any tool can be tested. Browser caches include the runner
 image and architecture. Update the image deliberately with the browser
 dependencies and verify both WebKit projects before changing this pin.
 
+The Report workflow's Linux jobs also stop the runner collecting cores before
+a slice runs. The suite crashes a WebKit page on purpose whenever it asks that
+build about its video encoder, and a runner that collects cores kept each such
+page for 16 to 101 s, answering nothing and reporting no crash. A Linux desk
+that collects cores (`systemd-coredump`, `apport`) still shows that timing: the
+encoder questions take their whole deadline there, and come to the same
+answers. The step and its measurements are in
+[`.github/workflows/report.yml`](.github/workflows/report.yml).
+
 ## Running
 
 By default this builds and serves the sibling `../etoolbox` checkout itself

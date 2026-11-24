@@ -542,6 +542,35 @@ jobs:
         with:
           name: last-failed
 
+      # A BROWSER PROCESS THAT HAS CRASHED SHOULD BE GONE
+      #
+      # The runner image hands every crashed process to systemd-coredump, and a
+      # process whose core is being collected has not gone anywhere. It answers
+      # nothing, it keeps its browser's output open, and nothing is told that
+      # it crashed until the collecting is over. A WebKit page's process is
+      # 75 GB of address space: collecting one took 16 to 21 s on a runner with
+      # little else to do and 78 to 101 s on a busy one, and each collector used
+      # 6 to 14 s of a processor the four workers wanted (QA runs 45264353394
+      # and 45453622028).
+      #
+      # The suite makes that crash on purpose, several times a slice. On this
+      # WebKit build, asking VideoEncoder a question in a process where
+      # GStreamer was never started aborts the process, and the probes that
+      # ask it are how the Safari projects learn which cases need an encoder
+      # they do not have. What that cost while cores were collected, and what
+      # a probe makes of a page that dies under its question, is on ask() in
+      # lib/engine.ts.
+      #
+      # With a file for a pattern, and the core limit at the zero the image
+      # already gives it, the kernel writes nothing and hands nothing on: the
+      # page was gone 60 to 460 ms after the question in six tries, and no
+      # file was left. Nobody reads a core from a machine that is thrown away
+      # when its job ends. The limit is set again where the slice is run,
+      # below, so that "writes nothing" does not rest on the image's default.
+      - name: Let a crashed browser process go at once
+        if: runner.os == 'Linux' && steps.slice.outputs.wanted == 'yes'
+        run: sudo sysctl -w kernel.core_pattern=core
+
       # blob rather than html: the slices are stitched into one page by the
       # report job below. github stays so annotations still land on the
       # commit.
@@ -595,6 +624,8 @@ jobs:
           SHARE_CROSS_VERSION_CACHE_DIR: ${{ runner.temp }}/share-chrome
         run: |
           set -euo pipefail
+          # No cores, whatever the image's default is: see the step above.
+          if [ "${RUNNER_OS:-}" = 'Linux' ]; then ulimit -c 0; fi
           if [ -n "$CAMERA_STRESS" ]; then
             pattern='(blocked automatic audio falls back to flowing muted video and a viewer can unmute|viewer alerts keep video working when notifications are denied|approval gates video, denial sends none, and additional viewers follow the shipped admission policy)$'
             npx playwright test tests/tools/remote-camera.spec.ts --project="${{ matrix.project }}" --grep="$pattern" --list --reporter=json > camera-plan.json

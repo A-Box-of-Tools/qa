@@ -179,12 +179,14 @@ export class NotAsked extends Error {
 const ARRIVAL = 15_000;
 
 /**
- * What a probe tells ask() while it runs: when the page it asks on arrived.
+ * What a probe tells ask() while it runs: when the page it asks on arrived,
+ * and whether that page died under the question.
  *
  * Kept where onAPageOfItsOwn() can find it without being handed it, so that
  * the ten probes that open a page of their own read as they did.
  */
-const putting = new AsyncLocalStorage<{ arrived?: Promise<void> }>();
+interface Putting { arrived?: Promise<void>; died?: boolean }
+const putting = new AsyncLocalStorage<Putting>();
 
 /**
  * Put a question to the page, and take silence for an answer.
@@ -194,10 +196,11 @@ const putting = new AsyncLocalStorage<{ arrived?: Promise<void> }>();
  * `setTimeout` in the browser, which is sound reasoning about a promise that
  * never settles and useless against the thing that actually happens.
  * `VideoEncoder.isConfigSupported` on the WebKit build CI runs does not merely
- * fail to resolve - it blocks the main thread, so the timer set to rescue it
+ * fail to resolve - the page stops altogether, so the timer set to rescue it
  * never gets a turn. A probe with a two-second internal deadline sat there for
  * a hundred and twenty seconds and took nineteen tests down with it, every one
- * of them a test the probe existed to skip.
+ * of them a test the probe existed to skip. Why the page stops is the last
+ * part of this note; it was first written down here as a blocked main thread.
  *
  * A timer in this process cannot be blocked by that page. So the bound is
  * here, the fallback is the cautious answer, and a wedged page costs one
@@ -234,6 +237,26 @@ const putting = new AsyncLocalStorage<{ arrived?: Promise<void> }>();
  * And the deadline is the question's, not the page's. It starts when the page
  * has arrived, so a slow load cannot use up the time the browser was given to
  * answer in. The load has a limit of its own, ARRIVAL above.
+ *
+ * AND A PAGE THAT DIES UNDER THE QUESTION HAS NOT ANSWERED IT
+ *
+ * What stops that WebKit page was measured on the runners in November 2026,
+ * and it is not a thread that is blocked. The page's process aborts: GStreamer
+ * was never started in it, and its output ends `gst_register_core_elements:
+ * code should not be reached`. The runner then collected the dead process's
+ * core, and for as long as that took - 16 to 101 s - the process was neither
+ * answering nor gone, and nothing was told that it had crashed. That is the
+ * page on which no timer fires, and the silence this deadline was made for.
+ *
+ * The runners no longer collect cores; .github/workflows/report.yml says why.
+ * The same page is now gone 60 to 460 ms after the question, and the probe's
+ * evaluate throws at once. Caught with everything else, that would have been
+ * written down as a plain no, and wasSilent() would have stopped saying the
+ * one thing it is there to say: tests/tools/video-refusal.spec.ts leans on it
+ * to tell a browser that can be held to a refusal from one that cannot be
+ * asked anything. So a page that crashes while it is being asked is silence:
+ * the answer the deadline gave for it, eight seconds sooner, and the answer
+ * the deadline still gives on a machine that does collect cores.
  */
 export async function ask<T>(
   page: Page,
@@ -271,10 +294,14 @@ export async function ask<T>(
   }
 
   const QUIET = Symbol('no answer');
-  const told: { arrived?: Promise<void> } = {};
+  const told: Putting = {};
   let timer: NodeJS.Timeout | undefined;
   let over = false;
   let answer: T | symbol;
+  // Heard here for a probe that asks on the caller's page, and in
+  // onAPageOfItsOwn() for one that asks on its own.
+  const died = () => { told.died = true; };
+  page.on('crash', died);
   try {
     const working = putting.run(told, work);
     // The question's deadline. Where the probe opened a page of its own, the
@@ -287,7 +314,8 @@ export async function ask<T>(
     answer = await Promise.race([
       working.catch((error: unknown) => {
         if (error instanceof NotAsked) throw error;
-        return cautious;
+        // A page that died was asked and did not answer: silence, not a no.
+        return told.died ? QUIET : cautious;
       }),
       quiet,
     ]);
@@ -303,6 +331,7 @@ export async function ask<T>(
   } finally {
     over = true;
     clearTimeout(timer);
+    page.off('crash', died);
   }
 
   if (answer === QUIET) silences.add(key);
@@ -337,7 +366,9 @@ export async function ask<T>(
  * A page that does not arrive is not a browser that cannot. If the page
  * cannot be opened, or the front page has not loaded in ARRIVAL, the question
  * was never put and this throws NotAsked without calling `work` at all. What
- * `work` itself throws, once it has a page, is still the probe's own affair.
+ * `work` itself throws, once it has a page, is still the probe's own affair -
+ * but ask() is told if the page crashed first, because a page that died under
+ * the question did not answer it.
  */
 export async function onAPageOfItsOwn<T>(page: Page, work: (scratch: Page) => Promise<T>): Promise<T> {
   // Told to ask() before anything is awaited, so that it holds its deadline
@@ -363,6 +394,7 @@ export async function onAPageOfItsOwn<T>(page: Page, work: (scratch: Page) => Pr
       throw never;
     }
     arrive();
+    scratch.on('crash', () => { if (told) told.died = true; });
     return await work(scratch);
   } finally {
     // Context-wide setup also visits this page; it must not race its teardown.
