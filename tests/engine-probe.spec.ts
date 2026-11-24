@@ -7,7 +7,7 @@ test('engine probes finish scratch-page cleanup before returning to context-wide
     let beganClose!: () => void, finishClose!: () => void;
     const closing = new Promise<void>(resolve => { beganClose = resolve; });
     const closed = new Promise<void>(resolve => { finishClose = resolve; });
-    const scratch = { goto: async () => {}, close: () => { beganClose(); return closed; } };
+    const scratch = { goto: async () => {}, on: () => {}, close: () => { beganClose(); return closed; } };
     const page = { context: () => ({ newPage: async () => scratch }) } as unknown as Page;
     const failure = new Error('probe failed');
     let settled = false;
@@ -27,16 +27,32 @@ test('engine probes finish scratch-page cleanup before returning to context-wide
  * file the answer under, and a page of the probe's own whose arrival each case
  * decides. No browser and no network, so what these cases show is the
  * bookkeeping and nothing else.
+ *
+ * Either page can be made to die, which is all a crash is to these two: the
+ * `crash` event, and then whatever was being awaited throwing.
  */
-function pretend(arrival: () => Promise<void>): Page {
-  const own = { goto: arrival, close: async () => {} };
+function pretend(arrival: () => Promise<void>): Page & { dies(): void; ownPageDies(): void } {
+  const heard = { caller: [] as Array<() => void>, own: [] as Array<() => void> };
+  const listenOn = (list: Array<() => void>) => (event: string, listener: () => void) => {
+    if (event === 'crash') list.push(listener);
+  };
+  const own = { goto: arrival, close: async () => {}, on: listenOn(heard.own) };
   return {
+    on: listenOn(heard.caller),
+    off: (event: string, listener: () => void) => {
+      if (event === 'crash') heard.caller = heard.caller.filter((kept) => kept !== listener);
+    },
     context: () => ({
       browser: () => ({ browserType: () => ({ name: () => 'pretend' }) }),
       newPage: async () => own,
     }),
-  } as unknown as Page;
+    dies: () => { for (const listener of heard.caller) listener(); },
+    ownPageDies: () => { for (const listener of heard.own) listener(); },
+  } as unknown as Page & { dies(): void; ownPageDies(): void };
 }
+
+/** What Playwright throws from an evaluate that was pending when its page crashed. */
+const GONE = 'page.evaluate: Target page, context or browser has been closed';
 
 const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 const RESET = 'page.goto: net::ERR_CONNECTION_RESET at https://site.test/\nCall log:\n  - navigating to "https://site.test/"';
@@ -130,4 +146,38 @@ test('a waiting asker takes over when the one asking never got to ask', async ()
   expect(await second, 'the waiter must ask for itself, not inherit a no').toBe(true);
   // Far inside what a waiter allows an asker that is still at it.
   expect(Date.now() - began).toBeLessThan(5_000);
+});
+
+test('a page that dies under the question is silence, not a no', async () => {
+  // A probe on a page of its own, which is how the encoder question is asked.
+  const onItsOwn = fresh('died-on-its-own');
+  let put = 0;
+  const page = pretend(async () => {});
+  const asking = () => ask(page, onItsOwn, () => onAPageOfItsOwn(page, async () => {
+    put += 1;
+    page.ownPageDies();
+    throw new Error(GONE);
+  }), false);
+  expect(await asking()).toBe(false);
+  expect(wasSilent(page, onItsOwn), 'a page that died gave no answer, which is not the answer no').toBe(true);
+  // Silence is remembered like any answer: the page is not killed twice.
+  expect(await asking()).toBe(false);
+  expect(put).toBe(1);
+
+  // And a probe that asks on the caller's own page.
+  const onTheCallers = fresh('died-on-the-callers');
+  const caller = pretend(async () => {});
+  expect(await ask(caller, onTheCallers, async () => {
+    caller.dies();
+    throw new Error(GONE);
+  }, false)).toBe(false);
+  expect(wasSilent(caller, onTheCallers)).toBe(true);
+
+  // The control. The same throw from a page that is still there is an
+  // answer, and a later crash of the caller's page is none of ask()'s affair.
+  const alive = fresh('threw-and-lived');
+  const living = pretend(async () => {});
+  expect(await ask(living, alive, () => onAPageOfItsOwn(living, async () => { throw new Error(GONE); }), false)).toBe(false);
+  living.dies();
+  expect(wasSilent(living, alive)).toBe(false);
 });

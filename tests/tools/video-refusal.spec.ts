@@ -93,7 +93,10 @@ test.describe('a browser that cannot write video', () => {
      * renderer that crashed produced an error and counted as expected, one
      * that only froze produced a timeout and turned the suite red. qa#83,
      * #90, #91 and #92 are all this one case, filed and closed on alternate
-     * nights.
+     * nights. What has been measured since fits both: the process aborts, and
+     * then answers nothing for as long as the runner takes to collect its
+     * core, which was inside a test's time on one try and outside it on the
+     * next. See the last part of the note on ask() in lib/engine.ts.
      *
      * A skip is the honest answer. There is nothing here to hold the site to,
      * and the day that build can keep a page alive this runs again with no
