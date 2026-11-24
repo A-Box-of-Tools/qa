@@ -90,6 +90,33 @@ export async function codecWorkerFixture(
   });
 }
 
+/**
+ * Let go of the fixture's route when a case is over.
+ *
+ * The fixture answers the page's request for the worker file by fetching the
+ * real one from Node, and a case can end while that fetch is still on its
+ * way. It was seen on a runner: the site took more than the five seconds a
+ * case waits for the worker to speak, the case failed, and its context was
+ * closed with the fetch in flight. Playwright rejects such a fetch with "Test
+ * ended", inside a handler nobody is waiting on, so the rejection is nobody's
+ * until the runner picks it up. Staged at a desk it then failed the next case
+ * in the worker, which had done nothing wrong, three times of three; with no
+ * case running it is reported against none, and the slice fails with every
+ * case in it passed. That is what the runner showed, after the failed case
+ * had passed on its retry.
+ *
+ * So each case ends by letting the route go, and whatever its handler throws
+ * after that is dropped. What a handler throws while its case is running is
+ * untouched: a worker file that cannot be fetched, or is not answered with
+ * 200, still fails the case it happens in.
+ *
+ * Call it from an afterEach, which runs for a case that failed as well. It
+ * lets go of every route on the context, so it belongs at the end.
+ */
+export async function releaseCodecWorker(context: BrowserContext): Promise<void> {
+  await context.unrouteAll({ behavior: 'ignoreErrors' });
+}
+
 export async function codecState(page: Page) {
   return page.evaluate(() => {
     const state = (window as any).__codecWorkerQA;
