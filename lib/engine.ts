@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
@@ -71,7 +72,9 @@ import type { Page } from '@playwright/test';
  * and the others wait on the notebook for its answer. If the prober dies
  * before writing, the waiters give up after the probe's own deadline plus a
  * margin and ask for themselves, which is the old behaviour and only in the
- * case that used to be the only behaviour.
+ * case that used to be the only behaviour. And if the prober lets the lock go
+ * with nothing written, which is what it does when it never got to ask, the
+ * first waiter to notice takes the lock and asks in its place.
  *
  * A file that cannot be read or written is simply not there, and the worker
  * does what it always did.
@@ -150,6 +153,40 @@ export function wasSilent(page: Page, question: string): boolean {
 }
 
 /**
+ * A probe that never got to put its question.
+ *
+ * Thrown, where a probe that was put answers with the cautious value, because
+ * nothing has been learned about the browser: the page the question is asked
+ * on did not arrive. See "A QUESTION THAT WAS NEVER PUT" on ask().
+ */
+export class NotAsked extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'NotAsked';
+  }
+}
+
+/**
+ * How long a probe's own page is given to arrive, in milliseconds.
+ *
+ * On the runners the site's front page loaded in half a second at the median
+ * in the Chrome projects and one second in the Safari ones, and in under
+ * 3.1 s ninety-nine times in a hundred (some 800 loads in three runs of the
+ * whole suite). Fifteen seconds is five times that, and half of what a case with
+ * the default limit has, which leaves it the time to say the site did not
+ * answer rather than run out on the way to saying it.
+ */
+const ARRIVAL = 15_000;
+
+/**
+ * What a probe tells ask() while it runs: when the page it asks on arrived.
+ *
+ * Kept where onAPageOfItsOwn() can find it without being handed it, so that
+ * the ten probes that open a page of their own read as they did.
+ */
+const putting = new AsyncLocalStorage<{ arrived?: Promise<void> }>();
+
+/**
  * Put a question to the page, and take silence for an answer.
  *
  * THE PART THAT MATTERS: the deadline is out here, in Node, and not inside
@@ -169,6 +206,34 @@ export function wasSilent(page: Page, question: string): boolean {
  * The abandoned evaluate is left running. There is nothing useful to do with
  * a page whose main thread is stuck, and the only caller is a skip - after
  * which Playwright discards the page anyway.
+ *
+ * AND A QUESTION THAT WAS NEVER PUT IS NOT AN ANSWER
+ *
+ * Most of these ask on a page of their own, and that page is the site's front
+ * page - see onAPageOfItsOwn(). When it does not load, nothing has been asked
+ * of the browser at all, and the first version of this wrote the cautious
+ * answer down regardless: a navigation that threw was caught with everything
+ * else, and one still loading at the deadline was taken for silence. Either
+ * way the notebook then told every worker of the slice, retries included,
+ * something about the browser that was a fact about the network.
+ *
+ * It happened on 23 November 2026 (QA run 45239624985, slice
+ * desktop-chrome-1). Ten minutes into the slice the camera question's page
+ * spent 9.3 s not loading, and another page had its connection reset ten
+ * seconds later. Chrome went down as a browser that cannot be handed a fake
+ * camera: twenty Remote Camera cases skipped, and thirteen Share Tab cases,
+ * which require that camera rather than skip without it, failed all three
+ * tries in under a second each.
+ *
+ * So a probe that could not be put throws NotAsked, and this passes it on.
+ * Nothing is remembered here, nothing is written down, the lock is let go,
+ * and the case that asked fails saying the site did not answer - which is
+ * what would have failed it a moment later, when it navigated for itself.
+ * Its retry asks again, and so does the next case.
+ *
+ * And the deadline is the question's, not the page's. It starts when the page
+ * has arrived, so a slow load cannot use up the time the browser was given to
+ * answer in. The load has a limit of its own, ARRIVAL above.
  */
 export async function ask<T>(
   page: Page,
@@ -191,24 +256,54 @@ export async function ask<T>(
 
   // Somebody else is asking this very question. Their answer will be ours;
   // wait for it rather than paying for a second copy. The wait is bounded by
-  // what their probe can take - the deadline below plus the page it opens -
-  // so a prober that died mid-question cannot hold everyone else for ever.
+  // what their probe can take - the page it opens, the deadline below and a
+  // margin - so a prober that died mid-question cannot hold everyone else for
+  // ever. It ends early if they let the lock go with nothing written: they
+  // never got to ask, so this one asks in their place.
   if (!claim(key)) {
-    const patience = Date.now() + ms + 15_000;
+    const patience = Date.now() + ARRIVAL + ms + 2_000;
     while (Date.now() < patience) {
       await sleep(200);
       const theirs = readNotebook()[key];
       if (theirs) return adopt(theirs);
+      if (claim(key)) break;
     }
   }
 
   const QUIET = Symbol('no answer');
+  const told: { arrived?: Promise<void> } = {};
   let timer: NodeJS.Timeout | undefined;
-  const answer = await Promise.race([
-    work().catch(() => cautious),
-    new Promise<T | symbol>((resolve) => { timer = setTimeout(() => resolve(QUIET), ms); }),
-  ]);
-  clearTimeout(timer);
+  let over = false;
+  let answer: T | symbol;
+  try {
+    const working = putting.run(told, work);
+    // The question's deadline. Where the probe opened a page of its own, the
+    // clock starts when that page has arrived, and never if it does not.
+    const quiet = new Promise<symbol>((resolve) => {
+      const begin = () => { if (!over) timer = setTimeout(() => resolve(QUIET), ms); };
+      if (told.arrived) told.arrived.then(begin, () => {});
+      else begin();
+    });
+    answer = await Promise.race([
+      working.catch((error: unknown) => {
+        if (error instanceof NotAsked) throw error;
+        return cautious;
+      }),
+      quiet,
+    ]);
+  } catch (error) {
+    // Never asked, so there is nothing to remember and nothing to write
+    // down. The next asker gets the lock, and this case hears why.
+    release(key);
+    if (error instanceof NotAsked) {
+      error.message = `no answer to "${question}": ${error.message}. That is the site or the network `
+        + 'and says nothing of the browser, so nothing was remembered and the next case asks again';
+    }
+    throw error;
+  } finally {
+    over = true;
+    clearTimeout(timer);
+  }
 
   if (answer === QUIET) silences.add(key);
   const settled = (answer === QUIET ? cautious : answer) as T;
@@ -238,15 +333,40 @@ export async function ask<T>(
  * process dies the evaluate is abandoned mid-flight, so the close never runs
  * and the page goes when its context does. Callers ask first and navigate
  * after, and a test that is going to skip loads nothing.
+ *
+ * A page that does not arrive is not a browser that cannot. If the page
+ * cannot be opened, or the front page has not loaded in ARRIVAL, the question
+ * was never put and this throws NotAsked without calling `work` at all. What
+ * `work` itself throws, once it has a page, is still the probe's own affair.
  */
 export async function onAPageOfItsOwn<T>(page: Page, work: (scratch: Page) => Promise<T>): Promise<T> {
-  const scratch = await page.context().newPage();
+  // Told to ask() before anything is awaited, so that it holds its deadline
+  // back for the question and waits for this page first.
+  const told = putting.getStore();
+  let arrive = () => {};
+  let lose = (_why: NotAsked) => {};
+  if (told) {
+    told.arrived = new Promise<void>((resolve, reject) => { arrive = resolve; lose = reject; });
+    // ask() listens to it when it can; nobody has to for it to be safe.
+    told.arrived.catch(() => {});
+  }
+
+  let scratch: Page | undefined;
   try {
-    await scratch.goto('/');
+    try {
+      scratch = await page.context().newPage();
+      await scratch.goto('/', { timeout: ARRIVAL });
+    } catch (error) {
+      const said = String((error as Error)?.message ?? error).split('\n')[0];
+      const never = new NotAsked(`the page a probe asks on did not arrive (${said})`, { cause: error });
+      lose(never);
+      throw never;
+    }
+    arrive();
     return await work(scratch);
   } finally {
     // Context-wide setup also visits this page; it must not race its teardown.
-    await scratch.close().catch(() => {});
+    await scratch?.close().catch(() => {});
   }
 }
 
