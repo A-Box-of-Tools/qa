@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ETOOLBOX_DIR } from '../../lib/site';
 import { encodePng } from '../../lib/image-fixtures';
-import { codecWorkerFixture, codecState, prepareCodecResponsiveness, responsiveDuringCodecQuery } from '../../lib/codec-worker';
+import {
+  codecWorkerFixture, codecState, prepareCodecResponsiveness, releaseCodecWorker, responsiveDuringCodecQuery,
+} from '../../lib/codec-worker';
 
 const workerFilename = 'codec-support-worker.js';
 const available = fs.existsSync(path.join(ETOOLBOX_DIR, 'shared', 'js', workerFilename));
@@ -19,6 +21,13 @@ test.use({ serviceWorkers: 'block' });
 
 test.beforeEach(() => {
   test.skip(!available, 'Worker-isolated H.264 capability checks are awaiting the website release.');
+});
+
+// A case can end with the fixture still fetching the worker file, and the
+// error that follows would land on another case or on none. See
+// releaseCodecWorker for what was seen and staged.
+test.afterEach(async ({ context }) => {
+  await releaseCodecWorker(context);
 });
 
 async function startProbe(page: Page, slug: string) {
