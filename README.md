@@ -131,10 +131,13 @@ That probe asks with its player in the document. Outside it the Linux WebKit
 build gives a canvas nothing, which was read as a missing codec and skipped
 every case that reads a frame in both Safari projects until November 2026. A
 control in [`tests/tools/video.spec.ts`](tests/tools/video.spec.ts) now fails
-if the probe says no where the trimmer is showing the clip. Three cases
-behind that probe run in Chromium only, because their readers are not steady
-in that WebKit: two Trim Video cases that watch a saved file play, and Crop
-Video's comparison of a still with its source.
+if the probe says no where the trimmer is showing the clip. The readers
+behind that probe allow for three more habits of that WebKit. Asked for a
+frame's edge it shows either neighbour, so a still is asked for well inside a
+frame. It reports the frames of a play late and in fits, a page's first play
+worst, so a played frame is looked for on a timer whenever none has been
+reported for a moment. And it stamps the frames of an edited file with their
+time in the track, so such a frame is named by the player's clock.
 Counts of passed, flaky and skipped cases are reported separately on the
 website commit.
 

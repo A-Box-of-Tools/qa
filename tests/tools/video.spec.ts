@@ -129,20 +129,12 @@ async function scrubTo(page: Page, fraction: number): Promise<void> {
 // Copy and its refusal guard need only native playback for their pixel oracle:
 // probe the cached fixture before loading it into the app, so an app failure
 // cannot be mistaken for a missing decoder.
-test.beforeEach(async ({ page, browserName }, testInfo) => {
+test.beforeEach(async ({ page }, testInfo) => {
   await page.goto('/');
   // Replacement and joining inspect the saved MP4 packets; they do not need
   // a native player or WebCodecs decoder to decide whether input was replaced.
   if (testInfo.tags.includes('@copy-input')) return;
   if (testInfo.tags.includes('@native-playback')) {
-    // These end in a reader that watches a file play through its frame
-    // callbacks. Named by engine and not asked, because what stops it in
-    // WebKit comes and goes from one play to the next, and a probe would
-    // answer for the play it was asked in. playedVideoFrames has the
-    // measurements.
-    test.skip(browserName !== 'chromium',
-      'the playback reader watches a file through its frame callbacks, which Playwright\'s WebKit stamps in the '
-      + 'track\'s time and sends late and in fits; these cases run in Chromium');
     const { bytes } = await recordVideo(page, {
       width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
     });
@@ -274,16 +266,24 @@ test.describe('grab-frame: a still out of a film', () => {
 /**
  * Compare the saved crop with source coordinates, using fresh native players.
  *
- * Steady in Chromium. Not in the WebKit build the runners use: with the
- * picture probe put right the case below ran there in 22 tries, four takes at
- * once, and in 7 of them the saved pixels came out 12.9 to 13.3 from the
- * source's against a limit of 12, and under the limit in the other 15
- * (A-Box-of-Tools/qa runs 45504069425 and 45509108375). The misses are all
- * nearly the same size. What puts the two stills that far apart there was not
- * found, so that case runs in Chromium only.
+ * WHERE THE STILL IS TAKEN
+ *
+ * Well inside a frame, by the source's own table: see frameOnShow. It used to
+ * be taken at 0.75 s, and a clip recorded at twenty frames a second begins a
+ * frame within a few milliseconds of there. At a frame's edge the WebKit
+ * build the runners use shows either neighbour. Sought every five
+ * milliseconds across two frames, it changed pictures up to 20 ms before the
+ * source's frame began, and anywhere from 18 ms before to 10 ms after the
+ * saved crop's. So the two stills could be a frame apart, which this sum
+ * reads as 12.3 to 16.4 against the case's limit of 12, where the same frame
+ * reads as 3 to 4. Of 136 pairs of stills taken there at 0.75 s, 31 were a
+ * frame apart; of 112 taken well inside the frame, none were. Chromium
+ * changes pictures where the table says, and was never out (A-Box-of-Tools/qa
+ * runs 46108555746, 46109555726, 46110055487, 46110736915 and 46113908352).
  */
 async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
-  return page.evaluate(async ({ source, output }) => {
+  const still = frameOnShow(source, 0.75);
+  return page.evaluate(async ({ source, output, target, begins }) => {
     const read = async (encoded: string) => {
       const bytes = Uint8Array.from(atob(encoded), (value) => value.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
@@ -309,7 +309,6 @@ async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
       });
       try {
         await wait('loadeddata', () => { video.src = url; });
-        const target = 0.75;
         if (!Number.isFinite(video.duration) || video.duration <= target) {
           throw new Error('the crop fixture ended before the sampled frame');
         }
@@ -347,9 +346,10 @@ async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
           };
           const onSeeked = () => { seeked = true; ready(); };
           const frame = (_: number, metadata: VideoFrameCallbackMetadata) => {
-            // This fixture is recorded at 20 fps. Reject the old poster frame,
-            // allowing one frame interval plus timestamp-rounding tolerance.
-            if (metadata.mediaTime <= target + 0.005 && target - metadata.mediaTime <= 0.055) {
+            // Reject the old poster frame. Chromium stamps a frame with its
+            // own beginning and WebKit with the moment sought, so anything
+            // from one to the other is the frame, give or take rounding.
+            if (metadata.mediaTime <= target + 0.005 && metadata.mediaTime >= begins - 0.005) {
               presented = true;
               ready();
             } else {
@@ -398,21 +398,18 @@ async function cropPixelError(page: Page, source: Buffer, output: Buffer) {
       }
     }
     return { crop: crop / samples, scaled: scaled / samples };
-  }, { source: source.toString('base64'), output: output.toString('base64') });
+  }, {
+    source: source.toString('base64'), output: output.toString('base64'), target: still.inside, begins: still.begins,
+  });
 }
 
 test.describe('crop-video: keeping part of the picture', () => {
-  test('the cropped video is the size of the crop, not a rescale of the whole', async ({ page, browserName }) => {
+  test('the cropped video is the size of the crop, not a rescale of the whole', async ({ page }) => {
     // The failure worth catching: a tool that scaled the whole frame down to
     // the requested box instead of cutting a piece out of it. The output size
     // is identical either way, so the size alone cannot tell them apart -
     // which is why the still below is compared as well.
     test.setTimeout(240_000);
-    // Named by engine and not asked, like the playback cases: cropPixelError
-    // says what its comparison did in WebKit.
-    test.skip(browserName !== 'chromium',
-      'the still comparison came out just over its limit in 7 tries of 22 on Playwright\'s WebKit, for a reason '
-      + 'not found; this case runs in Chromium');
     const original = await loadClip(page, CROP);
     test.skip(!await canDecodeVideo(page, original),
       'this engine cannot decode the fixture for the independent pixel oracle');
@@ -496,47 +493,50 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
  * (also documented by the tool). Observe real sequentially presented frames
  * instead, retaining their media timestamps when the runner misses a callback.
  *
- * WHERE THIS CAN BE TRUSTED
+ * WHAT GIVES A MOMENT ITS TIME
  *
- * In Chromium. It stamps each frame with its time on the player's own
- * timeline, and on the runners it reported 59 of the fixture's 60 frames in
- * twelve plays of twelve (A-Box-of-Tools/qa run 45501094148).
+ * A frame callback's stamp where the stamp is on the player's own timeline,
+ * and the player's clock where it is not. Chromium stamps there. The WebKit
+ * build the runners use stamps a frame with its time in the track, before
+ * the file's edit list is applied: the copy these cases download keeps a part
+ * that begins 1.75 s into its track, and every stamp sat 1.70 to 1.80 s ahead
+ * of the clock, while the clock ran from nought to the file's length and the
+ * pictures came in the right order at the right times
+ * (A-Box-of-Tools/qa run 46108555746). Read by its stamps that file looked a
+ * second and three quarters late.
  *
- * Not in the WebKit build the runners use, which plays these files correctly
- * and cannot be watched doing it. Two things were measured there, in that
- * run and in 45504069425:
+ * The clock is a good name there. Looked at on a timer as these files
+ * played, WebKit's picture was the frame due by its clock in 2,705 looks of
+ * 2,884 and the frame next to it in the rest. It is not taken everywhere
+ * because Chromium's clock is a worse name than Chromium's stamp: its picture
+ * was a frame ahead of its clock in a quarter of 9,066 looks at the fixture.
  *
- * - It stamps a frame with its time in the track, before the file's edit
- *   list is applied. The copy these cases download keeps a part that begins
- *   1.75 s into its track, and in twelve plays every stamp sat 1.71 to
- *   1.80 s ahead of the clock, while the clock ran from nought to the file's
- *   length and the pictures came in the right order at the right times. Read
- *   by its stamps the file looked a second and three quarters late.
- * - It reports the frames of a play late and in fits, and a page's first
- *   play worst. With the clock taken in place of a stamp that was off it and
- *   no half speed asked for, 44 tries of 48 still failed, 37 of them because
- *   the file had ended before three instants were seen. Counted afterwards
- *   on pages that had played nothing, a first play of the fixture reported 0
- *   to 57 of its 60 frames, half of the plays 33 or fewer, and in 58 first
- *   plays of 80 a quarter of a second or more of the film went by
- *   unreported, which is all this reader allows between an instant it waits
- *   for and the frame it takes for it. A third play reported 35 to 60 and
- *   still left such a gap in 47 plays of 120. Chromium reported 57 to 60
- *   every time and never left more than 0.11 s unreported (runs 46109555726,
- *   46110055487 and 46110736915).
+ * AND WHO LOOKS WHEN NOBODY TELLS
  *
- * So the two cases that end here run in Chromium only: see the beforeEach at
- * the top of this file. What they check about the file itself, its length,
- * its tables and the intervals copied into it, needs no player and could run
- * anywhere; it is the pictures that need one.
+ * A timer, once no frame callback has come for 150 ms. That WebKit reports
+ * the frames of a play late and in fits, and a page's first play worst.
+ * Counted on pages that had played nothing, a first play of the fixture
+ * reported 0 to 58 of its 60 frames, half of the plays 31 or fewer, and in
+ * 83 first plays of 112 a quarter of a second or more of the film went by
+ * unreported. A third play reported 16 to 60 and still left such a gap in 60
+ * plays of 168 (runs 46109555726, 46110055487, 46110736915 and
+ * 46113908352). The page's animation frames fell with the callbacks, to none
+ * at all in three seconds, while a 10 ms timer was called 124 to 225 times
+ * in every play and never waited longer than 0.16 s, and the player played
+ * on. The plays watched here are told no better: in those runs the timer
+ * took 141 of the 336 readings these cases made in WebKit, the latest of
+ * them 161 ms after the moment it was for, where a quarter of a second is
+ * the most this allows. Chromium reported 57 to 60 frames on every play and
+ * never left more than 0.11 s unreported, so there the timer finds nothing
+ * to do, and took none of 336.
  *
- * One more thing from the same runs. The half speed asked for below is never
- * had: loading a source puts the rate back to 1, and it read back as 1 in
- * every play that asked for it, on both engines. The request costs nothing
- * on either. This note first blamed it for WebKit's missing frame callbacks.
- * The plays that asked for it had also been the first on their pages, and
- * counted apart, first plays were reported as badly without the request as
- * with it: half of them 33 frames or fewer of 60 either way.
+ * The timer would do all the looking in an engine with no frame callbacks.
+ * None of the suite's engines is one, so that has not been run, and the
+ * cases still skip there.
+ *
+ * This once asked for half speed before giving the player its source.
+ * Loading a source puts the rate back to 1, so nothing was ever played at
+ * half speed on either engine, and the request is gone.
  */
 async function playedVideoFrames(page: Page, bytes: Buffer, targets: number[]) {
   return page.evaluate(async ({ data, targets }) => {
@@ -545,53 +545,70 @@ async function playedVideoFrames(page: Page, bytes: Buffer, targets: number[]) {
     video.muted = true;
     video.playsInline = true;
     video.preload = 'auto';
-    video.playbackRate = 0.5;
     // A presented-frame callback needs a rendered video, not a hidden scratch
     // element. This temporary player is removed even if decoding fails.
     video.style.cssText = 'position:fixed;top:0;left:0;width:320px;height:240px;z-index:2147483647';
     document.body.append(video);
+    const tells = typeof video.requestVideoFrameCallback === 'function';
     let callback = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let looking: ReturnType<typeof setInterval> | undefined;
     try {
-      return await new Promise<{ duration: number; frames: Array<{ time: number; colour: number[] }> }>((resolve, reject) => {
+      return await new Promise<{ duration: number; frames: PlayedFrame[] }>((resolve, reject) => {
         timer = setTimeout(() => reject(new Error('sequential video sampling did not finish within 20 seconds')), 20_000);
         video.onerror = () => reject(new Error('the downloaded video failed during sequential playback'));
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d', { willReadFrequently: true })!;
-        const frames: Array<{ time: number; colour: number[] }> = [];
-        const frame = (_: number, metadata: VideoFrameCallbackMetadata) => {
+        const frames: PlayedFrame[] = [];
+        let heard = 0;
+        let over = false;
+        // One moment of the film, by the name it was given. It is kept if it
+        // is the first at or after the target being waited for.
+        const consider = (time: number, by: PlayedFrame['by']) => {
+          if (over) return;
           const target = targets[frames.length];
-          if (metadata.mediaTime >= target) {
-            // Sampling a later interval would stop checking this one at all.
-            if (metadata.mediaTime - target >= 0.25) {
-              reject(new Error(`no presented frame observed near ${target}s; first was ${metadata.mediaTime}s`));
-              return;
-            }
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            context.drawImage(video, 0, 0);
-            const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
-              Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
-            ).data);
-            frames.push({ time: metadata.mediaTime, colour: [0, 1, 2].map((channel) =>
-              pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]) });
-            if (frames.length === targets.length) {
-              resolve({ duration: video.duration, frames });
-              return;
-            }
+          if (time < target) return;
+          // Sampling a later interval would stop checking this one at all.
+          if (time - target >= 0.25) {
+            over = true;
+            reject(new Error(`no presented frame observed near ${target}s; first was ${time}s by ${by}`));
+            return;
           }
-          callback = video.requestVideoFrameCallback(frame);
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          context.drawImage(video, 0, 0);
+          const pixels = [0.15, 0.5, 0.85].map((x) => context.getImageData(
+            Math.floor(x * canvas.width), Math.floor(canvas.height / 4), 1, 1,
+          ).data);
+          frames.push({ time, by, colour: [0, 1, 2].map((channel) =>
+            pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[1]) });
+          if (frames.length === targets.length) {
+            over = true;
+            resolve({ duration: video.duration, frames });
+          }
+        };
+        const frame = (_: number, metadata: VideoFrameCallbackMetadata) => {
+          heard = performance.now();
+          const clock = video.currentTime;
+          if (Math.abs(metadata.mediaTime - clock) < 0.25) consider(metadata.mediaTime, 'stamp');
+          else consider(clock, 'clock');
+          if (!over) callback = video.requestVideoFrameCallback(frame);
         };
         video.onended = () => reject(new Error('the downloaded video ended before every retained interval was sampled'));
         video.onloadeddata = () => {
-          callback = video.requestVideoFrameCallback(frame);
+          heard = performance.now();
+          if (tells) callback = video.requestVideoFrameCallback(frame);
+          looking = setInterval(() => {
+            if (!tells || performance.now() - heard >= 150) consider(video.currentTime, 'look');
+          }, 10);
           void video.play().catch(reject);
         };
         video.src = url;
       });
     } finally {
       clearTimeout(timer);
-      video.cancelVideoFrameCallback(callback);
+      clearInterval(looking);
+      if (tells) video.cancelVideoFrameCallback(callback);
       video.pause();
       video.removeAttribute('src');
       video.load();
@@ -600,6 +617,9 @@ async function playedVideoFrames(page: Page, bytes: Buffer, targets: number[]) {
     }
   }, { data: Array.from(bytes), targets });
 }
+
+/** One moment a file was seen at as it played, and what gave the moment its time. */
+interface PlayedFrame { time: number; by: 'stamp' | 'clock' | 'look'; colour: number[] }
 
 interface EncodedVideoSample { pts: number; duration: number; data: Buffer }
 
@@ -694,6 +714,48 @@ function encodedVideoSamples(bytes: Buffer): { timescale: number; samples: Encod
   }
   expect(samples).toHaveLength(bytes.readUInt32BE(stsz + 8));
   return { timescale, samples };
+}
+
+/**
+ * The frame a file has on show at a moment, by the file's own table: when it
+ * begins, and a moment well inside its stay to ask a player for it at.
+ *
+ * That moment is two fifths of the way through the frame. A player asked for
+ * a frame's edge can show either neighbour, and the one measured showed a
+ * frame early by more than it showed one late (cropPixelError has the
+ * numbers), so the moment sits a little before the middle.
+ */
+function frameOnShow(bytes: Buffer, moment: number): { begins: number; inside: number } {
+  const read = encodedVideoSamples(bytes);
+  const times = read.samples.map(({ pts }) => pts / read.timescale).sort((a, b) => a - b);
+  let index = 0;
+  while (index + 1 < times.length && times[index + 1] <= moment) index += 1;
+  const begins = times[index];
+  // The last frame has nothing after it to end it, so it is given the length
+  // of the one before.
+  const ends = index + 1 < times.length ? times[index + 1] : begins + (begins - (times[index - 1] ?? begins - 0.05));
+  return { begins, inside: begins + (ends - begins) * 0.4 };
+}
+
+/**
+ * Where to ask the source for the picture a playing file showed, given the
+ * moment it was seen at carried over to the source's own time.
+ *
+ * Inside the frame on show there: see frameOnShow. A moment named by the
+ * player's clock is somewhere inside a frame already and is taken as it is.
+ * One named by a frame callback's stamp is its frame's own beginning, so
+ * carried over it lands on a frame's edge, to one side or the other by
+ * rounding, and the frame it began is the one on show just after it. It is
+ * taken 3 ms later. Taken as it was, the frame before was chosen for 125 of
+ * 318 stamps and the two pictures compared were a frame apart
+ * (A-Box-of-Tools/qa runs 46109555726, 46110055487 and 46110736915); taken
+ * 3 ms later, the frame the stamp began was chosen for 130 of 130 (run
+ * 46113908352). The 3 ms allows for the copy, whose frames do not sit at
+ * quite the source's times: in run 46108555746 the nearest frame of the
+ * source began up to 1.1 ms after a stamp carried over from it.
+ */
+function sourceMoment(source: Buffer, carried: number, by: PlayedFrame['by']): number {
+  return frameOnShow(source, by === 'stamp' ? carried + 0.003 : carried).inside;
 }
 
 /** Probe the fixture's actual H.264 configuration without consulting the tool. */
@@ -1017,14 +1079,16 @@ test.describe('trim-video: keeping part of the time', () => {
       'this engine cannot report timestamps of sequentially presented frames');
     const actual = await playedVideoFrames(page, bytes, [0.20, 0.55, 0.95]);
     const sourceTimes = actual.frames.map(({ time }) => time < 0.75 ? time + 1.75 : time - 0.75);
-    const expected = await savedVideoFrames(page, original, sourceTimes);
+    const expected = await savedVideoFrames(page, original,
+      actual.frames.map(({ by }, index) => sourceMoment(original, sourceTimes[index], by)));
     expect(actual.duration).toBeCloseTo(1.25, 1);
     expectCopiedIntervals(original, bytes, [[1.75, 2.5], [0, 0.5]]);
     expect(colourDistance(expected.colours[0], expected.colours[2]),
       'the fixture must distinguish the later and earlier parts').toBeGreaterThan(80);
     for (let i = 0; i < actual.frames.length; i += 1) {
       expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
-        `saved Copy frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
+        `saved Copy frame at ${actual.frames[i].time}s by ${actual.frames[i].by} belongs to source ${sourceTimes[i]}s`)
+        .toBeLessThan(40);
     }
   });
 
@@ -1058,7 +1122,8 @@ test.describe('trim-video: keeping part of the time', () => {
       'this engine cannot report timestamps of sequentially presented frames');
     const actual = await playedVideoFrames(page, bytes, [0.20, 0.70, 1.20]);
     const sourceTimes = actual.frames.map(({ time }) => time < 0.5 ? time : time < 1 ? time + 0.5 : time + 1);
-    const expected = await savedVideoFrames(page, original, sourceTimes);
+    const expected = await savedVideoFrames(page, original,
+      actual.frames.map(({ by }, index) => sourceMoment(original, sourceTimes[index], by)));
     const seconds = expected.duration - 1;
     expect(Math.abs(readMp4(bytes).seconds - seconds)).toBeLessThan(0.075);
     expect(Math.abs(actual.duration - seconds)).toBeLessThan(0.075);
@@ -1072,7 +1137,8 @@ test.describe('trim-video: keeping part of the time', () => {
     expect(pictures.samples.every((sample) => sample.pts / pictures.timescale < seconds + 0.075)).toBe(true);
     for (let i = 0; i < actual.frames.length; i += 1) {
       expect(colourDistance(actual.frames[i].colour, expected.colours[i]),
-        `saved frame at ${actual.frames[i].time}s belongs to source ${sourceTimes[i]}s`).toBeLessThan(40);
+        `saved frame at ${actual.frames[i].time}s by ${actual.frames[i].by} belongs to source ${sourceTimes[i]}s`)
+        .toBeLessThan(40);
     }
   });
 
