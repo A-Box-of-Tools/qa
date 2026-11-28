@@ -88,12 +88,19 @@ const colourGap = (
  *
  * Reading is a second question and not the same one. `frameColour` above -
  * the oracle almost every assertion in this file rests on - decodes with a
- * plain <video> element, and Playwright's WebKit on Linux, which is what CI
- * runs, has WebCodecs but no H.264 in its media pipeline: the tools decode a
- * clip perfectly well there while a <video> handed the same bytes paints
- * nothing. That is not a tool failing. It is this file having no way to look,
- * and it cost twelve failures a run reported as "the fixture does not change
- * colour as it plays".
+ * plain <video> element, and an engine can have WebCodecs for the tools and
+ * still give this file no way to look. When this gate was written, on 30
+ * August 2026, Playwright's WebKit on Linux, which is what CI runs, was taken
+ * for one: the tools decoded a clip perfectly well there while a <video>
+ * handed the same bytes painted nothing, at twelve failures a run reported as
+ * "the fixture does not change colour as it plays".
+ *
+ * That build's <video> does read H.264. What it does not do is give a canvas
+ * the picture of a player that is not in the document, and in August the
+ * reader here made its player outside the document, as the probe went on
+ * doing until November. canDecodeVideo in lib/browser-video.ts has the
+ * measurements. The gate stays for an engine that cannot look at all, which
+ * Playwright's WebKit on Windows is.
  *
  * Neither is a statement about Safari, which has had both for years. It is
  * the build this suite drives, and the first draft of this gate - `typeof

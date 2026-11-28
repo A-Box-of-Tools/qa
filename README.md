@@ -127,6 +127,14 @@ own failure never skips its test. Neither does the video probe's: a browser
 that recorded the fixture clip itself and then shows no two pictures out of
 it fails the case, because a skip would report a codec missing from the
 browser that had just used it ([`lib/browser-video.ts`](lib/browser-video.ts)).
+That probe asks with its player in the document. Outside it the Linux WebKit
+build gives a canvas nothing, which was read as a missing codec and skipped
+every case that reads a frame in both Safari projects until November 2026. A
+control in [`tests/tools/video.spec.ts`](tests/tools/video.spec.ts) now fails
+if the probe says no where the trimmer is showing the clip. Three cases
+behind that probe run in Chromium only, because their readers are not steady
+in that WebKit: two Trim Video cases that watch a saved file play, and Crop
+Video's comparison of a still with its source.
 Counts of passed, flaky and skipped cases are reported separately on the
 website commit.
 
