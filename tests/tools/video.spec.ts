@@ -137,12 +137,12 @@ test.beforeEach(async ({ page, browserName }, testInfo) => {
   if (testInfo.tags.includes('@native-playback')) {
     // These end in a reader that watches a file play through its frame
     // callbacks. Named by engine and not asked, because what stops it in
-    // WebKit comes and goes with how busy the machine is, and a probe would
-    // answer for the moment it was asked in. playedVideoFrames has the
+    // WebKit comes and goes from one play to the next, and a probe would
+    // answer for the play it was asked in. playedVideoFrames has the
     // measurements.
     test.skip(browserName !== 'chromium',
       'the playback reader watches a file through its frame callbacks, which Playwright\'s WebKit stamps in the '
-      + 'track\'s time and stops sending while the runner is busy; these cases run in Chromium');
+      + 'track\'s time and sends late and in fits; these cases run in Chromium');
     const { bytes } = await recordVideo(page, {
       width: WIDTH, height: HEIGHT, seconds: SECONDS, fps: 20,
     });
@@ -512,10 +512,18 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
  *   1.80 s ahead of the clock, while the clock ran from nought to the file's
  *   length and the pictures came in the right order at the right times. Read
  *   by its stamps the file looked a second and three quarters late.
- * - It stops reporting frames while the runner is busy. With the clock taken
- *   in place of a stamp that was off it, no half speed asked for, and four
- *   takes of each case running at once, 44 tries of 48 still failed, 37 of
- *   them because the file had ended before three instants were seen.
+ * - It reports the frames of a play late and in fits, and a page's first
+ *   play worst. With the clock taken in place of a stamp that was off it and
+ *   no half speed asked for, 44 tries of 48 still failed, 37 of them because
+ *   the file had ended before three instants were seen. Counted afterwards
+ *   on pages that had played nothing, a first play of the fixture reported 0
+ *   to 57 of its 60 frames, half of the plays 33 or fewer, and in 58 first
+ *   plays of 80 a quarter of a second or more of the film went by
+ *   unreported, which is all this reader allows between an instant it waits
+ *   for and the frame it takes for it. A third play reported 35 to 60 and
+ *   still left such a gap in 47 plays of 120. Chromium reported 57 to 60
+ *   every time and never left more than 0.11 s unreported (runs 46109555726,
+ *   46110055487 and 46110736915).
  *
  * So the two cases that end here run in Chromium only: see the beforeEach at
  * the top of this file. What they check about the file itself, its length,
@@ -524,9 +532,11 @@ async function savedVideoFrames(page: Page, bytes: Buffer, times: number[]) {
  *
  * One more thing from the same runs. The half speed asked for below is never
  * had: loading a source puts the rate back to 1, and it read back as 1 in
- * all 48 plays on both engines. In Chromium the request costs nothing. In
- * that WebKit it costs most of the frame callbacks, 3 to 17 of the fixture's
- * sixty being reported with it against 40 to 60 without.
+ * every play that asked for it, on both engines. The request costs nothing
+ * on either. This note first blamed it for WebKit's missing frame callbacks.
+ * The plays that asked for it had also been the first on their pages, and
+ * counted apart, first plays were reported as badly without the request as
+ * with it: half of them 33 frames or fewer of 60 either way.
  */
 async function playedVideoFrames(page: Page, bytes: Buffer, targets: number[]) {
   return page.evaluate(async ({ data, targets }) => {
